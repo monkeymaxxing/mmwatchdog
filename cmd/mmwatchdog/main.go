@@ -34,6 +34,10 @@ import (
 	"mmwatchdog/internal/store"
 )
 
+// hostName reads the machine's host name, which alert titles start with;
+// the tests replace it, so that the test output never depends on the machine.
+var hostName = os.Hostname
+
 var version = "0.1.0-dev"
 var revision = "unknown"
 
@@ -344,7 +348,7 @@ func run(args []string) (result error) {
 			}
 		}
 		// A title names this node, so its length is known only here.
-		node, _ := os.Hostname()
+		node, _ := hostName()
 		if !configOnly {
 			if e = daemon.ValidateRouting(c); e != nil {
 				return &commandOutcome{1, e}
@@ -567,7 +571,7 @@ func run(args []string) (result error) {
 			}
 			// The daemon runs on this node, so its warnings are about this
 			// node's name.
-			node, _ := os.Hostname()
+			node, _ := hostName()
 			if asJSON {
 				if e := printJSON(result); e != nil {
 					return e

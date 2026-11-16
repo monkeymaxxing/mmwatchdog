@@ -30,6 +30,13 @@ import (
 	"mmwatchdog/internal/store"
 )
 
+// TestMain gives every test the same short host name: a title names the
+// node, and a long host name, as on some CI runners, shortens titles.
+func TestMain(m *testing.M) {
+	hostName = func() (string, error) { return "app01", nil }
+	os.Exit(m.Run())
+}
+
 func TestReadableDiagnosticIncludesOutput(t *testing.T) {
 	u, err := user.Current()
 	if err != nil {
@@ -754,7 +761,7 @@ func TestValidateNamesAlertTitlesThatWillBeShortened(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	node, _ := os.Hostname()
+	node, _ := hostName()
 	lines := strings.Split(strings.TrimSpace(output), "\n")
 	if len(lines) != 3 || lines[0] != "Valid configuration: 1 check group, 1 alert destination" ||
 		lines[1] != "An alert title has at most 120 characters. For node "+node+", MMWatchdog will shorten the alert titles listed below; shorten the check group name or check name to keep the full title:" ||
