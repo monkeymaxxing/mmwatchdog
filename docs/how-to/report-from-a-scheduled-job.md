@@ -82,7 +82,7 @@ and a check group named `nightly_backup`.
 
    ```yaml
    mmwatchdog_secret_files:
-     slack-webhook-team: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+     slack-webhook-team: "https://hooks.slack.com/services/YOUR/WEBHOOK/ADDRESS"
      nightly-backup-heartbeat: "58ba5ed9832159481c44241f0fe1d3fc923362d7e7ea0f507c2bbbad09785b93"
    ```
 
@@ -411,7 +411,7 @@ receives the heartbeats. This section uses that node's address
 
    ```yaml
    mmwatchdog_secret_files:
-     slack-webhook-team: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+     slack-webhook-team: "https://hooks.slack.com/services/YOUR/WEBHOOK/ADDRESS"
      nightly-backup-heartbeat: "58ba5ed9832159481c44241f0fe1d3fc923362d7e7ea0f507c2bbbad09785b93"
      heartbeat-receiver.crt: |
        -----BEGIN CERTIFICATE-----

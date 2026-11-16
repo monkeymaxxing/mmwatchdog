@@ -177,7 +177,7 @@ you.
 
    ```yaml
    mmwatchdog_secret_files:
-     slack-webhook-team: "https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX"
+     slack-webhook-team: "https://hooks.slack.com/services/YOUR/WEBHOOK/ADDRESS"
    ```
 
    Then list the file in `inventories/hub_and_standalone.yml`, under

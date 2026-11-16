@@ -60,7 +60,7 @@ that every such file follows.
 
 | Input | Meaning | When omitted |
 | --- | --- | --- |
-| `webhook_url_file` | The absolute path of a file that holds the address of the incoming webhook, such as `https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX`, and nothing else | Required: `mmwatchdog validate` refuses the destination |
+| `webhook_url_file` | The absolute path of a file that holds the address of the incoming webhook, such as `https://hooks.slack.com/services/YOUR/WEBHOOK/ADDRESS`, and nothing else | Required: `mmwatchdog validate` refuses the destination |
 | `mention` | A Slack mention that starts every message sent through the destination whose `slack` inputs include `mention`. Use Slack's notation: `<@U024BE7LH>` for a person by member ID. Use `<!subteam^SAZ94GDB8>` for a user group. Use `<!channel>` or `<!here>` for the channel | The message starts with the alert's title and notifies nobody in particular |
 
 Beside the inputs, a destination can state the run settings that every

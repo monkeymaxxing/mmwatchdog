@@ -300,7 +300,7 @@ func TestMattermostFailures(t *testing.T) {
 			mattermost.URL + "/hooks/" + mattermostKey + "/",
 			mattermost.URL + "/hooks/",
 			mattermost.URL,
-			"https://hooks.slack.com/services/T00000000/B00000000/XXXXXXXXXXXXXXXXXXXXXXXX",
+			"https://hooks.slack.com/services/YOUR/WEBHOOK/ADDRESS",
 			"ftp://chat.example.com/hooks/" + mattermostKey,
 			"https:///hooks/" + mattermostKey,
 			"",
