@@ -1,0 +1,16 @@
+#!/bin/bash
+# The web application's own health command for its job queue: the queue's
+# Redis answers, and at most 100 jobs wait in it. It must run as the
+# account webapp, in /opt/web-application, with
+# WEB_APPLICATION_ENVIRONMENT=production, as the application itself runs.
+set -o pipefail
+if [ "$(id -un)" != webapp ] || [ "$PWD" != /opt/web-application ] || [ "${WEB_APPLICATION_ENVIRONMENT:-}" != production ]; then
+  echo "the health command must run as webapp in /opt/web-application with WEB_APPLICATION_ENVIRONMENT=production; it runs as $(id -un) in $PWD with WEB_APPLICATION_ENVIRONMENT=${WEB_APPLICATION_ENVIRONMENT:-}"
+  exit 2
+fi
+if ! waiting=$(timeout 2 redis-cli -p 6381 LLEN jobs:waiting); then
+  echo "the Redis of the job queue does not answer on port 6381"
+  exit 1
+fi
+echo "$waiting jobs wait in the queue; the queue is healthy with at most 100"
+[ "$waiting" -le 100 ]

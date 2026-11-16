@@ -1,0 +1,12 @@
+# /etc/mmwatchdog/mmwatchdog_node_settings.yml on the application server, which also holds
+# the data.
+keep_undelivered_alerts_for: 24h
+undelivered_alerts_content_size_limit: 8MiB
+alert_severity_when_this_node_goes_silent: sos
+alert_severity_when_this_node_has_rebooted: warn
+keep_measurement_history_for: 1d
+measurement_history_size_limit: 64MiB
+# With the example's timings of seconds, about 45 checks run every second,
+# so more of them run at the same moment than the default of 8. With
+# production timings of 30 seconds and more, the default serves.
+max_concurrent_checks: 16

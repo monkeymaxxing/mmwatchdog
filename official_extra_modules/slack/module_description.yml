@@ -1,0 +1,25 @@
+summary: Delivers each alert to a Slack channel through an incoming webhook.
+used_as: alert_destination
+inputs:
+  webhook_url_file:
+    type: string
+    required: true
+    description: >-
+      The absolute path of a file that holds the address of the Slack incoming
+      webhook, and nothing else. The address is a secret. MMWatchdog reads the file
+      for every delivery and gives the module its content.
+  mention:
+    type: string
+    required: false
+    description: >-
+      A Slack mention that starts every message of this destination, in
+      Slack's notation, such as <@U024BE7LH> for a person or <!channel> for
+      the channel.
+examples:
+  - description: Send every alert to the team's channel, and mention one person.
+    config: |
+      slack:
+        webhook_url_file: /etc/mmwatchdog/secrets/slack-webhook-team
+        mention: "<@U024BE7LH>"
+      remind_every: never
+      alert_severities: [info, warn, sos]

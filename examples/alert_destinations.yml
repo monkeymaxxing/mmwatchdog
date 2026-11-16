@@ -1,0 +1,23 @@
+# Install at /etc/mmwatchdog/alert_destinations.yml. Each destination receives the
+# alerts of the severities in its required alert_severities.
+destinations:
+  operations:
+    webhook:
+      url: https://alerts.example.com/mmwatchdog
+      bearer_token_file: /etc/mmwatchdog/secrets/webhook
+    time_limit_per_delivery_attempt: 5s
+    alert_severities: [info, warn, sos]
+    # Repeat each announced incident still open every 4 hours; never disables reminders.
+    remind_every: 4h
+  # An email destination sends each alert as one email through a mail server.
+  # To use it, remove the "# " in front of each line below.
+  # on_call_mailbox:
+  #   email:
+  #     smtp_server: smtp.example.com:587          # the mail server: its host name and its port
+  #     smtp_connection_security: starttls         # starttls, implicit_tls, or unencrypted
+  #     from: mmwatchdog@example.com
+  #     to: [oncall@example.com]
+  #     login_user: mmwatchdog@example.com                   # leave out both lines for a mail server without a login
+  #     login_password_file: /etc/mmwatchdog/secrets/smtp        # one line with the password
+  #   alert_severities: [warn, sos]
+  #   remind_every: never

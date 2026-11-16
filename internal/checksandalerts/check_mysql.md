@@ -1,0 +1,719 @@
+# `mysql`
+
+`mysql` asks a MySQL or a MariaDB server a question through the server's
+own client program, `mariadb` or `mysql`, as MMX's modules for these servers
+do. The check is healthy when the server answers. The `mysql` check also
+reports how far a replica is behind the source (`replication_lag_seconds`).
+The check measures connection use (`connections_used_percent`) and the
+length of InnoDB's history list (`innodb_history_list_length`). The check sends
+only `SELECT` and `SHOW` statements and changes nothing.
+
+A check without inputs, `mysql: {}`, asks the server on the node itself and
+needs no account, no password, and no setup. A check of a server on another
+machine names it in `database_server_host` and logs in there. For a
+PostgreSQL server, use [`postgresql`](check_postgresql.md), which has the
+inputs of `mysql`, with `login_role` in place of `login_user`.
+
+## Set up
+
+**The server on the node itself** needs nothing: a node that has the server
+has its client program, and the check asks as the server's own
+administrator.
+
+**A check that logs in**, of a server on another machine or of a second
+server on the node, needs:
+
+- A client program on the node that checks, when the server is on another
+  machine: MariaDB's `mariadb` or MySQL's `mysql`. Each of the two asks a
+  MySQL and a MariaDB server. The package is `mariadb-client` on Debian and
+  Ubuntu, and `mariadb` in the Red Hat family. Debian has
+  MariaDB's program only,
+  and MariaDB's program asks a MySQL 8.4 server too.
+- An account inside the server that can log in from the node's address and
+  nothing more. Run on the database server, in its client program as its
+  administrator, such as `sudo mariadb`:
+
+  ```sql
+  CREATE USER 'mmwatchdog_monitoring'@'192.0.2.10' IDENTIFIED BY 'the password of mmwatchdog_monitoring';
+  ```
+
+  `192.0.2.10` is the address of the node that checks; for a server on the
+  node, write `127.0.0.1`. A new account has no privilege but the login.
+  For `replication_lag_seconds`, `mmwatchdog_monitoring` also needs a
+  privilege to ask for the status of a replica. The privilege does not
+  allow `mmwatchdog_monitoring` to read or change a table. On MySQL:
+
+  ```sql
+  GRANT REPLICATION CLIENT ON *.* TO 'mmwatchdog_monitoring'@'192.0.2.10';
+  ```
+
+  On MariaDB:
+
+  ```sql
+  GRANT REPLICA MONITOR ON *.* TO 'mmwatchdog_monitoring'@'192.0.2.10';
+  ```
+
+  On MariaDB, `REPLICA MONITOR` also lets the account read the changes in
+  the relay log of a replica (`SHOW RELAYLOG EVENTS`). MariaDB has no
+  smaller privilege that shows the status of a replica.
+
+  For `innodb_history_list_length` on MySQL, the account needs the
+  privilege `PROCESS`. MariaDB gives the number to every account.
+
+  ```sql
+  GRANT PROCESS ON *.* TO 'mmwatchdog_monitoring'@'192.0.2.10';
+  ```
+
+  `PROCESS` also lets the account see the statements that other sessions
+  run (`SHOW PROCESSLIST`), which can hold values of the application's
+  data. MySQL has no smaller privilege that reads InnoDB's counters.
+
+- A file on the node with the password on one line. Only root can read
+  the password file. MMWatchdog reads the password file as root. The second
+  command below reads the password from the terminal.
+  Type the password, press Enter, and then Ctrl-D.
+
+  ```sh
+  sudo install -d -m 0700 /etc/mmwatchdog/secrets
+  sudo install -m 0600 /dev/stdin /etc/mmwatchdog/secrets/mysql-mmwatchdog-monitoring
+  ```
+
+  `mmwatchdog validate` refuses a password file that its group or other
+  accounts can read without explicit permission
+  ([credential files that other accounts can
+  use](../../docs/reference/configuration-files.md#secret-files)).
+
+## When the check fails, and when it cannot check
+
+- **The check fails** when the server does not answer, when it refuses the
+  login, and when the answer does not arrive within the check group's
+  `time_limit_per_run`. The `mysql` check also fails when the client
+  rejects the server's certificate or connection protection
+  ([how the connection is protected](#how-the-connection-is-protected)).
+  A reading that passes a limit also fails the check.
+  The message holds the first line of what the client program says.
+- **A replica fails the check when receiving or applying changes stops for
+  at least one configured source,** even without a limit. Without receiving
+  or applying changes, a replica falls behind without end, and the server
+  gives no lag number.
+- **MMWatchdog cannot check,** and the run is unknown, when:
+  - the node has no client program, MMWatchdog cannot run it as the account that
+    the check needs, or the program under the name `mysql` does not say
+    whether it is MySQL's or MariaDB's;
+  - MMWatchdog cannot read the password file;
+  - with `verified_tls`, the node has no file of certificate authorities,
+    or the account `mmwatchdog` cannot read `database_server_certificate_authority_file`;
+  - the client program gives an answer that MMWatchdog does not understand;
+  - a limit names `replication_lag_seconds`, and MMWatchdog has no number for the
+    server (see [how far a replica is behind](#how-far-a-replica-is-behind));
+  - a limit names `innodb_history_list_length`, and MMWatchdog has no number for the
+    server (see [InnoDB's history list](#innodbs-history-list)).
+
+A failed run starts or continues the check's
+[failing time](../../docs/how-to/decide-when-a-check-alerts.md). An unknown run opens a
+cannot-check incident of its own after the waiting times used for failure
+incidents, as the
+design's [failing time](../../docs/changing-mmwatchdog/design/checks.md#the-failing-time) describes.
+Each measurement takes a limit in the way that every measurement does
+([checks that measure a number](../../docs/reference/configuration-files.md#checks-that-measure)).
+
+## Examples
+
+### The server on this node, and how far behind it is
+
+```yaml
+# /etc/mmwatchdog/check_groups/mariadb.yml
+check_groups:
+  mariadb:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 3m
+    recovered_after_healthy_for: 1m
+    checks:
+      mariadb_answers:
+        mysql: {}                                 # the server on this node
+        alert_severity: sos
+      mariadb_replica_is_less_than_60_seconds_behind:
+        mysql: {}
+        fail_when_measurement_above:
+          replication_lag_seconds: 60
+        alert_severity: warn
+```
+
+Every minute, MMWatchdog on the node runs the client program as root and asks the
+server on the node through its local socket. The first check is healthy
+whenever the server answers, with a message such as `the MySQL server
+answers; it is no replica`. When the server does not answer for 3 minutes,
+MMWatchdog sends an `sos` alert.
+
+The second check also fails when the server is a replica that is more than
+60 seconds behind its source, or that does not follow its source at all,
+and sends a `warn` alert after 3 minutes. A server that is no replica is 0
+seconds behind. The `mariadb_replica_is_less_than_60_seconds_behind` check
+can therefore monitor a source or a replica. After a replica becomes the
+source, the check reports 0 seconds behind without a configuration change.
+
+### A server on another machine
+
+```yaml
+# /etc/mmwatchdog/check_groups/database_machine.yml
+check_groups:
+  database_machine:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 3m
+    recovered_after_healthy_for: 1m
+    checks:
+      mysql_on_the_database_machine_answers:
+        mysql:
+          database_server_port: 3306
+          database_server_host: db-1.internal.example.com
+          connection_security: verified_tls
+          login_user: mmwatchdog_monitoring
+          login_password_file: /etc/mmwatchdog/secrets/mysql-mmwatchdog-monitoring
+        fail_when_measurement_above:
+          connections_used_percent: 80
+        alert_severity: sos
+```
+
+Every minute, MMWatchdog on the node reads the password file and runs the client
+program as the unprivileged account `mmwatchdog`. The program opens an encrypted
+connection over TCP to the server on `db-1.internal.example.com` at the
+standard port 3306, verifies that the server's certificate is valid for
+that name, and logs in as `mmwatchdog_monitoring`. The check fails when the server
+does not answer, when the certificate is not valid, and when more than 80
+percent of the server's connections are in use. If the check keeps failing
+for 3 minutes, MMWatchdog sends an `sos` alert.
+
+### A second server on this node
+
+The local socket of MySQL and of MariaDB has no port. So a check of a
+second server on the node, at a port of its own, states the address
+`127.0.0.1` with the port, a login, and `connection_security: unencrypted`,
+because that connection stays on the node:
+
+```yaml
+# /etc/mmwatchdog/check_groups/second_mariadb.yml
+check_groups:
+  second_mariadb:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 3m
+    recovered_after_healthy_for: 1m
+    checks:
+      reporting_database_answers:
+        mysql:
+          database_server_host: 127.0.0.1
+          database_server_port: 3307
+          connection_security: unencrypted
+          login_user: mmwatchdog_monitoring
+          login_password_file: /etc/mmwatchdog/secrets/mysql-mmwatchdog-monitoring
+        alert_severity: warn
+```
+
+MMWatchdog on the node runs the client program as the account `mmwatchdog`.
+The client program connects over TCP to `127.0.0.1` at port 3307 and logs
+in to the database server as `mmwatchdog_monitoring`.
+
+### A history list that grows
+
+```yaml
+# /etc/mmwatchdog/check_groups/mariadb.yml
+check_groups:
+  mariadb:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 30m
+    recovered_after_healthy_for: 5m
+    checks:
+      innodb_history_list_is_shorter_than_a_million:
+        mysql: {}                                 # the server on this node
+        fail_when_measurement_above:
+          innodb_history_list_length: 1000000
+        alert_severity: warn
+```
+
+Every minute, MMWatchdog on the node asks the server on the node through
+the server's local socket, as above. The check fails when InnoDB keeps old row
+versions of more than a million committed transactions. Something holds a
+transaction open, and InnoDB may not purge the old row versions. After 30
+minutes of the history list exceeding one million, MMWatchdog sends a `warn` alert.
+The alert's message holds the reading, such as
+`innodb_history_list_length is 1384022 (fails above 1000000); the MySQL
+server answers; it is no replica`. To get a separate alert at a higher
+threshold, add a second check with a higher limit and
+`alert_severity: sos`.
+
+## How it works
+
+The client starts with `--no-defaults` as its first option to skip ordinary
+option files. MMWatchdog also sets `MYSQL_TEST_LOGIN_FILE=/dev/null`, because
+MySQL still reads its login-path file, `.mylogin.cnf`, with `--no-defaults`.
+The variable makes MySQL read the empty `/dev/null` instead; MariaDB ignores
+the variable. No option file can change the server, login, or connection security.
+
+### Which client program
+
+The check runs `mariadb` when the node has it, in `/usr/bin` or
+`/usr/local/bin`, and `mysql` otherwise. The program under the name
+`mariadb` is MariaDB's. The program under the name `mysql` is MySQL's or one of
+MariaDB. The check asks the client which maker wrote the client (`mysql --version`).
+MySQL's client rejects MariaDB's arguments, and MariaDB's client rejects MySQL's arguments.
+A client program that does not identify the maker makes the run unknown.
+The client program gets `--connect-timeout=10`.
+
+### Through the local socket, without a login
+
+A check without `database_server_host` uses the local socket of the server
+on the node, as the server's own administrator. MySQL and MariaDB accept root
+of the node as `root@localhost` without a password, so MMWatchdog runs the client
+program as root.
+
+- **Through the local socket, nothing is encrypted,** and the check states
+  no `connection_security`
+  ([PostgreSQL, MySQL, and MariaDB checks](#how-the-connection-is-protected)).
+  MariaDB's client program from release 11.4 would also encrypt the local
+  socket connection and verify the database server's certificate. So
+  MMWatchdog disables TLS for the local socket (`--skip-ssl`).
+- **The check tells the client program how to reach the server:**
+  `--protocol=SOCKET` without `database_server_host`, and `--protocol=TCP`
+  with `database_server_host`. So a file of the client's settings that names
+  a host cannot send a check of the node's server to another machine.
+- **The local socket has no port,** so a check with `database_server_port`
+  and without `database_server_host` is refused: MySQL's client program
+  would connect through the standard socket without warning that the port
+  was ignored. For a second server on the node, state
+  `database_server_host: 127.0.0.1` and the second server's port.
+- **Where systemd listens on the local socket for the server, the check
+  starts a stopped server again.** Debian 12 enables the unit
+  `mariadb.socket` with the package of MariaDB. After `systemctl stop
+  mariadb`, systemd starts the server for the next program that connects,
+  and the check is such a program: it stays healthy, and the server runs
+  again. To keep the server down, stop the socket unit too: `systemctl stop
+  mariadb.socket mariadb`. The warning from `systemctl stop mariadb`
+  names `mariadb.socket`.
+
+### With a login
+
+A check with `login_user` and `login_password_file` logs in with a password,
+and MMWatchdog runs the client program as the unprivileged account
+`mmwatchdog`. The account `mmwatchdog` needs no rights on the node.
+The password login and client execution account apply to remote servers
+with `database_server_host` and to servers on the node.
+
+- **MMWatchdog reads the password file for each run,** so a changed password needs
+  no reload. MMWatchdog gives the password to the client program in the
+  client's environment (`MYSQL_PWD`), never as an argument. Program
+  arguments show in the process list.
+- **Without `database_server_port`,** the client program uses the standard
+  port, 3306.
+
+### How the connection is protected
+
+A check with `database_server_host` states `connection_security`. The
+rules below are the same for `mysql` and [`postgresql`](check_postgresql.md).
+
+- **`connection_security` has no default.** Without explicit settings,
+  `psql`, `mariadb`, and `mysql` each protect the connection in a different
+  way. So MMWatchdog always tells the client program how to protect the
+  connection, and the check shows the choice.
+- **`database_server_host` takes a name, or an IPv4 or IPv6 address** such
+  as `2001:db8::5`, without a port.
+- **With certificate checking on, `verified_tls` trusts the node's own
+  certificate authorities,** unless the check states
+  `database_server_certificate_authority_file`. The node's file is the
+  first of these that exists: `/etc/ssl/certs/ca-certificates.crt`
+  (Debian, Ubuntu, and Arch Linux), `/etc/ssl/ca-bundle.pem` (openSUSE),
+  and `/etc/pki/ca-trust/extracted/pem/tls-ca-bundle.pem` (Rocky Linux,
+  AlmaLinux, and the rest of the Red Hat family).
+
+MMWatchdog tells the client program the value as arguments, which differ between
+the two makers:
+
+| `connection_security` | MySQL's `mysql` | MariaDB's `mariadb` |
+| --- | --- | --- |
+| `verified_tls` | `--ssl-mode=VERIFY_IDENTITY` and `--ssl-ca` with the file of certificate authorities | `--ssl`, `--ssl-verify-server-cert`, and `--ssl-ca` with the file of certificate authorities |
+| `verified_tls` with `dangerously_skip_server_certificate_check: true` | `--ssl-mode=REQUIRED` | `--ssl` and `--skip-ssl-verify-server-cert` |
+| `unencrypted` | `--ssl-mode=DISABLED` and `--get-server-public-key` | `--skip-ssl` |
+
+- **With certificate checking disabled, MMWatchdog blocks an unencrypted login.**
+  Older MariaDB clients silently fall back to an unencrypted login when the
+  server offers no TLS. MMWatchdog passes the client's connection through a local
+  proxy on the node. Before encryption starts, the proxy forwards only
+  an SSLRequest: the client's request to begin TLS encryption.
+  The proxy never forwards an unencrypted login. MySQL's own client
+  enforces encryption with `--ssl-mode=REQUIRED`.
+- **With `unencrypted`, MySQL's client program logs in to a MySQL server
+  only when it may ask the server for its public key,** with which it
+  protects the password. So MySQL's client gets `--get-server-public-key`.
+- **With certificate verification enabled, MMWatchdog names a file of certificate authorities
+  to the client program:** `database_server_certificate_authority_file`,
+  or the node's own file of certificate authorities.
+  MySQL's program verifies nothing without a file, and MariaDB's from 11.4
+  accepts, without a file, also a certificate that the server proves with
+  the password of the login.
+
+### How far a replica is behind
+
+`replication_lag_seconds` is how far a replica is behind its source, in
+seconds: the server's own `Seconds_Behind_Source`, or
+`Seconds_Behind_Master` in older releases.
+
+- **A server that is no replica is 0 seconds behind:** it is behind no
+  server. A check with a limit on `replication_lag_seconds` can monitor a
+  source or a replica. After a replica becomes the source, the check
+  reports 0 seconds behind without a configuration change. The check's message
+  says whether the server is a replica.
+- **A replica that does not receive or does not apply changes** has no such
+  number, so the check fails by itself, with a message such as `the MySQL
+  replica does not follow its source: it is not receiving changes
+  (Connecting); it is applying changes`. The alert's body holds the server's last errors,
+  `Last_IO_Error` and `Last_SQL_Error`.
+- **A replica that follows several sources** has one status for each, which
+  MySQL calls a channel and MariaDB a connection. The `mysql` check reads
+  every source's status, including a source that a MariaDB replica follows under a
+  name. The `mysql` check fails when the replica does
+  not receive or apply changes from at least one configured source. The failure
+  message names the channel or connection, as in
+  `the MySQL replica does not follow its source of
+  the connection orders: it is not receiving changes (Connecting); it is
+  applying changes`. The reading is the time behind the source that the replica is
+  the furthest behind.
+- **A member of a MySQL group replication has no reading:** it is no
+  replica of a source, and this check has no number for how far such a
+  member is behind. The `mysql` check's message is
+  `the MySQL server answers; it is a member of a group replication`.
+- **A server for which MMWatchdog has no number has no reading,** never the 0 of a
+  server that is no replica: a member of a group replication, a replica
+  that gives no number, an account that may not ask for the status of a
+  replica, and a server that refuses that question for another reason.
+  A check with a limit on the lag is then unknown and says why, such as `the
+  account of the check may not ask for the status of a replica: it needs
+  the privilege REPLICATION CLIENT, or REPLICA MONITOR on MariaDB`. Without
+  a limit on the lag such a check stays healthy.
+- **The statement that asks for the status of a replica** differs between
+  releases: `SHOW ALL REPLICAS STATUS`, `SHOW REPLICA STATUS`, `SHOW ALL
+  SLAVES STATUS`, and `SHOW SLAVE STATUS`. MariaDB shows every source only
+  to a statement with `ALL`. The check tries the four statements in the
+  order listed above, continuing after each syntax error. MMWatchdog
+  keeps the statement that the server knew in memory for the next run.
+
+### InnoDB's history list
+
+`innodb_history_list_length` is the length of InnoDB's history list: the
+committed transactions whose old row versions InnoDB keeps, so that a
+transaction that is still open can read the data as it was when it began.
+InnoDB purges the retained row versions when no open transaction needs
+the old data any more. A transaction that stays open for hours, such as a
+forgotten session or a long report, holds every later change in the list.
+The list then grows without end, the server gets slower, and the server's files grow.
+
+- **MariaDB gives the number to every account,** as its status variable
+  `Innodb_history_list_length`, from release 10.5 on.
+- **MySQL gives `innodb_history_list_length` only through InnoDB's counter
+  `trx_rseg_history_len`** in `information_schema.INNODB_METRICS`, which
+  MySQL turns on by default.
+  Reading `trx_rseg_history_len` requires the privilege `PROCESS`.
+  MariaDB also has `trx_rseg_history_len`, but the check takes MariaDB's
+  status variable when available.
+- **A server for which MMWatchdog has no number has no reading,** never 0: an
+  account without `PROCESS` on MySQL, a counter that is turned off, and a
+  server that refuses the question for another reason. A check with a
+  limit on `innodb_history_list_length` is then unknown, and says why, such
+  as `the account of the check may not read the InnoDB history list length:
+  it needs the privilege PROCESS`. Without a limit on `innodb_history_list_length`, the check stays healthy.
+- **A counter that is turned off keeps the number that it had then.** So
+  the check gives no `innodb_history_list_length` reading from the disabled
+  `trx_rseg_history_len` counter and says `InnoDB's counter
+  trx_rseg_history_len is turned off on the MySQL server, so its number is
+  old: turn it on with SET GLOBAL innodb_monitor_enable =
+  'trx_rseg_history_len'`.
+
+### How the check asks
+
+The check sends its statements, one on each line, to the client program on
+its standard input, with `--batch`, `--vertical`, and `--force`:
+
+```sql
+SELECT @@max_connections AS max_connections;
+SHOW GLOBAL STATUS WHERE Variable_name IN ('Threads_connected', 'Innodb_history_list_length');
+SELECT * FROM information_schema.INNODB_METRICS WHERE NAME = 'trx_rseg_history_len';
+SHOW ALL REPLICAS STATUS
+```
+
+- **The server answers every statement that it can,** also when it refuses
+  another one: with `--force`, the client program goes on after a refused
+  statement read on the client program's standard input. The client program does
+  not continue with `--execute`, which would leave every statement after a
+  refused one unasked.
+- **The client program names the line of each statement that the server
+  refuses,** such as `ERROR 1227 (42000) at line 3: Access denied; you need
+  (at least one of) the PROCESS privilege(s) for this operation`. So a
+  refused statement makes only its own measurement unavailable.
+- **The fourth line asks for the status of a replica,** with the statement
+  that the server knows (see [how far a replica is behind](#how-far-a-replica-is-behind)).
+
+### Connections in use
+
+`connections_used_percent` is the server's `Threads_connected` as a percent
+of the server's `max_connections`. Connection use can pass 100: MySQL and MariaDB
+keep one more connection for an account with the privilege to manage the
+server, such as root. So while the application holds every allowed
+connection, a check that logs in as root still gets in and reads more than
+100, such as 105 for 21 connections of 20 allowed.
+
+### Messages
+
+- **A healthy run says what the server is:** `the MySQL server answers; it
+  is no replica`, or `the MySQL server answers; it is a replica, 2 seconds
+  behind its source`, or `... behind the 2 sources that it follows`. With a
+  limit, the message names each reading that has a limit before the
+  description of the server's answer and replication role.
+- **A server that does not answer, and a server that refuses the login,**
+  fail the check with the first line of what the client program says that
+  is no warning, such as `the MySQL server did not answer the check: ERROR
+  2002 (HY000): Can't connect to server on 'db-1.internal.example.com'`,
+  followed by the program's reason. A client program puts the reason at the
+  end of its line, so of a line of more than 300 bytes the message keeps
+  the first 100 and the last 200 bytes, with ` ... ` between them.
+
+## Errors and what they mean
+
+The validation errors name the setting, such as
+`check_groups.database_machine.checks.mysql_on_the_database_machine_answers.mysql.connection_security`.
+The validation messages below start at the module's input:
+
+- **`database_server_port: needs database_server_host: without it the check
+  uses the server's local socket, which has no port. For a server on this
+  node at a port, state database_server_host: 127.0.0.1`.**
+- **`connection_security: required with database_server_host: write connection_security: verified_tls to encrypt the connection, or connection_security: unencrypted to send without encryption`.** State how the connection to the server
+  is protected. Use `verified_tls` wherever the server has a certificate
+  that a certificate authority signed.
+- **`database_server_host: a check of a server on another machine logs in
+  with a password: state login_user and login_password_file`.**
+- **`connection_security: has no use without database_server_host: the
+  check uses the server's local socket on this node, which has no
+  encryption and needs none`,** and the same for
+  `database_server_certificate_authority_file`. Remove the setting, or add
+  `database_server_host`.
+- **`database_server_certificate_authority_file: has a use only with connection_security:
+  verified_tls, which verifies the server's certificate`.**
+- **`database_server_host: expected the name or the address of the database
+  server, without a port`.** Write the port in `database_server_port`.
+- **`database_server_port: expected a port number from 1 to 65535`.**
+- **`login_user: required with login_password_file: the account that the
+  check logs in as`,** and **`login_user: expected one word of at most 256
+  bytes`.**
+- **`login_password_file: must be absolute`,** and the same for
+  `database_server_certificate_authority_file`. Write the whole path.
+- **`login_password_file: open /etc/mmwatchdog/secrets/mysql-mmwatchdog-monitoring: no such file or directory`,**
+  from `mmwatchdog validate`. A run is unknown with the missing-file message
+  without the setting's name. Create the password file. A file that does not
+  hold exactly one line gives `/etc/mmwatchdog/secrets/mysql-mmwatchdog-monitoring: expected one line with the
+  password: UTF-8 text of at most 1,024 bytes, without a tab or another
+  control character`.
+- **`connection_security: verified_tls needs the certificate authorities
+  that this node trusts, and this node has no file of them: MMWatchdog looked for
+  ...`.** Install the distribution's package of certificate authorities,
+  `ca-certificates`, or state `database_server_certificate_authority_file`.
+- **`database_server_certificate_authority_file: the account mmwatchdog, which runs the client
+  program of the database server, cannot read
+  /etc/mmwatchdog/secrets/database-authority.pem. A certificate is no secret: give
+  every account the permission to read the file and to pass through the
+  directories above it`.** Move
+  `/etc/mmwatchdog/secrets/database-authority.pem` to a directory that
+  every account can pass through, such as `/etc/mmwatchdog`. Give every
+  account read access to the moved certificate-authority file. A file
+  without certificates gives `contains no PEM
+  certificates`.
+- **`TLS/SSL error: unable to get local issuer certificate`** or
+  **`TLS/SSL error: self-signed certificate in certificate chain`**
+  (MariaDB's program), or **`SSL connection error: error:0A000086:SSL
+  routines::certificate verify failed`** (MySQL's program). The client
+  program does not know the certificate authority of the server's
+  certificate. State `database_server_certificate_authority_file`, or check that the server
+  shows the right certificate.
+- **`TLS/SSL error: Hostname verification failed`** (MariaDB's program).
+  An older MariaDB client says
+  `Validation of SSL server certificate failed`. The certificate is for
+  another name. MySQL's program says `SSL connection
+  error: error:0A000086:SSL routines::certificate verify failed` when the
+  certificate is for another name too. Write in `database_server_host` a
+  name that the certificate holds.
+
+- **`MMWatchdog cannot run mysql, the client program of MySQL: executable file not
+  found in $PATH. The check needs that program on this node`.** Install the
+  client program.
+- **`MMWatchdog cannot learn whether the client program mysql is MySQL's or
+  MariaDB's, and the two take different arguments: mysql --version gave no
+  answer`.** The program under the name `mysql` is no working client
+  program.
+- **`MMWatchdog cannot run mariadb as the account mmwatchdog: ...`.** The
+  `mariadb` client exists, but the operating system did not start
+  `mariadb` as the operating-system account `mmwatchdog`, for example
+  because the node has no account `mmwatchdog`. The run is unknown.
+- **`the MySQL server did not answer the check: mariadb ended with exit code 2`.**
+  The client program failed and wrote nothing. The check fails.
+- **`the MySQL server did not answer within the time limit of the run`.**
+  The server, or the network to it, is too slow for the check group's
+  `time_limit_per_run`.
+- **`the client program mariadb gave an answer that MMWatchdog does not understand:
+  ...`.** The run is unknown. The answer follows in the message.
+
+## Tested on
+
+[Limits on each distribution](../../docs/reference/limits-on-each-distribution.md) says what MMWatchdog cannot do on each distribution, or did not test there, and why.
+
+- **Go tests** in `server_checks_test.go` use stand-ins for the client
+  programs. `TestMySQLCheck` covers:
+
+  - client arguments and the question on standard input, through the local
+    socket and through a login;
+  - replica status in the words of the two releases;
+  - a replica that does not receive or apply changes;
+  - the connections of a MariaDB replica and several sources of a MySQL replica;
+  - a group-replication member and a refused question without a number;
+  - an account without the privilege for replica status, and validation.
+
+  `TestMySQLCheck` also covers history list length:
+
+  - MariaDB's status variable, including for an account whose query for the
+    counter the server refuses;
+  - MySQL's counter and a counter that is turned off;
+  - an account without `PROCESS` whose replica's lag is still read;
+  - an account allowed to ask for neither replica status nor history list
+    length, and another refusal.
+
+  `TestTheMySQLCheckAsksWithTheStatementThatTheServerKnows` covers the four
+  statements in their order and the next run that starts with the one that
+  the server knew. `TestADatabaseCheckProtectsItsConnectionAsItStates`
+  covers:
+
+  - MySQL and MariaDB client arguments for each `connection_security`;
+  - files of certificate authorities;
+  - a client named `mysql` that identifies as MariaDB's, and a client that
+    does not identify whether the client is MySQL's or MariaDB's;
+  - MariaDB's client continuing without encryption;
+  - `--protocol=SOCKET` and `--skip-ssl` through the local socket.
+
+  The tests record which account MMWatchdog uses to run each client:
+  root without a database login, `mmwatchdog` with a database login.
+- **Real MariaDB:** the `services` suite (`service_scenarios.py`) asks
+  MariaDB as each distribution installs the server:
+
+  - through the local socket with no setup, including with a certificate
+    the guest does not know;
+  - through a login with a password, stopped and started.
+
+  MariaDB's InnoDB history list length, from the status variable, is read
+  through the local socket and through a login without a privilege.
+  The history list grows by 300 while a session holds a snapshot open and
+  another session commits 300 changes.
+
+  Over the network, the suite asks with each `connection_security` against
+  a certificate signed by a test certificate authority. The cases cover:
+
+  - an authority the guest does not know and a certificate for another name;
+  - a server without encryption and a server that accepts only encrypted connections;
+  - a file of certificate authorities that `mmwatchdog` cannot read.
+
+  A MariaDB replica that cannot reach a source followed under a name fails
+  the check. The MariaDB scenarios passed on
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution),
+  with MariaDB's client 10.5 to 13.0.
+- **Real MySQL 8.4,** on [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution) except Rocky Linux 9 and AlmaLinux 10, whose repositories have no Docker (it comes from Docker's own repository): a source and its replica in
+  containers of MySQL's own image, asked first with the guest's `mariadb`
+  program and then with MySQL's own `mysql` program. On openSUSE Leap 16.1
+  only MySQL's own program asks: its `mariadb` 12.3 lacks the plugin
+  `caching_sha2_password`, which MySQL 8.4 logins use. The source is asked over
+  a connection whose certificate the check verifies, the replica without
+  encryption and with encryption that skips certificate verification.
+  The scenario covers a certificate of an unknown authority and one for
+  another name, a server
+  that is no replica, a replica that applies its changes 30 seconds late,
+  one that does not apply them, one that has lost its source, a wrong
+  password, and an account without the privilege.
+  The history list length, from InnoDB's counter, is read with an account
+  that has `PROCESS`. The history list grows by 300 while a session holds
+  a snapshot open. An account without
+  `PROCESS` makes only a history-list limit unknown and still reads the replica's lag.
+- **Not verified on a real server:** a MySQL replica of several sources, a
+  member of a group replication, the local socket of a MySQL server (the
+  `mysql` check ran through MariaDB's local socket and against MySQL
+  through a password login), and a database server named by an address of
+  IP version 6. Go tests cover the unverified cases
+  ([validation record](../../docs/changing-mmwatchdog/validation.md)).
+
+## Why it works this way
+
+- **Certificate checking is the default.**
+  `dangerously_skip_server_certificate_check: true` makes the choice to
+  trust any server explicit. TLS still protects against people who observe
+  network traffic without changing the traffic.
+- **Permission refusals belong to validation and reload.** Startup warns
+  once per file. A running check continues after a mode change, so the
+  permission rule cannot stop monitoring. The
+  [credential permission rule](../../docs/reference/configuration-files.md#secret-files)
+  owns the settings and the reasons.
+
+- **A network server's port is required.** With `database_server_host`,
+  state `database_server_port` so the connection address is visible even
+  when the server uses its usual port.
+
+- **The check asks through the server's own client program,** as MMX's
+  modules for MySQL and MariaDB do. The connection inputs use MMX's names.
+  MMWatchdog needs no library for MySQL or MariaDB, and a node that has
+  the server has the program.
+- **Without a login, the check asks as the server's own administrator
+  through the local socket.** The server takes root without a password, so
+  the most common check, of the server on the node itself, needs no
+  account, no password, and no setup. The check sends only statements that
+  read.
+- **With a login, the client program runs as the unprivileged account
+  `mmwatchdog`.** The check needs no rights on the node.
+- **A check with `database_server_host` must state `connection_security`.** The client programs each decide in another
+  way when nothing tells them, and MySQL and MariaDB make a certificate for
+  themselves that no certificate authority signed. The design gives the different
+  client defaults and self-signed certificates
+  as reasons for every check of a common service that encrypts, in
+  [protocols and common server software](../../docs/changing-mmwatchdog/design/checks.md#protocols-and-common-server-software).
+- **`unencrypted` is allowed with a password.** A login to a server on the
+  node through `127.0.0.1` stays on the node. Any host is accepted,
+  including across a private tunnel; the setting makes the choice visible.
+- **MMWatchdog names a file of certificate authorities when certificate checking
+is enabled.**
+  MySQL's program verifies nothing without a certificate-authority file, and
+  MariaDB's would accept a certificate that the server proves with the
+  password of the login.
+- **MMWatchdog checks itself whether `mmwatchdog` can read `database_server_certificate_authority_file`.**
+  What the client programs say then does not help: MySQL's names a function
+  of its library.
+- **The client reads no option files.** `--no-defaults` skips ordinary
+  option files, and `MYSQL_TEST_LOGIN_FILE=/dev/null` prevents MySQL from
+  reading `.mylogin.cnf`. The `--no-defaults` argument and
+  `MYSQL_TEST_LOGIN_FILE=/dev/null` setting prevent unrelated client
+  settings from sending the check to another server. MariaDB ignores the
+  variable.
+- **A server that is no replica is 0 seconds behind,** so that one check
+  with a lag limit can monitor a source and every replica following the
+  source.
+- **A server without a number has no reading, never 0.** A 0 would say
+  the replica has applied every change from the source. Without a lag
+  number, MMWatchdog does not know whether replication has caught up.
+- **The check measures InnoDB's history list length.** In the beta
+  validation with real-world Monit work, a company's production setup read
+  InnoDB's counter with a shell script and alerted at one million, 1.25
+  million, and 1.5 million.
+- **MariaDB's status variable comes first, and MySQL's counter is the
+  other source.** MariaDB gives `innodb_history_list_length` to every
+  account, so a login on MariaDB needs no privilege that shows the
+  statements of other sessions.
+  MySQL has no such variable.
+- **The question goes to the client program on standard input.** Only with
+  standard input does `--force` let the server answer the statements after
+  a statement that the server refuses. So an account without `PROCESS` can
+  still read replica status. An account without `REPLICATION CLIENT` can still read
+  `innodb_history_list_length`.
+- **The message keeps the end of a long line of the client program.** The
+  reason is at the end of the line, behind the name and the address of the
+  server.

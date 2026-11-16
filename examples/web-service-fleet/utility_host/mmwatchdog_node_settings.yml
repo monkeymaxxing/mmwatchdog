@@ -1,0 +1,7 @@
+# /etc/mmwatchdog/mmwatchdog_node_settings.yml on the utility host.
+keep_undelivered_alerts_for: 24h
+undelivered_alerts_content_size_limit: 8MiB
+alert_severity_when_this_node_goes_silent: sos
+alert_severity_when_this_node_has_rebooted: warn
+keep_measurement_history_for: 1d
+measurement_history_size_limit: 64MiB

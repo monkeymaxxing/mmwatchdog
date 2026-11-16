@@ -1,0 +1,50 @@
+summary: Delivers each alert to a Pushover user or delivery group, and repeats each sos alert until somebody acknowledges it.
+used_as: alert_destination
+service_keeps_incidents: true
+inputs:
+  application_token_file:
+    type: string
+    required: true
+    description: >-
+      The absolute path of a file that holds the API token of the Pushover
+      application that sends the alerts, 30 letters and digits, and nothing
+      else. The token is a secret. MMWatchdog reads the file for every delivery and
+      gives the module its content.
+  user_or_group_key_file:
+    type: string
+    required: true
+    description: >-
+      The absolute path of a file that holds the key of the Pushover user or
+      delivery group that gets the alerts, 30 letters and digits, and nothing
+      else. The key is a secret: with it and an application of their own,
+      anybody can send messages to the devices of that user. MMWatchdog reads the
+      file for every delivery and gives the module its content.
+  repeat_sos_alerts_every:
+    type: duration
+    required: true
+    description: >-
+      How often Pushover repeats an sos alert on the devices until somebody
+      acknowledges it, such as 5m. At least 30s.
+  stop_repeating_sos_alerts_after:
+    type: duration
+    required: true
+    description: >-
+      How long Pushover repeats an sos alert that nobody acknowledges, such
+      as 1h. At most 3h, and at least as long as repeat_sos_alerts_every.
+  api_server_url:
+    type: string
+    required: false
+    description: >-
+      The address of a server that answers as Pushover's API server does,
+      such as a stand-in in a test. Without it the module uses Pushover's
+      own server, https://api.pushover.net.
+examples:
+  - description: Send every warn and sos alert to the on-call group, and repeat each sos alert every five minutes for an hour, until somebody acknowledges it.
+    config: |
+      pushover:
+        application_token_file: /etc/mmwatchdog/secrets/pushover-application-token
+        user_or_group_key_file: /etc/mmwatchdog/secrets/pushover-on-call-group-key
+        repeat_sos_alerts_every: 5m
+        stop_repeating_sos_alerts_after: 1h
+      remind_every: never
+      alert_severities: [warn, sos]

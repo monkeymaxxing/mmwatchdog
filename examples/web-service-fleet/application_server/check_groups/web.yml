@@ -1,0 +1,85 @@
+# /etc/mmwatchdog/check_groups/web.yml on the application server: the web server
+# and the web application behind it. The timings are seconds, so that the
+# example's test is quick; README.md lists the timings for production.
+check_groups:
+  web_server:
+    check_every: 1s                     # run each check every second
+    time_limit_per_run: 500ms           # one run of a check may take half a second
+    alert_after_failing_for: 2s         # send the alert after 2 seconds of failing
+    recovered_after_healthy_for: 2s     # the failure is over after 2 healthy seconds
+    checks:
+      web_server_is_running:
+        systemd_unit_state:
+          systemd_unit: nginx.service
+          fail_when: the_unit_is_not_active
+        alert_severity: sos
+      # The default site of the web server answers every request for another
+      # host name with 404, as a load balancer's catch-all site does. Another
+      # answer, such as the distribution's welcome page, is a fault.
+      default_site_answers_not_found:
+        http:
+          url: http://127.0.0.1/
+          expected_http_status_codes: [404]
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail: [web_server/web_server_is_running]
+    restart_systemd_unit:
+      systemd_unit: nginx.service
+      triggered_by_checks: [web_server_is_running]
+      restart_after_failing_for: 3s     # after the alert, which goes out at 2 seconds
+      max_attempts: 3
+      min_time_between_attempts: 2s
+      reset_attempts_after_healthy_for: 5s
+
+  web_application:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      web_application_is_running:
+        systemd_unit_state:
+          systemd_unit: web-application.service
+          fail_when: the_unit_is_not_active
+        alert_severity: sos
+      # Through nginx, with the Host header of the site.
+      web_application_answers_health_request:
+        http:
+          url: http://127.0.0.1/health
+          headers:
+            Host: app.example.com
+          response_body_contains: ready
+        alert_severity: sos
+        # While the web server or the application's unit is down, their own
+        # alert is the one alert.
+        no_alerts_or_recovery_actions_while_these_checks_fail:
+          [web_server/web_server_is_running, web_application/web_application_is_running]
+      # The status page needs the login that the file holds, and it must say
+      # that no worker is stalled.
+      status_page_reports_no_stalled_workers:
+        http:
+          url: http://127.0.0.1/internal/status
+          headers:
+            Host: app.example.com
+          basic_auth_file: /etc/mmwatchdog/secrets/web-application-status-page-login
+          response_body_matches_regex: '(?m)^stalled_workers: 0$'
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail: [web_application/web_application_answers_health_request]
+    # Two actions on one failure of the health request, besides its alert:
+    # first the fix of a known cause, a maintenance flag that a deploy left
+    # behind; then, if the request still fails, the restart.
+    recovery_command:
+      triggered_by_checks: [web_application_answers_health_request]
+      script: rm -f /var/lib/web-application/maintenance-mode
+      run_as_user_account: webapp
+      run_after_failing_for: 3s         # after the alert, which goes out at 2 seconds
+      time_limit_per_attempt: 5s
+      max_attempts: 2
+      min_time_between_attempts: 2s
+      reset_attempts_after_healthy_for: 5s
+    restart_systemd_unit:
+      systemd_unit: web-application.service
+      triggered_by_checks: [web_application_is_running, web_application_answers_health_request]
+      restart_after_failing_for: 3s
+      max_attempts: 3
+      min_time_between_attempts: 2s
+      reset_attempts_after_healthy_for: 5s

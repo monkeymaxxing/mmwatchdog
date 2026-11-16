@@ -1,0 +1,660 @@
+# `mmhotline`
+
+`mmhotline` sends MMWatchdog's alerts to MMHotline, the on-call program that a
+team runs on its own server. MMHotline knows who is on call, notifies that
+person through the contact methods they chose, and escalates an `sos` alert
+that nobody acknowledges. MMWatchdog works fully without MMHotline.
+The destination sends each alert to one MMHotline **alert source**:
+MMHotline's record of one sender, with its own **signing secret**.
+Every request is signed with the signing secret, and every answer that MMWatchdog
+accepts is signed back.
+
+Configure `mmhotline` destinations only on the MMWatchdog fleet hub or a
+standalone node.
+One MMHotline serves one team, so a hub whose checks belong to two teams has two
+`mmhotline` destinations, one for each team's MMHotline. The node that has
+the destinations also sends each of them a **check-in** every 30
+seconds: a short signed message that says that MMWatchdog still runs, so
+each MMHotline notices when that node goes silent. In a fleet, the
+hub is the fleet's one sender to MMHotline, and joined nodes reach MMHotline
+only when they deliver an alert without the hub
+([MMHotline in a fleet](../../docs/changing-mmwatchdog/design/fleet.md#mmhotline-in-a-fleet)).
+
+Choose `mmhotline` when an alert must reach the person on call. For a
+mailbox or a chat alone, [`email`](destination_email.md) or an official extra
+module such as [`slack`](../../official_extra_modules/slack/README.md) needs no
+MMHotline. A destination states the settings that every destination takes, as
+[the alert destinations file](../../docs/reference/configuration-files.md#the-alert-destinations-file) describes,
+except `remind_every` and `send_only_the_alert_title`, which it does not take.
+
+## Set up
+
+A sender needs three values: MMHotline's alert intake address, the alert
+source ID, and the signing secret. The team chooses the ID and the secret
+and lists the ID and secret in MMHotline's settings file.
+
+1. **Make the signing secret** on the MMWatchdog fleet hub or the
+   standalone node, in a file that only root reads. A signing secret is 64
+   hexadecimal characters:
+
+   ```sh
+   sudo install -d -m 700 /etc/mmwatchdog/secrets
+   sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/mmwatchdog/secrets/mmhotline-signing-secret'
+   ```
+
+   The signing-secret file follows the
+   [credential permission rule](../../docs/reference/configuration-files.md#secret-files).
+   Put the signing-secret file's permission settings inside `mmhotline`,
+   beside `mmhotline_signing_secret_file`.
+2. **Add the alert source to MMHotline's settings file,** using the signing
+   secret generated in step 1. Choose an ID of 1 to 64 letters, digits, `_`
+   and `-`. Then apply MMHotline's settings file on the MMHotline server:
+
+   ```yaml
+   # MMHotline's settings file, on the MMHotline server
+   alert_sources:
+     - alert_source_id: mmwatchdog_fleet_hub
+       name: MMWatchdog fleet hub on util01
+       signing_secrets: ["THE 64 HEXADECIMAL CHARACTERS"]
+       warn_after_no_check_in_for_minutes: 2   # a Warning, which wakes nobody, when no check-in came for 2 minutes
+       sos_after_no_check_in_for_minutes: 5    # an SOS after 5 minutes
+   ```
+
+   ```sh
+   sudo mmhotline settings apply
+   sudo mmhotline alert-sources list --json   # alert_intake_address, such as http://10.20.0.1:8484
+   ```
+
+   A deploy tool such as MMX writes the secret from the tool's vault into
+   `/etc/mmwatchdog/secrets/mmhotline-signing-secret` and MMHotline's
+   settings file. Deployment keeps the secret out of terminals and coding
+   agent conversations. For manual setup, copy the signing secret into
+   MMHotline's settings file with `sudoedit`.
+3. **Add the destination** to `alert_destinations.yml`, check it, and reload:
+
+   ```yaml
+   # /etc/mmwatchdog/alert_destinations.yml (on the MMWatchdog fleet hub or a standalone node)
+   destinations:
+     mmhotline_on_call:
+       mmhotline:
+         mmhotline_url: http://10.20.0.1:8484            # MMHotline's alert intake address, which every node of the fleet reaches
+         mmhotline_alert_source_id: mmwatchdog_fleet_hub # alert_source_id in MMHotline's settings file
+         mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-signing-secret
+       alert_severities: [info, warn, sos]
+   ```
+
+   ```sh
+   sudo mmwatchdog validate
+   sudo mmwatchdog reload
+   ```
+
+   The hub sends the first check-in at once.
+   MMHotline's page of the alert source then stops saying that MMHotline
+   waits for the first check-in.
+4. **Send a test,** as [test the destination](#test-the-destination) says.
+
+The destination's values:
+
+- `mmhotline_url` is MMHotline's alert intake address, without a route:
+  `http://` or `https://`, the host, and an optional port and path, such as
+  `http://10.20.0.1:8484` or `http://127.0.0.1:8484`. MMWatchdog adds
+  `/alert-intake/{alert source ID}` for alerts and
+  `/check-in/{alert source ID}` for check-ins. Copy
+  `alert_intake_address` from `mmhotline alert-sources list --json`, never
+  `intake_url`.
+  MMHotline takes alerts only at that address: its web address asks for a
+  person's sign-in, which a program cannot give.
+- **On a standalone node** on the same server as MMHotline, the loopback
+  address `http://127.0.0.1:8484` works.
+- **On an MMWatchdog fleet hub,** write an address that every node of the
+  fleet reaches. A joined node sends to `mmhotline_url` when the hub does
+  not accept an alert in time, and on a joined node `127.0.0.1` is that node
+  itself. `mmwatchdog validate` warns about a loopback address on a hub.
+  An address on the servers' private network, such as
+  `http://10.20.0.1:8484`, is an address that every node reaches.
+- `mmhotline_alert_source_id` is the alert source's `alert_source_id` in
+  MMHotline's settings file: 1 to 64 letters, digits, `_` and `-`, such as
+  `mmwatchdog_fleet_hub`. The alert source ID is not secret.
+  Quote an ID made only of digits, so the ID stays text.
+- The destination block takes every severity. Narrow `alert_severities`
+  to send MMHotline fewer severities.
+
+**With MMX,** put the block in the MMX configuration and the secret in the
+MMX vault (`mmx secrets edit`), and let the deploy write the secret file.
+The next deploy replaces `alert_destinations.yml`, and the vault gives a
+rebuilt node the secret back.
+
+**Several teams.** Each team's MMHotline gets a destination of its own, with
+its own address, alert source, and secret file. Each check's alerts go to the
+destinations that its severity and `send_alerts_only_to_destinations` choose
+([which destination gets an alert](../../docs/how-to/send-alerts-somewhere.md#send-a-checks-alerts-to-chosen-destinations)).
+
+**Rotate the signing secret.** MMHotline accepts two secrets of an alert
+source while its sender moves to the new one. Make the new secret, list it
+beside the old one in MMHotline's settings file, give it to the hub, and
+then remove the old one:
+
+```sh
+# On the MMWatchdog fleet hub or the standalone node:
+sudo sh -c 'umask 077; openssl rand -hex 32 > /etc/mmwatchdog/secrets/mmhotline-signing-secret.new'
+# On the MMHotline server, with signing_secrets: ["OLD", "NEW"] in the settings file:
+sudo mmhotline settings apply
+# On the MMWatchdog fleet hub or the standalone node:
+sudo mv /etc/mmwatchdog/secrets/mmhotline-signing-secret.new /etc/mmwatchdog/secrets/mmhotline-signing-secret
+sudo mmwatchdog reload
+# On the MMHotline server, with signing_secrets: ["NEW"] in the settings file:
+sudo mmhotline settings apply
+```
+
+The hub reads the secret file again for each alert and each check-in.
+The reload passes the new secret to the hub's joined nodes and sends each
+`mmhotline` destination a check-in at once, so MMHotline's page of the
+alert source shows that the new secret works. MMHotline accepts the old and
+new signing secrets until the old secret leaves MMHotline's settings file,
+so no alert is refused in between.
+Replacing the signing secret leaves existing alerts in the delivery queue.
+The queued alerts still belong to the configured alert source, and
+MMWatchdog signs the queued alerts with the new secret when sending.
+
+**Disconnect.** Remove the alert source from MMHotline's settings file and
+apply it on the MMHotline server. MMHotline then refuses the source's signed
+requests. Then remove the `mmhotline` block from `alert_destinations.yml`
+and reload.
+
+## What it sends
+
+**Alerts.** Each alert event becomes MMHotline's generic signed alert, a
+format that is not particular to MMWatchdog, posted to
+`{mmhotline_url}/alert-intake/{alert source ID}`:
+
+| MMHotline field | Filled from |
+| --- | --- |
+| `sender_alert_id` | The event ID, so a retried delivery is one alert |
+| `sender_incident_key` | The alert's fixed-length `fleet_incident_key`; [incident keys](../../docs/how-it-works.md#one-incident-per-check-across-the-fleet) describes its scope |
+| `severity` | The alert's [severity](../../docs/how-to/send-alerts-somewhere.md#send-a-checks-alerts-to-chosen-destinations), mapped as the table below says |
+| `title` | The alert's [title](../../docs/reference/alert-format.md), such as `web-3: myapp/http failed`, without the label of its severity, because MMHotline puts its own label in front |
+| `message` | The alert's body, followed by who sent it: `Sent by the standalone MMWatchdog node web-3.`, `Sent by the MMWatchdog fleet hub on util01.`, or, from a joined node that delivers without the hub, `Sent directly by the MMWatchdog node app-2 because the MMWatchdog fleet hub did not accept the alert in time.` |
+| `happened_at` | When the alert happened, from the node's clock. MMHotline only displays the occurrence time |
+
+MMHotline accepts a title of up to 256 characters, a message of up to 16 KiB,
+a key of up to 256 bytes, and a request of up to 64 KiB. An MMWatchdog title
+has at most 120 characters, so it always fits. The incident key is always 32
+hexadecimal digits, so it fits without clipping. When MMWatchdog queues the
+alert, it shortens the message to 16 KiB, and then further until the whole
+request fits in 64 KiB, because JSON escaping can make a message several
+times longer.
+
+| MMWatchdog event | MMHotline severity | Incident key |
+| --- | --- | --- |
+| `failed`, `cannot_check` | The incident's `alert_severity`. On the MMWatchdog fleet hub, the highest severity among open MMWatchdog incidents sharing the key | The alert's 32-digit `fleet_incident_key`, shared within one fleet and scoped by node name on a standalone node |
+| `failure_alert_severity_raised`, `cannot_check_alert_severity_raised` | The incident's `alert_severity`, or on the fleet hub, the highest severity among open MMWatchdog incidents sharing the key. A new alert whose title ends `, now SOS` | The incident key used for the original failure or cannot-check alert |
+| `recovered`, `can_check_again`, `closed_without_recovery` | `resolved-` and the highest severity sent for the key since its last resolution, such as `resolved-sos` | The incident key used for the original failure or cannot-check alert |
+| `maintenance_on`, `maintenance_off` | `info` | None |
+| `rebooted` | The node's `alert_severity_when_this_node_has_rebooted` | None |
+| `notice` | The severity stated by the `mmwatchdog send-notice` command that created the notice | None |
+| `reminder` | Never sent | |
+
+- **Only `sos` opens an MMHotline incident,** which wakes the person on
+  call. `warn` and `info` alerts reach people as messages, without an
+  incident.
+- **A raise to `sos` sends a new alert with the original failure alert's
+  incident key.** The `sos` alert opens an MMHotline incident, and the
+  `resolved-sos` resolution closes the MMHotline incident. The resolution
+  uses the highest severity sent because an earlier `sos` alert opened an
+  MMHotline incident, even if a later alert had lower severity.
+  With `alert_severities: [sos]` on the destination, MMHotline hears
+  of a `warn` failure only once it is raised, and then of its resolution.
+- **A resolution is an alert of its own,** with its own ID, a title such as
+  `web-3: myapp/http is ok again`, `web-3: MMWatchdog can check myapp/http again`,
+  or `web-3: myapp/http incident closed, maybe not fixed`, and a
+  message that ends with the latest observation, such as `Latest: expected
+  HTTP 200, received 503`. On a standalone node, the recovery of its incident
+  is the resolution. On the MMWatchdog fleet hub, the matching alerts of all
+  nodes share one key, and one resolution follows once the last node's
+  incident is over, as
+  [MMHotline in a fleet](../../docs/changing-mmwatchdog/design/fleet.md#mmhotline-in-a-fleet)
+  describes.
+- **Each failed unit of a `every_systemd_unit` check has a key of its
+  own.** Two failed units are two MMHotline incidents, and the recovery of
+  one resolves only its own.
+- **A notice has no recovery.** An `sos` [notice](../../docs/reference/commands.md#mmwatchdog-send-notice)
+  opens an MMHotline incident that a person closes in MMHotline.
+  A `rebooted` notice from a node with
+  `alert_severity_when_this_node_has_rebooted: sos` also has no recovery.
+  A person closes the reboot notice's MMHotline incident in MMHotline.
+- **Reminders are never sent,** because MMHotline repeats and escalates on
+  its own.
+
+**Check-ins.** Beside alerts, the MMWatchdog fleet hub or the
+standalone node sends each `mmhotline` destination a check-in every
+30 seconds, with no setting. The fleet hub or standalone node also sends a
+check-in at once when the node monitoring process starts and after each
+reload. The immediate check-in shows whether a new destination or signing
+secret works. MMHotline starts to expect check-ins from an alert source when
+the first one arrives, and alerts when they stop, for example because the
+whole fleet is down and nothing inside it can alert. The message goes to
+`{mmhotline_url}/check-in/{alert source ID}`. MMWatchdog signs check-ins
+with the alert request's signing method and the destination's signing
+secret.
+
+```json
+{"sent_at": "2026-09-30T14:02:30Z",
+ "sent_by_node_name": "util01",
+ "nodes_in_whole_node_maintenance": [{"node_name": "web-1",
+   "maintenance_until": "2026-09-30T15:00:00Z",
+   "reason": "moving the database", "started_by": "matt"}]}
+```
+
+- `sent_by_node_name` is the sending node's own name, so MMHotline can
+  identify the sending node's whole-node maintenance window in the list.
+- The list names each node in a whole-node maintenance window, with the end
+  of the window, its reason, and the user who started it: the sender's own
+  window first, and on the MMWatchdog fleet hub then each node's, from its
+  latest report, by name. The list is left out when it is empty.
+  [MMHotline in a fleet](../../docs/changing-mmwatchdog/design/fleet.md#mmhotline-in-a-fleet)
+  describes how MMHotline uses the list of nodes in whole-node maintenance.
+- MMHotline accepts at most 1,000 nodes and 64 KiB, and answers a larger body
+  with an unsigned `413`. So MMWatchdog keeps the message under 60 KiB and
+  1,000 nodes, encoded without HTML escaping: it leaves out every window's
+  reason and user first, then the last windows, but never the sender's own,
+  because MMHotline treats only the sender's own window as planned downtime
+  for the check-ins. `mmwatchdog status` then says what MMWatchdog
+  left out of the check-in.
+- Each destination gets its own check-in, within its
+  `time_limit_per_delivery_attempt`, so a slow MMHotline does not hold up
+  another team's.
+- A check-in does not use the queue of alerts. When a check-in attempt
+  fails, MMWatchdog sends the next check-in attempt 30 seconds later.
+  MMHotline accepts at most 12 check-ins
+  a minute from one alert source, so a burst of reloads can get only one check-in
+  refused.
+
+Joined nodes never send a check-in.
+
+## When a delivery fails
+
+The [queue of alerts](../../docs/how-it-works.md#the-outbox-and-delivery),
+its order, and its limits apply as for every destination. One delivery
+attempt is one signed request to `{mmhotline_url}/alert-intake/{alert
+source ID}`, with a fresh timestamp, within the destination's
+`time_limit_per_delivery_attempt` (`5s` unless the destination states
+another time). Only an answer with a valid receipt signature counts:
+
+- **A signed `200` with a receipt delivers the alert.**
+- **A signed `400` permanently refuses the alert.** MMWatchdog takes it off
+  this destination's queue, with a delivery gap in `mmwatchdog status` and a
+  local `delivery_gap` event that names the alert and MMHotline's reason,
+  and goes on with the next alert, so one bad alert never holds up the
+  `sos` alerts behind it. At once, MMWatchdog sends the refused alert to
+  every other destination of the node that is not an `mmhotline`
+  destination, whatever their `alert_severities` say, with the alert's own
+  severity, title, and text, and a first line that names this destination
+  and MMHotline's reason: a refused SOS still calls a person out. A refused
+  resolution comes as `info`. Another team's MMHotline gets nothing. A node
+  without such a destination gets a
+  [validation warning](../../docs/reference/commands.md#validation-warnings), because
+  there a refused alert reaches nobody.
+- **A signed `429` waits for its `Retry-After`,** in seconds or as a date, a
+  minute when it has none, and at least a second and at most an hour. After
+  a restart of MMWatchdog, the alert waits no longer than after its failed
+  attempts, and MMHotline answers again if it still needs the time
+  ([the system clock](../../docs/changing-mmwatchdog/design/operation.md#the-system-clock)).
+- **Every other answer, and no answer at all, is a failed attempt:** an
+  unsigned answer of any status, such as a `401`, a `413`, a `503`, or an
+  unsigned `200`; a signed answer of another status; and a signed `200`
+  without a receipt in its body. The usual retries apply: after one second,
+  then with the delay doubling up to 256 seconds.
+
+The lines of `mmwatchdog status` that start with `MMHotline` say what is
+wrong ([errors](#errors-and-what-they-mean)).
+
+## Examples
+
+### Every alert to MMHotline, beside a mailbox
+
+```yaml
+# /etc/mmwatchdog/alert_destinations.yml (on the MMWatchdog fleet hub or a standalone node)
+destinations:
+  mmhotline_on_call:
+    mmhotline:
+      mmhotline_url: http://127.0.0.1:8484         # MMHotline on the same server as this standalone node
+      mmhotline_alert_source_id: mmwatchdog_fleet_hub
+      mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-signing-secret
+    alert_severities: [info, warn, sos]
+  on_call_mailbox:
+    remind_every: never
+    email:
+      smtp_server: smtp.example.com:587
+      smtp_connection_security: starttls
+      from: mmwatchdog@example.com
+      to: [oncall@example.com]
+      login_user: mmwatchdog@example.com
+      login_password_file: /etc/mmwatchdog/secrets/smtp
+    alert_severities: [warn, sos]
+```
+
+The check `http` in the check group `myapp`, with `alert_severity: sos`,
+fails on the standalone node `web-3`. MMWatchdog on `web-3`:
+
+1. queues an MMHotline alert with the scoped key for `myapp/http`'s failure,
+   the severity `sos`, and the title `web-3: myapp/http failed`, and an email
+   for `on_call_mailbox`;
+2. reads the signing secret, signs the request, and posts it to
+   `http://127.0.0.1:8484/alert-intake/mmwatchdog_fleet_hub`;
+   MMHotline answers with a signed receipt, opens an incident, and notifies
+   the person on call;
+3. when the check recovers, sends the `resolved-sos` alert
+   `web-3: myapp/http is ok again` with the original failure alert's incident
+   key, which closes the MMHotline incident.
+
+Every 30 seconds, `web-3` also sends a check-in. When `web-3` stops sending
+check-ins, MMHotline alerts.
+
+### MMHotline only for the raise to `sos`
+
+```yaml
+# /etc/mmwatchdog/alert_destinations.yml (on the MMWatchdog fleet hub or a standalone node)
+destinations:
+  mmhotline_on_call:
+    mmhotline:
+      mmhotline_url: http://10.20.0.1:8484
+      mmhotline_alert_source_id: mmwatchdog_fleet_hub
+      mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-signing-secret
+    alert_severities: [sos]               # MMHotline hears only of sos alerts
+  team_chat:
+    remind_every: never
+    slack:                                # the official extra module for Slack
+      webhook_url_file: /etc/mmwatchdog/secrets/slack-webhook-team
+    alert_severities: [info, warn, sos]
+```
+
+A check with `alert_severity: warn` and `raise_to_sos_after_failing_for: 30m`
+fails. The team chat hears of the failure at once. After 30 minutes,
+MMWatchdog raises the incident to `sos`: MMHotline gets the raise, titled
+`web-3: myapp/http still failing, now SOS`, as its first alert for the key,
+and opens an incident. When the check recovers, MMHotline gets
+`resolved-sos`, because the incident's raise went to it.
+
+### Two teams, each with its own MMHotline
+
+```yaml
+# /etc/mmwatchdog/alert_destinations.yml (on the MMWatchdog fleet hub)
+destinations:
+  web_team_on_call:
+    mmhotline:
+      mmhotline_url: http://10.20.0.1:8484
+      mmhotline_alert_source_id: mmwatchdog_fleet_hub
+      mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/web-team-mmhotline-signing-secret
+    alert_severities: [warn, sos]
+  database_team_on_call:
+    mmhotline:
+      mmhotline_url: http://10.20.0.2:8484
+      mmhotline_alert_source_id: mmwatchdog_fleet_hub     # the alert source in the database team's own MMHotline
+      mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/database-team-mmhotline-signing-secret
+    alert_severities: []                  # only the checks that name this destination reach it
+```
+
+```yaml
+# /etc/mmwatchdog/check_groups/postgresql.yml (on each database node)
+check_groups:
+  postgresql:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 3m
+    recovered_after_healthy_for: 1m
+    checks:
+      postgresql_answers:
+        postgresql: {}                                          # the server on this node
+        alert_severity: sos
+        send_alerts_only_to_destinations: [database_team_on_call]
+```
+
+Every `warn` and `sos` alert of the fleet reaches the web team's MMHotline,
+except the alerts of `postgresql/postgresql_answers`, which reach only the
+database team's MMHotline. The hub sends each MMHotline its own check-ins, so each team learns when the fleet hub goes silent.
+
+## Test the destination
+
+Send a [notice](../../docs/reference/commands.md#mmwatchdog-send-notice) at `info`. The notice reaches
+people as a message and opens no MMHotline incident:
+
+```text
+$ sudo mmwatchdog send-notice --alert-severity info --title "Test of MMHotline. Nothing is wrong." --destination mmhotline_on_call
+Notice sent to the destination mmhotline_on_call:
+  mmhotline_on_call   delivered
+```
+
+`delivered` means that MMHotline answered with a signed receipt.
+`sudo mmwatchdog status` then shows when MMHotline last gave a signed answer,
+in its `MMHotline` line. A notice at `sos` opens an MMHotline incident that a
+person closes in MMHotline, because a notice has no recovery.
+
+## How it works
+
+### Signatures and receipts
+
+- **Every request carries `Mmhotline-Signature: timestamp_unix_seconds=...,hmac_sha256_hex=...`,**
+  an HMAC-SHA256 with the signing secret over the timestamp, a dot, and the
+  body. The secret itself is never sent. MMWatchdog reads the secret file
+  for every delivery and every check-in, and `sudo mmwatchdog validate`
+  checks that it holds 64 lowercase hex characters.
+- **MMHotline signs every `2xx` answer.** MMHotline signs a `400` or `429`
+  answer only after verifying the request's signature. The answer carries a
+  `Mmhotline-Receipt-Signature: timestamp_unix_seconds=...,hmac_sha256_hex=...`
+  header: an HMAC-SHA256 with the signing secret MMWatchdog used for the
+  corresponding request, over
+  `"mmhotline-receipt." + route + "." + status + "." + request_hmac + "." +
+  timestamp + "." + body`. The route is `alert-intake` or `check-in`,
+  the status is the HTTP status code in decimal, and `request_hmac` is the
+  `hmac_sha256_hex` of the request's own signature. The body holds
+  `mmhotline_alert_id`, or `check_in_received_at` for a check-in.
+- **MMWatchdog accepts a receipt only when the signature matches the request
+  MMWatchdog sent and the response MMWatchdog received.** Verification uses
+  the request's route and HMAC, and the response's HTTP status code.
+  MMWatchdog does not check the receipt's timestamp. The receipt is bound
+  to the HMAC of MMWatchdog's request, which carries a fresh timestamp,
+  so an old receipt can never match.
+- **HTTPS** is verified against the node's system trust store, with TLS 1.2
+  or later. MMWatchdog follows no redirect.
+
+### The clock
+
+MMHotline compares the request signature's timestamp with the MMHotline
+server's current time. A difference greater than five minutes causes an
+unsigned `401`. For each destination, MMWatchdog records the
+difference between its clock and the `Date` header of MMHotline's latest
+signed answer; an unsigned answer could come from anyone, so it never counts
+there. `mmwatchdog status` shows that difference when it is over one minute.
+The message for a `401` instead uses the `Date` header of any answer,
+because a node whose clock is off gets only unsigned answers. The `401`
+message describes the difference between the sending node's clock and
+MMHotline's clock as possible, rather than confirmed.
+
+### In a fleet
+
+The MMWatchdog fleet hub copies each signing secret into each joined node's
+`/var/lib/mmwatchdog/fleet-settings-from-the-hub.json`
+(`file_contents_by_destination`). A joined node sends an alert that the hub
+did not accept within `send_alert_without_hub_after_waiting_for` straight to
+MMHotline, at the same `mmhotline_url`, with the same key, so the alert
+joins the fleet's MMHotline incident. It never sends a resolution or an
+check-in. Its reports carry each incident that it sent without the hub
+until the hub says that it holds it. So the hub, once it is back, knows the
+incident and sends its resolution, even when the node recovered while the
+hub was down. After the hub starts, such an incident resolves nothing until
+every node has reported once, or three report intervals have passed,
+because another node may also have sent its failure without the hub and
+still fail.
+
+On the hub, the resolution waits for the last node, with one exception: a
+key that went out at `sos` gets `resolved-sos` as soon as no node is `sos`
+any more, such as `No node that stopped reporting to the MMWatchdog fleet
+hub is SOS any more; still Warning on app-7`. The design section
+[MMHotline in a fleet](../../docs/changing-mmwatchdog/design/fleet.md#mmhotline-in-a-fleet)
+owns these rules.
+
+Every joined node holds a copy of each signing secret. Someone who gains root
+on one joined node can therefore send alerts as the fleet's alert source.
+[Rotate the signing secret](#set-up) when a joined node is lost or
+compromised.
+
+## Errors and what they mean
+
+**Validation errors,** from `mmwatchdog validate`, `mmwatchdog reload`, and a
+deploy. MMWatchdog writes the file and the line of the setting in front of
+each validation error:
+
+| Error | What to do |
+| --- | --- |
+| `destinations.mmhotline_on_call.mmhotline.mmhotline_url: expected MMHotline's address: http:// or https://, a host, and an optional port and path, such as http://127.0.0.1:8484` | Write the address that MMHotline shows, without a query, a fragment, or a user name |
+| `destinations.mmhotline_on_call.mmhotline.mmhotline_url: write MMHotline's address without the route, such as http://10.20.0.1:8484; MMWatchdog adds /alert-intake/{alert source ID} itself` | The address ends in `/alert-intake/...` or `/check-in/...`; remove that part |
+| `destinations.mmhotline_on_call.mmhotline.mmhotline_alert_source_id: expected the alert_source_id of an alert source in MMHotline's settings file: 1 to 64 letters, digits, _ and -, such as monitoring` | Copy `alert_source_id` from MMHotline's settings file |
+| `destinations.mmhotline_on_call.mmhotline.mmhotline_signing_secret_file: must be absolute` | Write the whole path, starting with `/` |
+| `destinations.mmhotline_on_call.mmhotline.mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-signing-secret: expected an MMHotline signing secret of 64 hex characters` | From `mmwatchdog validate` or a delivery: the signing-secret file does not hold the secret. Write the secret that MMHotline's settings file lists for the alert source into `/etc/mmwatchdog/secrets/mmhotline-signing-secret`. Or make a new signing secret as [rotate the signing secret](#set-up) says |
+| `destinations.mmhotline_on_call.remind_every: an mmhotline destination takes no remind_every: MMHotline repeats and escalates on its own` | Remove `remind_every` |
+| `destinations.mmhotline_on_call.send_only_the_alert_title: an mmhotline destination takes no send_only_the_alert_title: MMHotline puts the title in its notifications on its own, and shows the body on the alert's page` | Remove the setting |
+
+**A validation warning,** on the MMWatchdog fleet hub only, with the file
+and the line of the setting in front:
+
+```text
+destinations.mmhotline_on_call.mmhotline.mmhotline_url: joined nodes send alerts to the mmhotline_url address when the hub does not accept an alert in time. On a joined node, 127.0.0.1 points to the joined node. Set mmhotline_url to an address that every node can reach
+```
+
+The address is a loopback address (`localhost`, `127.0.0.0/8`, or `::1`).
+The hub delivers the hub's own alerts to MMHotline at the loopback address,
+but a joined node's direct alerts would fail. Write an address of the
+MMHotline server that every node reaches.
+
+**What `mmwatchdog status` shows.** One line for each `mmhotline`
+destination names its address and when it last gave a signed answer.
+Problems follow in plain words, from the latest attempt for the oldest
+queued alert and from the latest check-in, then a warning about the
+clock and a note on a shortened check-in:
+
+```text
+MMHotline mmhotline_on_call: http://10.20.0.1:8484 last gave a signed answer at 14:02 UTC
+MMHotline mmhotline_on_call: MMHotline did not answer (dial tcp 10.20.0.1:8484: connect: connection refused). Trying again at 14:05 UTC.
+MMHotline mmhotline_on_call: This node's clock is 7 minutes behind MMHotline's. Fix time sync (for example systemd-timesyncd or chrony).
+```
+
+Before the first signed answer, the first line ends `has not given a signed
+answer yet`.
+
+| Message | What the message means |
+| --- | --- |
+| `MMHotline did not answer (...).` | No answer within `time_limit_per_delivery_attempt`, or the connection failed. Check that MMHotline runs and that this node reaches its address |
+| `MMHotline gave no signed answer (HTTP 502).` | An answer without a valid receipt signature, such as from a proxy in front of a stopped MMHotline, or from another program at the address. MMWatchdog tries again |
+| `MMHotline rejected the signature (HTTP 401). MMHotline's settings file may no longer list this signing secret or this alert source. Write the signing secret that it lists for the alert source into /etc/mmwatchdog/secrets/mmhotline-signing-secret and run sudo mmwatchdog reload.` | MMHotline refused the signature. When the answer's `Date` is more than five minutes off, the message adds `This node's clock may be 7 minutes behind MMHotline's; MMHotline refuses requests more than 5 minutes off.` |
+| `This node's clock is 7 minutes behind MMHotline's. Fix time sync (for example systemd-timesyncd or chrony).` | The clock is more than a minute off MMHotline's signed answers |
+| `MMHotline permanently refused this alert (HTTP 400): ...` | In the `delivery_gap` event of `mmwatchdog events`, after the destination's name and the alert's title and ID, and in the first line of the copy that the node's other destinations get: MMHotline permanently refused the alert, and MMWatchdog sent it to the other destinations that are not `mmhotline` destinations. MMHotline's reason says what it refused, and MMHotline's own log says why |
+| `destinations.NAME: when MMHotline permanently refuses an alert, MMWatchdog sends the refused alert to the node's destinations that do not use the mmhotline module. ...` | A validation warning: the node has only `mmhotline` destinations, so an alert that MMHotline refuses reaches nobody. Add another destination, such as Pushover or email |
+| `MMHotline asked MMWatchdog to wait 1m0s before sending again (HTTP 429).` | A signed `429`; MMWatchdog waits for the requested delay |
+| `The check-in at 14:02 UTC failed: MMHotline did not answer (...).` | The latest check-in failed; the next follows 30 seconds later |
+| `The check-in listed 812 of the 1300 nodes in whole-node maintenance, without reasons and users, to stay within MMHotline's limits of 1,000 nodes and 64 KiB.` | MMWatchdog shortened the check-in |
+
+`mmwatchdog status --json` has `mmhotline_destinations`, a list with an
+object for each `mmhotline` destination, ordered by name. With no
+`mmhotline` destinations, the list is `[]`.
+
+Each destination object contains `destination` (the destination's
+name), `mmhotline_url`, `mmhotline_alert_source_id`, and
+`delivery_problems` (a list of the problems described above).
+The destination object also contains `node_clock_ahead_of_mmhotline_seconds`,
+calculated from the `Date` header of MMHotline's latest signed answer.
+The clock difference is negative when the sending node's clock is behind,
+and `null` before any signed answer.
+
+`last_signed_answer_at` is absent before any signed answer.
+`clock_warning` is absent when no clock warning applies.
+`check_in_shortened` is absent when MMWatchdog has no shortened check-in to
+report.
+
+## Tested on
+
+- **Go tests,** on macOS and natively on
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution),
+  use `mmhotline_test.go` and `mmhotline_daemon_test.go`.
+  The fake MMHotline verifies `Mmhotline-Signature`, reads every body by MMHotline's own field
+  names, refuses unknown fields, applies MMHotline's limits, and signs
+  receipts.
+
+  The tests verify receipts that decide delivery, signed `400` and `429`
+  answers, unsigned answers counted as failed attempts, and clock
+  differences calculated only from signed answers. The tests also verify
+  alert and check-in limits, a standalone node's alerts and resolutions,
+  and two destinations with separate check-ins and status.
+  Further checks cover secret rotation preserving the queue, and the
+  fleet's incident keys and resolutions.
+- **VM suites,** on every target distribution: the fleet suite runs a fake
+  MMHotline on the hub guest, reached over HTTP at the hub guest's address.
+  The hub's first check-in arrives at once after the reload that adds the
+  destination. A joined node's notice reaches MMHotline through the hub.
+  A joined node sends straight to MMHotline while the hub is down.
+  The suite also verifies a joined node's silence incident: MMWatchdog's
+  incident for a node that stopped reporting to the hub.
+  The silence incident and the raise to `sos` are resolved once.
+- **A real MMHotline,** before each release: `TestRealServiceMMHotline`
+  sends an `info` alert, the same alert again, an `sos` alert and check-ins every 30 seconds for two minutes, then its `resolved-sos`, an
+  alert without a title, and a request with a wrong signing secret to a
+  test alert source. It checks the
+  receipt, `already_received`, the incident that the SOS opens and its
+  `resolved-sos` joins, the signed `400`, and the `401` message
+  ([real services before a release](../../docs/changing-mmwatchdog/testing.md#real-services-before-a-release)).
+- **Not verified:** a real MMWatchdog fleet hub that sends to a real
+  MMHotline ([validation record](../../docs/changing-mmwatchdog/validation.md)).
+
+## Why it works this way
+
+- **Permission refusals belong to validation and reload.** Startup warns
+  once per file and continues. Deliveries and check-ins keep reading
+  secrets after a mode change, because refusing then would drop alerts.
+  The [credential permission rule](../../docs/reference/configuration-files.md#secret-files)
+  owns the settings and the full behavior.
+- **The incident key has a fixed length and includes the fleet identity or
+  standalone node name.** Long names cannot collide through clipping, and
+  independent nodes cannot merge or resolve each other's incidents. The
+  [fleet design](../../docs/changing-mmwatchdog/design/fleet.md#one-incident-per-check-across-the-fleet)
+  defines the key.
+- **The destination sends MMHotline's generic signed alert, not MMWatchdog's
+  event.** MMHotline needs no format of MMWatchdog's own, and the fleet's
+  keys and resolutions stay in MMWatchdog, which knows the fleet.
+- **`mmhotline` is a core module.** MMHotline is MMWatchdog's companion
+  program, with a signed protocol of its own.
+- **Every request is signed, and only a signed answer counts.** Another
+  program at MMHotline's address, such as one that took its port while
+  MMHotline was stopped, can answer `200`, but it cannot sign an answer to
+  this request. So the unrelated program cannot make MMWatchdog believe
+  that a lost alert was delivered or refused.
+- **`http://` is allowed.** MMHotline usually runs on the team's own server,
+  which the fleet reaches over loopback or over its internal network. The
+  signatures already prove that an alert comes from MMWatchdog and that
+  MMHotline took it. What `https://` adds is that nobody on the way reads the
+  alert's text, and the person who writes the address chooses that.
+- **The destination takes MMHotline's address, not the intake URL.** Alerts
+  and check-ins use the alert source selected by `mmhotline_alert_source_id`.
+  MMWatchdog builds the alert-intake and check-in routes from
+  `mmhotline_url` and `mmhotline_alert_source_id`.
+- **No MMWatchdog command connects MMWatchdog to MMHotline.** The team lists
+  the alert source, with the source's ID and signing secret, in MMHotline's
+  settings file. Copying the MMHotline address, alert source ID, and signing
+  secret once needs no separate registration protocol.
+- **Replacing the signing secret leaves existing alerts in the delivery
+  queue.** The alert source ID says where an alert goes, and MMHotline
+  accepts the old and the new secret during a rotation.
+  A rotation must not drop the alerts that wait for an
+  MMHotline that is down.
+- **A signed `400` drops the alert with a visible gap.** One alert that
+  MMHotline can never take must not hold up the `sos` alerts behind it.
+- **MMWatchdog shortens the message before it queues the alert.** A body that
+  MMHotline refused as too large would hold up every alert behind it.
+- **No `remind_every` and no `send_only_the_alert_title`.** MMHotline repeats
+  and escalates on its own, and decides how much of an alert each of its
+  notifications shows.
+- **One destination per team, each with its own check-ins.** One
+  MMHotline serves one team and watches each of its alert sources on its
+  own, so each team's MMHotline must hear from the hub to notice that it
+  died.
+- **Every name that belongs to MMHotline starts with `mmhotline`,** in
+  MMWatchdog's configuration and in MMHotline's own API alike, so a reader
+  sees what belongs to MMHotline.

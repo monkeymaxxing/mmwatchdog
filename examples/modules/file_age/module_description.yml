@@ -1,0 +1,19 @@
+summary: Measures how old a file is. The check fails when the file does not exist.
+used_as: check
+inputs:
+  file_path:
+    type: string
+    required: true
+    description: The absolute path of the file, which a program writes each time it succeeded.
+measurements:
+  age_minutes:
+    unit: minutes
+    description: The time since the file was last written.
+examples:
+  - description: Fail when the last successful backup is more than 26 hours old.
+    config: |
+      file_age:
+        file_path: /var/lib/backup/last-successful-backup
+      fail_when_measurement_above:
+        age_minutes: 1560
+      alert_severity: warn

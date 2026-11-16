@@ -1,0 +1,69 @@
+name: Tests and Linux builds
+
+on:
+  push:
+  pull_request:
+
+permissions: {}
+
+jobs:
+  tests:
+    name: Go tests on ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        env:
+          GOTOOLCHAIN: auto # Read the toolchain directive, even if the runner sets local.
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Confirm the pinned Go toolchain
+        shell: bash
+        run: test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
+      - run: go test ./...
+      - if: runner.os == 'Linux'
+        run: go vet ./...
+      - if: runner.os == 'Linux'
+        name: Check formatting of MMWatchdog's Go code
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l cmd internal docs official_extra_modules tests)
+          if [ -n "$unformatted" ]; then
+            printf '%s\n' "$unformatted"
+            exit 1
+          fi
+      - if: runner.os == 'Linux'
+        run: python3 -m unittest discover -s tests/integration -p 'test_*.py' -v
+
+  linux-builds:
+    name: Build the Linux programs for AMD64 and ARM64
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        env:
+          GOTOOLCHAIN: auto # Read the toolchain directive, even if the runner sets local.
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Confirm the pinned Go toolchain
+        shell: bash
+        run: test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
+      - name: Build mmwatchdog for linux/amd64 and linux/arm64
+        shell: bash
+        run: |
+          for arch in amd64 arm64; do
+            CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -ldflags="-s -w" -o "$RUNNER_TEMP/mmwatchdog-linux-$arch" ./cmd/mmwatchdog
+          done

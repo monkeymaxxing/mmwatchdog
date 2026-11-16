@@ -1,0 +1,36 @@
+// Formatted writes produce human-readable output or in-memory text, not monitoring state or protocol results.
+fmt.Fprintf
+// Tables flush into strings.Builder, whose writes cannot fail.
+(*text/tabwriter.Writer).Flush
+// The buffered writer only displays module usage; flushing changes no monitoring result.
+(*bufio.Writer).Flush
+// These input response bodies have no pending writes; required reads and response validation are checked separately.
+(io.ReadCloser).Close
+// Closing network connections releases resources or cancels operations; operation success is established separately.
+(net.Conn).Close
+// Closing the ICMP socket releases resources after the checked ping exchange.
+(net.PacketConn).Close
+// Listener closure stops accepting connections and commits no monitoring data.
+(net.Listener).Close
+// Server teardown commits no state; interrupted clients detect failed requests and committed changes remain stored.
+(*net/http.Server).Close
+// SMTP message acceptance is checked when the DATA writer closes; client closure only ends the connection.
+(*net/smtp.Client).Close
+// Closing directory handles commits no file contents; writable files are closed and checked separately.
+(*os.Root).Close
+// Recursive removals only discard temporary copies, retired module state, or test launchers; failure leaves unused files.
+os.RemoveAll
+// These descriptors reserve test socket addresses and contain no pending managed writes.
+syscall.Close
+// SQLite mutations are committed and checked before closure; closing releases resources without committing pending work.
+(*database/sql.DB).Close
+// Store closure only closes SQLite; state and outbox writes have separately checked commits.
+(*mmwatchdog/internal/store.Store).Close
+// Measurement-history closure only closes SQLite; readings are committed and checked when written.
+(*mmwatchdog/internal/store.MeasurementHistory).Close
+// Hub closure only releases its databases; membership, events, and readings have separately checked commits.
+(*mmwatchdog/internal/fleet.Hub).Close
+// Daemon closure releases database and lock handles after separately checked state commits.
+(*mmwatchdog/internal/daemon.Daemon).Close
+// A deferred rollback after Commit returns sql.ErrTxDone; on a failed transaction the caller returns the first error, and a rollback that fails too makes the next transaction fail, which the storage-health registry reports.
+(*database/sql.Tx).Rollback

@@ -1,0 +1,83 @@
+# Install at /etc/mmwatchdog/check_groups/myapp.yml.
+# Every check group states its four timings, and every check that can alert
+# states its alert_severity: info, warn, or sos. A check that measures a
+# number states its limit beside its kind; without a limit it only records.
+check_groups:
+  myapp:
+    check_every: 30s                    # run each check every 30 seconds
+    time_limit_per_run: 5s              # one run of a check may take 5 seconds
+    alert_after_failing_for: 1m         # send the alert after 1 minute of failing
+    recovered_after_healthy_for: 30s    # the failure is over after 30 healthy seconds
+    checks:
+      myapp_service_is_running:
+        systemd_unit_state:
+          systemd_unit: myapp.service
+          fail_when: the_unit_is_not_active
+        alert_severity: sos
+      myapp_is_not_crash_looping:
+        systemd_unit_crash_loop:
+          systemd_unit: myapp.service
+          automatic_restarts_above: 2
+          automatic_restarts_within: 1h
+        alert_severity: warn
+        raise_to_sos_after_failing_for: 30m       # still crash-looping after 30 minutes: sos
+      myapp_answers_health_request:
+        http:
+          url: http://127.0.0.1:8080/health
+          expected_http_status_codes: [200]
+          response_body_contains: ready
+        alert_severity: sos
+      myapp_cpu_use_is_recorded:
+        only_record_readings: true
+        systemd_unit_resource:                    # no limit: records only, never alerts
+          systemd_unit: myapp.service
+          resource: cpu
+      myapp_memory_is_below_512_mib:
+        systemd_unit_resource:
+          systemd_unit: myapp.service
+          resource: memory
+        fail_when_measurement_above:
+          memory_used_mib: 512
+        alert_severity: warn
+    restart_systemd_unit:
+      systemd_unit: myapp.service
+      triggered_by_checks: [myapp_service_is_running, myapp_answers_health_request]
+      restart_after_failing_for: 1m     # restart after 1 minute of failing, when the alert also goes out
+      max_attempts: 3
+      min_time_between_attempts: 1m
+      reset_attempts_after_healthy_for: 10m
+
+  machine:
+    check_every: 30s
+    time_limit_per_run: 5s
+    alert_after_failing_for: 10m
+    recovered_after_healthy_for: 5m
+    checks:
+      cpu_use_is_recorded:
+        only_record_readings: true
+        node_resource: cpu                        # no limit: records only, never alerts
+      memory_is_below_90_percent:
+        node_resource: memory
+        fail_when_measurement_above:
+          memory_used_percent: 90
+        alert_severity: warn
+      # Escalation by level is a second check with a higher limit and severity.
+      root_filesystem_is_below_85_percent:
+        node_filesystem: /
+        fail_when_measurement_above:
+          space_used_percent: 85
+        alert_severity: warn
+      root_filesystem_is_below_95_percent:
+        node_filesystem: /
+        fail_when_measurement_above:
+          space_used_percent: 95
+        alert_severity: sos
+
+  backup_receipt:
+    check_every: 5m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 10m
+    recovered_after_healthy_for: 5m
+    shell:
+      script: test -f /srv/backups/last-success
+    alert_severity: warn

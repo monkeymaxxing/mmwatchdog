@@ -1,0 +1,19 @@
+summary: Counts the jobs that wait in a queue file.
+used_as: check
+inputs:
+  queue_file_path:
+    type: string
+    required: true
+    description: The absolute path of the file that holds the number of waiting jobs.
+measurements:
+  queued_jobs:
+    unit: count
+    description: The number of jobs that wait.
+examples:
+  - description: Fail when more than 500 jobs wait.
+    config: |
+      queued_jobs:
+        queue_file_path: /var/lib/myapp/pending
+      fail_when_measurement_above:
+        queued_jobs: 500
+      alert_severity: warn

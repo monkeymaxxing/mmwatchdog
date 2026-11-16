@@ -1,0 +1,13 @@
+# /etc/mmwatchdog/check_groups/utility_host.yml on the application server: the
+# application server watches the utility host, which watches the
+# application server.
+check_groups:
+  utility_host:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      machine_answers_ssh:
+        ssh: utility-host.web-service.internal:22
+        alert_severity: warn

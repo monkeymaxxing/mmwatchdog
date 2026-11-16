@@ -1,0 +1,90 @@
+# `node_clock`
+
+`node_clock` is healthy while the Linux kernel reports that
+the machine's clock follows a time server. The kernel knows whether the
+clock follows a time server, whichever time service the machine runs,
+such as systemd-timesyncd or chrony. So the check asks the kernel and not
+the time service. The check gives the answer that
+`timedatectl` prints as `System clock synchronized`. Set `fail_when` to
+`the_clock_is_not_synchronized` to state when the check fails.
+
+A clock that is not synchronized drifts, and then certificates, logins, and
+the times in logs go wrong one after another.
+
+## When the check fails, and when it cannot check
+
+- **The check fails** while the kernel counts the clock as not
+  synchronized, with the message `the kernel reports that the clock of this
+  machine does not follow a time server`.
+- **The check is healthy** with `the clock of this machine follows a time
+  server`.
+- **MMWatchdog cannot check, and the check is unknown,** when the kernel does not
+  answer the question, with `MMWatchdog cannot ask the kernel about the clock: ...`
+  and the kernel's error.
+
+The check fails only several hours after a time service stops (see
+[How it works](#how-it-works)), so a short `alert_after_failing_for` does
+not mean that the alert comes soon after the time service stops.
+
+## Examples
+
+```yaml
+# /etc/mmwatchdog/check_groups/clock.yml
+check_groups:
+  clock:
+    check_every: 1m
+    time_limit_per_run: 5s
+    alert_after_failing_for: 30m
+    recovered_after_healthy_for: 5m
+    node_clock:
+      fail_when: the_clock_is_not_synchronized
+    alert_severity: warn
+```
+
+Every minute, MMWatchdog on the node asks the kernel whether the clock follows a
+time server. The check is written directly on the check group, so status
+shows it as `clock/node_clock`. When the kernel has counted
+the clock as not synchronized for 30 minutes, MMWatchdog sends the `warn` alert.
+When the clock has followed a time server again for 5 minutes, MMWatchdog sends the
+recovery.
+
+## How it works
+
+The kernel keeps the largest error that the clock can have. A time service
+lowers the clock's largest error each time the service sets the clock.
+Without a time service, the clock's largest error grows. At 16 seconds,
+the kernel counts the clock as not synchronized. MMWatchdog reads the
+clock's largest error with the system call `adjtimex`, which changes
+nothing, and the check fails from 16 seconds on. So after a time service
+stops, several hours pass before the check fails.
+
+## Errors and what they mean
+
+| Message | What the message means, and what to do |
+| --- | --- |
+| `node_clock.fail_when: is required: The check fails while the clock is not synchronized; write the_clock_is_not_synchronized, the only value.` | Write `fail_when: the_clock_is_not_synchronized` below `node_clock`. |
+| `node_clock.fail_when: expected one of the_clock_is_not_synchronized` | Use `the_clock_is_not_synchronized`, the only allowed value. |
+| `the kernel reports that the clock of this machine does not follow a time server` | `timedatectl` shows whether a time service runs. For systemd-timesyncd, run `systemctl status systemd-timesyncd` to see the service's status. For chrony, run `chronyc tracking` to see how chrony tracks the clock. |
+
+## Tested on
+
+- **Go tests:** `TestUnixSocketCheck` in `node_checks_test.go` checks the
+  required `fail_when` input and refuses another value. The native Linux Go
+  tests read the kernel's answer on the guest of
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution).
+- **The node suite** (`node_scenarios.py`) compares the check with
+  `timedatectl` on every target distribution, then sets the kernel's
+  largest error to 16 seconds by hand, checks that the check fails, and sets
+  it back.
+- The latest run passed on every target distribution
+  ([validation record](../../docs/changing-mmwatchdog/validation.md)).
+
+## Why it works this way
+
+- **The check asks the kernel, not a time service.** The kernel knows
+  whether the clock follows a time server whichever time service runs, so
+  one check works on every node.
+- **The check uses the kernel's own limit of 16 seconds.**
+  When the clock's largest error reaches 16 seconds, the kernel counts the
+  clock as not synchronized. The check gives the answer that `timedatectl`
+  prints as `System clock synchronized`.

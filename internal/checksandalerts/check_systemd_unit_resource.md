@@ -1,0 +1,291 @@
+# `systemd_unit_resource`
+
+`systemd_unit_resource` measures one resource of one `.service` unit on the
+node: its CPU, its memory, or the number of its processes. MMWatchdog reads
+the CPU and memory from systemd's resource accounting of the unit's control
+group with `systemctl show`. MMWatchdog counts the processes in the unit's
+control group.
+The memory is that of the whole unit, with its child processes, not only the
+memory of the unit's main process.
+
+Like every module that measures a number, the module only measures. A limit,
+written beside the module with `fail_when_measurement_above` or
+`fail_when_measurement_below`, makes the check fail, and MMWatchdog applies it in the
+same way for every module
+([checks that measure a number](../../docs/reference/configuration-files.md#checks-that-measure)).
+A check with `only_record_readings: true` only records its readings in the node's
+[measurement history](../../docs/how-to/look-back-at-measurements.md) and never
+alerts ([checks that only record](../../docs/how-to/look-back-at-measurements.md)).
+
+To measure the whole node, use
+[`node_resource`](check_node_resource.md). To watch one program of a unit by
+its command, use
+[`systemd_unit_commands`](check_systemd_unit_commands.md), which
+reads the same list of processes as `resource: processes`.
+
+## Set up
+
+The CPU and the memory need systemd's accounting for the unit. When systemd
+gives no counter, the check is unknown with a message such as
+`systemd unit myapp.service has no usable MemoryCurrent value; enable MemoryAccounting=yes in the unit configuration`. Turn the accounting on in the unit file, such as the unit that
+MMX installs:
+
+```ini
+[Service]
+CPUAccounting=yes
+MemoryAccounting=yes
+```
+
+MMWatchdog never changes the accounting settings of a unit. `resource: processes`
+needs no accounting setting.
+
+## When the check fails, and when it cannot check
+
+The check fails when a reading passes its limit, with a message such as
+`memory_used_mib is 612.4 (fails above 512)`. A CPU reading adds the time it
+covers, such as `cpu_used_percent is 12.5 (fails above 80) over 30.000s`.
+
+A reading that cannot be made is unknown with an explanation, never a zero
+measurement. MMWatchdog cannot check when:
+
+- the unit does not run. MMWatchdog measures a unit only while systemd reports it
+  as `active` or `reloading`
+  ([checks of a systemd unit](../../docs/reference/modules/systemd_unit_state.md)).
+  In any other state, such as `activating`, `deactivating`, `inactive`, or
+  `failed`, the message says the state. For `cpu` and `memory`: `systemd
+  unit myapp.service usage unavailable: the unit is inactive`. For
+  `processes`: `systemd unit myapp.service process count unavailable:
+  systemd unit myapp.service is inactive`. A stopped unit has no count, as
+  it has no CPU and no memory reading: the count of a stopped unit is not 0
+  processes of a running one. Use a
+  [`systemd_unit_state`](check_systemd_unit_state.md) check to alert for
+  a stopped unit;
+- systemd does not know the unit: `systemd unit myapp.service not found`,
+  for every resource;
+- systemd gives no counter for the unit (see [Set up](#set-up)), or no
+  `InvocationID` for a CPU reading: `systemd unit myapp.service has no InvocationID; MMWatchdog cannot start measuring CPU usage`;
+- `systemctl` fails: the error message contains `systemd inspection:`;
+- a CPU reading cannot be compared with the sample that MMWatchdog took, such as
+  when the unit started a new invocation within the 200 ms sample: `CPU counters changed or did not advance between samples; MMWatchdog waits for a new sample`. The
+  next run takes a new sample.
+
+A check with a limit opens a cannot-check incident after
+`alert_after_failing_for` of unknown runs, as every check does
+([the failing time](../../docs/how-to/decide-when-a-check-alerts.md)). A check that
+only records shows an unknown run in status and opens no incident.
+
+## Examples
+
+### Limit the CPU and the memory of a unit
+
+```yaml
+# /etc/mmwatchdog/check_groups/myapp_resources.yml
+check_groups:
+  myapp_resources:
+    check_every: 30s
+    time_limit_per_run: 5s
+    alert_after_failing_for: 10m
+    recovered_after_healthy_for: 5m
+    checks:
+      myapp_cpu_is_below_80_percent:
+        systemd_unit_resource:
+          systemd_unit: myapp.service
+          resource: cpu
+        fail_when_measurement_above:
+          cpu_used_percent: 80
+        alert_severity: warn
+      myapp_memory_is_below_512_mib:
+        systemd_unit_resource:
+          systemd_unit: myapp.service
+          resource: memory
+        fail_when_measurement_above:
+          memory_used_mib: 512
+        alert_severity: warn
+      myapp_process_count_is_recorded:
+        only_record_readings: true
+        systemd_unit_resource:                    # no limit: records only, never alerts
+          systemd_unit: myapp.service
+          resource: processes
+```
+
+On the node, every 30 seconds, MMWatchdog reads the CPU time and the memory of
+`myapp.service` and counts its processes.
+
+1. The first check measures the share of the node's processor time that
+   `myapp.service` used since the previous run of the CPU check.
+   When the unit's share of the node's processor time has been above
+   80 percent for 10 minutes, MMWatchdog sends a `warn` alert.
+2. The second check fails while the unit uses more than 512 MiB of memory,
+   and MMWatchdog sends a `warn` alert after 10 minutes of failing.
+3. The third check only records the number of processes in the measurement
+   history. The process-count check never alerts and takes no
+   `alert_severity`.
+4. When a failing check has been within its limit for 5 minutes, MMWatchdog sends
+   the recovery.
+
+### Restart the unit when it uses too much memory
+
+```yaml
+# /etc/mmwatchdog/check_groups/myapp.yml
+check_groups:
+  myapp:
+    check_every: 30s
+    time_limit_per_run: 5s
+    alert_after_failing_for: 10m
+    recovered_after_healthy_for: 5m
+    checks:
+      myapp_memory_is_below_900_mib:
+        systemd_unit_resource:
+          systemd_unit: myapp.service
+          resource: memory
+        fail_when_measurement_above:
+          memory_used_mib: 900
+        alert_severity: warn
+    restart_systemd_unit:
+      max_attempts: 3
+      min_time_between_attempts: 1m
+      reset_attempts_after_healthy_for: 10m
+      systemd_unit: myapp.service
+      triggered_by_checks: [myapp_memory_is_below_900_mib]
+      restart_after_failing_for: 5m
+```
+
+On the node, MMWatchdog restarts `myapp.service` after memory use has
+exceeded 900 MiB for 5 minutes.
+If the memory stays below 900 MiB for 5 minutes after the restart, the check
+recovers and no alert goes out.
+
+If not, the `warn` alert goes out after 10 minutes of failing.
+[Restart a systemd unit](../../docs/how-to/restart-a-service-automatically.md#steps-to-restart-a-systemd-unit) says
+how restarts work. A check that only records cannot be named in
+`triggered_by_checks`.
+
+## How it works
+
+**Memory.** MMWatchdog runs `systemctl show
+--property=LoadState,ActiveState,InvocationID,CPUUsageNSec,MemoryCurrent --
+myapp.service`, as MMWatchdog itself, and reads `MemoryCurrent`.
+`MemoryCurrent` is the memory that systemd counts for the unit's control
+group, which includes the unit's child processes.
+`memory_used_mib` is `MemoryCurrent` converted to MiB. The unit must run:
+systemd reports it as `active` or `reloading`.
+
+**CPU.** MMWatchdog reads `CPUUsageNSec`, the processor time that the unit
+has used, from the `systemctl show` command listed under **Memory**.
+MMWatchdog compares `CPUUsageNSec` with the reading from the previous run
+of the CPU check.
+
+- `cpu_used_percent` is the processor time used between the two readings,
+  divided by the time between them and by the node's number of logical
+  processors. One saturated core on a two-core machine is
+  about 50 percent.
+  `cpu_used_percent` is a share of the whole machine, not of the unit's CPU
+  quota or of the processors that the unit may use.
+  Brief jitter of the accounting is capped at 100.
+- The reading covers the time since the check's run before, and is not a
+  long-term moving average. The first run, and a run whose reading before
+  cannot be compared, takes its own sample of 200 ms. So the check group's
+  `time_limit_per_run` must be longer than `200ms`.
+- A new invocation of the unit, such as after a restart, starts a new
+  sample. A CPU counter smaller than the previous reading or a change in
+  the number of processors also starts a new sample.
+  [CPU sampling](../../docs/reference/configuration-files.md#readings-over-a-time) has the rules that
+  `systemd_unit_resource` shares with the CPU of the node.
+
+**Processes.** `process_count` is the number of processes that the unit runs,
+which is the number of commands that `systemctl status myapp.service` lists.
+MMWatchdog asks systemd for the unit's control group and counts the processes in it,
+and in every nested control group, below `/sys/fs/cgroup`, without a depth
+limit. When a process list is unreadable or invalid, MMWatchdog makes the
+run unknown and names the process-list file.
+A partial count is never a reading. The unit must
+run, as for the CPU and the memory. An active unit that runs no process,
+such as a unit that systemd keeps active after its program ended
+(`RemainAfterExit=yes`), counts 0.
+
+See the upstream
+[systemd resource accounting documentation](https://github.com/systemd/systemd/blob/v257/man/systemd.resource-control.xml)
+for what systemd counts.
+
+## Errors and what they mean
+
+| Message | What to do |
+| --- | --- |
+| `check_groups.myapp.checks.myapp_memory_is_below_512_mib.systemd_unit_resource.systemd_unit: is required: the systemd unit this check is about, such as myapp.service` | Name the unit to measure. |
+| `...systemd_unit_resource.systemd_unit: must be a systemd .service unit name, such as myapp.service` | Write the full name of a `.service` unit. The unit name may contain only letters, digits, and the characters `_@.:\-`. |
+| `...systemd_unit_resource.resource: must be cpu, memory, or processes` | Write one of the three resources. |
+| `...fail_when_measurement_above.cpu_used_percent: this check has no such measurement; it measures memory_used_mib` | The limit names a measurement of another resource. Each resource has one measurement. |
+| `...fail_when_measurement_above.cpu_used_percent: expected a number from 0 to 100` | A percent limit is a number from 0 to 100. Every other limit is 0 or more. |
+| `check_groups.myapp.checks.myapp_memory_is_below_512_mib.alert_severity: a systemd_unit_resource check needs a limit to alert; add fail_when_measurement_above or fail_when_measurement_below, or replace alert_severity with only_record_readings: true` | Add a limit, or remove `alert_severity`. |
+| `check_groups.myapp.time_limit_per_run: must exceed 200ms for the initial CPU sample` | Give a check group with a `resource: cpu` check a `time_limit_per_run` longer than `200ms`. |
+| `check_groups.myapp.restart_systemd_unit.triggered_by_checks.0: check myapp_process_count_is_recorded only records its readings and never fails; give it a limit to use it for recovery` | Give the check a limit, or remove it from `triggered_by_checks`. |
+| `systemd unit myapp.service has no usable MemoryCurrent value; enable MemoryAccounting=yes in the unit configuration` (unknown), or the same for `CPUUsageNSec` and `CPUAccounting` | Turn on the accounting in the unit file, as [Set up](#set-up) shows. |
+
+## Tested on
+
+`processes_test.go` also checks complete nested lists with
+`TestSystemdProcessCountRequiresEveryNestedList`: 12 levels of control groups,
+invalid process IDs, and an unreadable child list.
+
+- **Go tests:** In `resources_test.go`,
+  `TestResourceInputsNeverInventZeroUsage` checks memory and CPU readings
+  of active and reloading units.
+  `TestResourceInputsNeverInventZeroUsage` also checks that missing
+  counters and units that do not run produce no invented readings.
+
+  In `resources_test.go`,
+  `TestCPUSamplerBootstrapsResetsAndHonorsCancellation` checks the first
+  sample, a CPU limit, and a new sample after a new invocation.
+
+  In `resources_test.go`, `TestMeasurementLimitsAreOptionalAndStrict`
+  checks required inputs, resources, and measurement limits.
+  `TestMeasurementLimitsAreOptionalAndStrict` also checks that
+  `triggered_by_checks` refuses checks that only record readings.
+
+  `severity_test.go` checks refusal of `alert_severity` without a limit.
+
+  In `processes_test.go`, `TestTheProcessesOfASystemdUnit` checks process
+  counts of active and reloading units, and unknown results for stopped
+  and deactivating units.
+
+  `check_test.go` contains
+  `TestEveryCheckOfAnUnknownSystemdUnitSaysNotFound`.
+- **Suites on real nodes:** the `resources` suite (`resources.py`): a real
+  unit with `CPUAccounting=yes` and `MemoryAccounting=yes` whose child
+  process holds 48 MiB and keeps a processor busy. Checks of the resource-test
+  unit's CPU and memory only record readings or use a limit to open and
+  close an incident. The `node` suite (`node_scenarios.py`): the process
+  count of a real unit with two programs. The `soak` suite measures the CPU
+  and the memory of `mmwatchdog.service` itself.
+- The `resources`, `node`, and `soak` suites passed on
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution).
+  The [validation record](../../docs/changing-mmwatchdog/validation.md) has the latest run.
+
+## Why it works this way
+
+- **Every nested process list must be readable.** A partial count could look
+  healthy while the processes that use the most resources are hidden.
+
+- **Recording readings is an explicit choice.** State
+  `only_record_readings: true` to record readings without alerts or recovery
+  actions.
+  A missing severity must not silently turn an intended alert into readings only.
+
+- **MMWatchdog applies the limit, and the module only measures.** There is one way to
+  write a limit for every module, and the readings reach the measurement
+  history and charts.
+- **The name of a measurement carries its unit,** such as `memory_used_mib`,
+  so it can be read alone in a limit, in an alert, and in a chart.
+- **A check without a limit never alerts.** A busy unit is not a failure
+  until the operator sets a limit.
+- **A reading that cannot be made is unknown, never zero.** A zero would look
+  like a healthy reading, and a stopped unit has no CPU, no memory, and no
+  processes to count.
+- **MMWatchdog measures a unit only while it runs, active or reloading.**
+  While systemd is still starting or stopping a unit, the unit's numbers
+  describe neither the running program nor the program's absence.
+  Every check of a systemd unit counts `active` and `reloading` as running
+  ([checks of a systemd unit](../../docs/reference/modules/systemd_unit_state.md)).
+- **MMWatchdog reads systemd's accounting and never changes it.** systemd supervises
+  the unit, and MMWatchdog only observes it. The memory of the whole control group
+  includes the child processes that the unit starts.

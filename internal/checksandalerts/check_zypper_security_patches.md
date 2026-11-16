@@ -1,0 +1,244 @@
+# `zypper_security_patches`
+
+`zypper_security_patches` fails while a security patch waits to be installed
+on a SUSE node, such as openSUSE Leap, and its message names the patches. The
+check asks the node's own package manager, `zypper`. The check downloads
+nothing and reads only what zypper already knows. Set `fail_when` to
+`a_security_patch_waits_to_be_installed` to state when the check fails.
+
+On this family, `known_exploited_vulnerabilities_in_installed_packages` is
+unknown, because the vulnerability data that the family publishes is too
+incomplete, so this check is the one that alerts on waiting security fixes.
+[Limits on each distribution](../../docs/reference/limits-on-each-distribution.md)
+says what was measured and what you can do.
+
+On Debian and Ubuntu, use [`apt_security_updates`](check_apt_security_updates.md)
+instead, and on the Red Hat family, use [`dnf_security_updates`](check_dnf_security_updates.md). The check names patches, not packages, because zypper's list of
+patches names no packages.
+
+To learn whether the node must restart to use updates that are already
+installed, such as a new kernel, use [`reboot_after_updates`](check_reboot_after_updates.md).
+To learn when the release's security support ends, use
+[`distribution_release_security_support`](check_distribution_release_security_support.md).
+
+To find known exploited flaws in installed packages, use
+[`known_exploited_vulnerabilities_in_installed_packages`](check_known_exploited_vulnerabilities_in_installed_packages.md).
+That check does not know SUSE yet, and is unknown there.
+
+## Set up
+
+The node must refresh zypper's metadata by itself. MMWatchdog never refreshes
+the node's metadata, because a refresh downloads from the network and needs
+root privileges.
+
+openSUSE Leap's cloud image refreshes nothing by itself: it has no timer and
+no PackageKit. Without a refresh, the check is unknown after seven days. Set
+up a daily refresh with a systemd service and a systemd timer. Write both
+files as root:
+
+```ini
+# /etc/systemd/system/zypper-refresh-daily.service
+[Unit]
+Description=Refresh the metadata of the zypper repositories
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/zypper --non-interactive refresh
+```
+
+```ini
+# /etc/systemd/system/zypper-refresh-daily.timer
+[Unit]
+Description=Refresh the metadata of the zypper repositories every day
+
+[Timer]
+OnCalendar=daily
+RandomizedDelaySec=1h
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+```
+
+Then start the timer, and keep it for every boot:
+
+```sh
+systemctl enable --now zypper-refresh-daily.timer
+```
+
+To refresh at once, run `systemctl start zypper-refresh-daily.service`.
+
+A refresh touches a repository's `repomd.xml` file only when the refresh
+succeeds for that repository, also when the repository has not changed.
+
+## When the check fails, and when it cannot check
+
+- **The check fails** while at least one security patch waits. The message
+  looks like `2 security patches wait to be installed:
+  openSUSE-Leap-16.1-12 (important): Security update for libXtst,
+  openSUSE-Leap-16.1-30 (critical): Security update for the Linux kernel
+  (needs a reboot)`. Each patch has its name, its severity, and its summary.
+  A patch that needs a reboot says so; it is an ordinary waiting patch. The
+  message names 20 patches at most and counts the rest, such as `, and 4 more`.
+- **The check is healthy** with `no security patch waits to be installed`.
+- **MMWatchdog cannot check, and the check is unknown,** when any condition
+  below applies. The message explains why. An unknown result is never healthy:
+  - An enabled repository has no `repomd.xml` file in zypper's cache. The
+    message names the repository.
+  - The `repomd.xml` file of an enabled repository is more than 7 days old.
+    The message names the repository and the age, and says how to set up the
+    daily refresh in [Set up](#set-up).
+  - No repository is enabled.
+  - zypper cannot be run, or it ends with an error, such as exit code 106
+    (zypper skipped a repository) or an error message in its answer. The
+    message gives zypper's error text.
+  - zypper's answer is not XML.
+  - The node runs a distribution that MMWatchdog does not know, or Debian,
+    Ubuntu, or the Red Hat family. On those, the message says to use
+    `apt_security_updates` or `dnf_security_updates`.
+
+An unknown result opens a cannot-check incident once it has lasted for the
+check's `alert_after_failing_for`, as for every check
+([the failing time](../../docs/how-to/decide-when-a-check-alerts.md)).
+
+## Examples
+
+### Tell the team when a security patch waits
+
+```yaml
+# /etc/mmwatchdog/check_groups/node_software.yml
+check_groups:
+  node_software:
+    check_every: 1h
+    time_limit_per_run: 2m
+    alert_after_failing_for: 0s
+    recovered_after_healthy_for: 0s
+    checks:
+      no_security_patch_waits:
+        zypper_security_patches:
+          fail_when: a_security_patch_waits_to_be_installed
+        alert_severity: warn
+```
+
+Once an hour, MMWatchdog on the node asks zypper which security patches wait.
+`alert_after_failing_for: 0s` sends the `warn` alert after the first run that
+finds a waiting security patch. The alert message names the patches. After
+the patches are installed, the next run is healthy, and
+`recovered_after_healthy_for: 0s` sends the recovery at once.
+
+### A node that installs its patches by itself
+
+```yaml
+# /etc/mmwatchdog/check_groups/node_software.yml
+check_groups:
+  node_software:
+    check_every: 1h
+    time_limit_per_run: 2m
+    alert_after_failing_for: 0s
+    recovered_after_healthy_for: 0s
+    checks:
+      automatic_security_patches_still_work:
+        zypper_security_patches:
+          fail_when: a_security_patch_waits_to_be_installed
+        alert_severity: warn
+        alert_after_failing_for: 3d
+```
+
+On a node where a daily job installs the security patches, the check fails
+only between the day a patch appears and the next installation. With
+`alert_after_failing_for: 3d`, MMWatchdog sends no alert for a patch that the
+next installation takes care of. When the check has failed for 3 days, the
+alert says that the automatic installation has stopped working.
+
+## How it works
+
+MMWatchdog reads `/etc/os-release` on the node. The check runs when the
+distribution's `ID` or any name in `ID_LIKE` contains `suse`: openSUSE Leap has
+`ID=opensuse-leap` and `ID_LIKE="suse opensuse"`. Other distributions make
+the check unknown.
+
+1. MMWatchdog reads the repository files `/etc/zypp/repos.d/*.repo`. Each
+   section is a repository, named by its alias. A repository with `enabled=0`
+   is disabled and needs nothing. For each enabled repository, MMWatchdog
+   requires the file `/var/cache/zypp/raw/ALIAS/repodata/repomd.xml`, with a
+   modification time at most 7 days old. The alias of a repository of a
+   service already carries the service, such as `openSUSE:repo-oss`, and is
+   the name of the cache directory. A missing file or an older file makes the
+   check unknown. The oldest file decides, because a refresh touches the file
+   only when it succeeds for that repository.
+2. MMWatchdog runs `zypper --non-interactive --no-refresh --xmlout
+   list-patches --category security` with `LC_ALL=C`, as the unprivileged
+   account `mmwatchdog`, in `/`. Without root privileges, zypper cannot
+   download or build a cache, so the check never downloads.
+3. MMWatchdog reads zypper's XML. Exit code 106, any other exit code that is
+   not 0, or any message of type `error` makes the check unknown. Otherwise,
+   each `update` of kind `patch` with status `needed` and category `security`
+   is a waiting patch. A patch with `restart="true"` says `(needs a reboot)`.
+   A patch counts once, however many repositories list it.
+
+## Errors and what they mean
+
+| Message | Meaning of the message, and what to do |
+| --- | --- |
+| `zypper_security_patches.fail_when: is required: The check fails while a security patch waits to be installed; write a_security_patch_waits_to_be_installed, the only value.` | Write `fail_when: a_security_patch_waits_to_be_installed` below `zypper_security_patches`. |
+| `zypper_security_patches.fail_when: expected one of a_security_patch_waits_to_be_installed` | Use `a_security_patch_waits_to_be_installed`, the only allowed value. |
+| `/var/cache/zypp/raw/ALIAS/repodata/repomd.xml, which zypper writes after a successful refresh of the repository ALIAS, is 9 days old, so MMWatchdog cannot know which patches wait: ...` | The last successful refresh of the repository is too old. Set up the daily refresh in [Set up](#set-up). |
+| `the repository ALIAS has no usable /var/cache/zypp/raw/ALIAS/repodata/repomd.xml, which zypper writes after a successful refresh of the repository, so MMWatchdog cannot know which patches wait: ...` | The repository was never refreshed, or its cache was removed. Run `zypper refresh` as root, and set up the daily refresh in [Set up](#set-up). |
+| `zypper has no enabled repository in /etc/zypp/repos.d, so MMWatchdog cannot know which patches wait` | Enable a repository, for example with `zypper modifyrepo --enable ALIAS`. |
+| `MMWatchdog cannot run zypper: ...` | `zypper` is not installed, or not in the standard path. |
+| `MMWatchdog cannot ask zypper which patches wait: ...` | zypper ended with an error, and the message gives zypper's text, such as a repository that zypper skipped (exit code 106). Run the command of "How it works" by hand to see the whole answer. |
+| `MMWatchdog cannot read what zypper wrote: ...` | zypper's answer was not XML. |
+| `this node runs NAME, whose package manager is apt, not zypper: use the check apt_security_updates` | The node runs Debian or Ubuntu. |
+| `MMWatchdog does not know the package manager of NAME: it knows only that of Debian and Ubuntu (apt_security_updates), that of the Red Hat family (dnf_security_updates), and that of SUSE (zypper_security_patches)` | The distribution is not one of MMWatchdog's targets. |
+| `this node runs NAME, whose package manager is dnf, not zypper: use the check dnf_security_updates` | The node runs the Red Hat family. |
+
+## Tested on
+
+[Limits on each distribution](../../docs/reference/limits-on-each-distribution.md) says what MMWatchdog cannot do on each distribution, or did not test there, and why.
+
+- **Go tests** in `suse_checks_test.go`: `TestZypperSecurityPatchesCheck`
+  covers zypper's XML with no patch, one patch, and several patches (some
+  that need a reboot), exit code 106 with its error message, other exit codes,
+  fresh, missing, and old `repomd.xml` files among several repositories (one of
+  them disabled, two of a service), the account and the arguments, and the
+  unknown messages of Debian and of Debian's check on SUSE.
+  `TestNodeDistributionFamily` in `server_checks_test.go` checks `ID` and
+  `ID_LIKE`. `TestUpdateChecksOnUnknownDistributions` checks the unknown result
+  and its distribution name.
+- **The node suite** (`node_scenarios.py`) runs the check against the real
+  zypper on openSUSE Leap 16.1, one of the
+  [target distributions](../../docs/changing-mmwatchdog/testing.md#every-target-distribution). The
+  suite writes the two systemd units of [Set up](#set-up) from this page, and
+  starts the service. The suite compares the enabled repositories with the
+  directories of zypper's cache, and the check's answer with the security
+  patches that zypper lists as root. It then picks a package at run time and
+  installs an older version that a security patch covers, so that the patch
+  waits and the check fails and names the patch. It also tests metadata that
+  is nine days old, and removes the old package again.
+
+## Why it works this way
+
+- **The check reads only metadata that a refresh wrote recently.** Without a
+  refresh, zypper does not know the patches of the last days, and "no patch
+  waits" would be a guess. The file `repodata/repomd.xml` of a repository is
+  touched only when a refresh succeeds for that repository, also when the
+  repository has not changed, so the oldest file shows the refresh that
+  failed.
+- **The seven days are the same as for `apt_security_updates`.** Both checks
+  use one rule for how old the package manager's data may be.
+- **The check never downloads.** Run as the unprivileged account `mmwatchdog`,
+  zypper cannot build a missing cache, and MMWatchdog passes `--no-refresh`.
+  A run changes nothing on the node that MMWatchdog watches.
+- **The check names patches, not packages.** zypper's XML for `list-patches`
+  names no packages. A patch's name, severity, and summary are what an
+  administrator gives to `zypper patch` or `zypper info -t patch`.
+- **Exit code 106 is unknown.** zypper skipped a repository, so its answer may
+  lack the patches of that repository, and "no patch waits" would be a guess.
+- **A patch that needs a reboot is an ordinary waiting patch.** It waits to be
+  installed like any other patch. The message adds `(needs a reboot)` so that
+  the person sees it. Whether the node needs a reboot after installation is
+  the job of [`reboot_after_updates`](check_reboot_after_updates.md).
+- **The cloud image's missing refresh is the administrator's job.** MMWatchdog
+  never refreshes the node's metadata, so the page gives the two unit files.

@@ -1,0 +1,19 @@
+summary: Posts each alert as JSON to the team's own alarm system, with a token.
+used_as: alert_destination
+inputs:
+  alarm_system_url:
+    type: string
+    required: true
+    description: The address of the alarm system that takes the alerts.
+  api_token_file:
+    type: string
+    required: true
+    description: The absolute path of the file that holds the token of the alarm system. MMWatchdog reads the file for every alert.
+examples:
+  - description: Send every SOS alert to the alarm system.
+    config: |
+      alarm_system:
+        alarm_system_url: https://alarm.example.com/alerts
+        api_token_file: /etc/mmwatchdog/secrets/alarm-system-token
+      remind_every: never
+      alert_severities: [sos]

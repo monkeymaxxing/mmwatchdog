@@ -1,0 +1,25 @@
+[Unit]
+Description=MMWatchdog monitoring
+After=network-online.target
+Wants=network-online.target
+# No start limit: systemd's default refuses a sixth start within 10 seconds,
+# which fails a deploy that restarts MMWatchdog several times in a row.
+# Restart=always with RestartSec=3 already keeps a crashing daemon to one
+# start every 3 seconds.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/mmwatchdog daemon --config-dir /etc/mmwatchdog
+ExecReload=/usr/local/bin/mmwatchdog reload
+Restart=always
+RestartSec=3
+RuntimeDirectory=mmwatchdog
+RuntimeDirectoryMode=0755
+StateDirectory=mmwatchdog
+StateDirectoryMode=0700
+UMask=0077
+KillMode=control-group
+
+[Install]
+WantedBy=multi-user.target

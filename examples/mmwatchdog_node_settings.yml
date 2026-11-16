@@ -1,0 +1,18 @@
+# Install at /etc/mmwatchdog/mmwatchdog_node_settings.yml.
+# Check groups belong in check_groups/*.yml; alert destinations in alert_destinations.yml.
+# Required: the severity of the alert when this node stops reporting, from
+# the hub for a joined node, or from the hub-outage alerter nodes for the hub.
+keep_undelivered_alerts_for: 24h
+undelivered_alerts_content_size_limit: 8MiB
+alert_severity_when_this_node_goes_silent: sos
+# Required: the severity of the notice after a reboot of this node.
+alert_severity_when_this_node_has_rebooted: warn
+# Required: how long this node keeps the readings of its measurements, and
+# how much of its disk they may take. The oldest readings go first.
+keep_measurement_history_for: 7d
+measurement_history_size_limit: 256MiB
+# Where this node holds the modules that are not built into MMWatchdog: the official
+# extra modules of the MMWatchdog release, and the modules of the project's own.
+official_extra_module_dir: /usr/local/lib/mmwatchdog/official_extra_modules
+external_module_dir: /usr/local/lib/mmwatchdog/external_modules
+max_concurrent_checks: 8

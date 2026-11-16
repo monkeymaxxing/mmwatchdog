@@ -1,0 +1,62 @@
+# /etc/mmwatchdog/check_groups/application_server.yml on the utility host: the
+# utility host checks the application server over the network, as a
+# visitor and as an operator would reach it.
+check_groups:
+  application_server:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      # The site's port. While it refuses connections, its alert is the one
+      # alert of the site, its certificate, and its content.
+      https_port_accepts_connections:
+        tcp: app.example.com:443
+        alert_severity: sos
+      # The site's certificate comes from a certificate authority of the
+      # example's own, which this file holds. A site with a certificate of a
+      # public certificate authority needs no trusted_certificate_authority_file.
+      site_answers_from_outside:
+        http:
+          url: https://app.example.com/
+          trusted_certificate_authority_file: /etc/mmwatchdog/web-service-test-certificate-authority.pem
+          response_body_contains: Example web service
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail:
+          [application_server/https_port_accepts_connections]
+      # Two levels on one certificate: a warning 21 days before it expires,
+      # and an urgent alert 7 days before.
+      site_certificate_is_valid_for_21_more_days:
+        tls:
+          address: app.example.com:443
+          trusted_certificate_authority_file: /etc/mmwatchdog/web-service-test-certificate-authority.pem
+          fail_when_certificate_expires_within: 21d
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail:
+          [application_server/https_port_accepts_connections]
+      site_certificate_is_valid_for_7_more_days:
+        tls:
+          address: app.example.com:443
+          trusted_certificate_authority_file: /etc/mmwatchdog/web-service-test-certificate-authority.pem
+          fail_when_certificate_expires_within: 7d
+        alert_severity: sos
+        no_alerts_or_recovery_actions_while_these_checks_fail:
+          [application_server/https_port_accepts_connections]
+      machine_answers_ping:
+        ping: application-server.web-service.internal
+        alert_severity: warn
+      # A machine that stops answering SSH is a warning at once, repeated
+      # while it lasts (remind_every of team_chat_warn_and_sos), and urgent
+      # when it lasts 8 seconds.
+      machine_answers_ssh:
+        ssh: application-server.web-service.internal:22
+        alert_severity: warn
+        raise_to_sos_after_failing_for: 8s
+      # The mail server belongs to the mail administrator, and its alerts go
+      # to that person alone.
+      mail_server_answers_smtp:
+        smtp:
+          address: application-server.web-service.internal:25
+          connection_security: unencrypted
+        alert_severity: warn
+        send_alerts_only_to_destinations: [mail_administrator]

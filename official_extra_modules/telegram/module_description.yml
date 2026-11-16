@@ -1,0 +1,30 @@
+summary: Delivers each alert to a Telegram chat, as a bot.
+used_as: alert_destination
+inputs:
+  bot_token_file:
+    type: string
+    required: true
+    description: >-
+      The absolute path of a file that holds the bot's token, such as
+      123456789:AAE-x1y2z3, and nothing else. The token is a secret. MMWatchdog reads
+      the file for every delivery and gives the module its content.
+  chat_id:
+    type: string
+    required: true
+    description: >-
+      The chat that gets the alerts: the number of a chat in quotes, such as
+      "-1001234567890", or the name of a public channel, such as "@mychannel".
+  bot_api_server_url:
+    type: string
+    required: false
+    description: >-
+      The address of the Bot API server, for a team that runs its own.
+      Without it the module uses Telegram's server, https://api.telegram.org.
+examples:
+  - description: Send every sos alert to the on-call group.
+    config: |
+      telegram:
+        bot_token_file: /etc/mmwatchdog/secrets/telegram-bot
+        chat_id: "-1001234567890"
+      remind_every: never
+      alert_severities: [sos]

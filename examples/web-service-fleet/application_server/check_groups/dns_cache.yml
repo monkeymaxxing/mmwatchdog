@@ -1,0 +1,25 @@
+# /etc/mmwatchdog/check_groups/dns_cache.yml on the application server: the local
+# DNS cache, dnsmasq, which answers on UDP port 53. Its alerts are
+# information. A failure must last 10 seconds before it counts, and so must
+# a recovery, so a DNS cache that stops answering for a moment sends
+# nothing.
+check_groups:
+  dns_cache:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 10s
+    recovered_after_healthy_for: 10s
+    checks:
+      dns_cache_is_running:
+        systemd_unit_state:
+          systemd_unit: dnsmasq.service
+          fail_when: the_unit_is_not_active
+        alert_severity: info
+      dns_cache_answers_for_the_site:
+        dns:
+          dns_server: 127.0.0.1:53
+          record_name: app.example.com
+          record_type: A
+          expected_record_values: [192.0.2.10]
+        alert_severity: info
+        no_alerts_or_recovery_actions_while_these_checks_fail: [dns_cache/dns_cache_is_running]

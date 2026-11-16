@@ -1,0 +1,142 @@
+# `out_of_memory_kills`
+
+When a machine runs out of memory, the Linux kernel ends a process to free
+some. The kernel's log records the process kill as
+"Out of memory: Killed process".
+`out_of_memory_kills` fails in a run when the kernel ended at least one
+process to free memory since the check's previous run. MMWatchdog reads the
+kernel's count of processes ended to free memory. The alert names the
+killed processes by the command names recorded in the kernel's log.
+Set `fail_when` to
+`the_kernel_kills_a_process_for_lack_of_memory` to state when the check fails.
+
+To watch how much memory the node or one systemd unit uses before it runs
+out, use [`node_resource`](check_node_resource.md) or
+[`systemd_unit_resource`](check_systemd_unit_resource.md) with a limit.
+
+## When the check fails, and when it cannot check
+
+- **A run fails** when the kernel's count rose since the run before. One
+  kill is the alert's message, such as `the kernel ended mysqld (process
+  1234) at 03:12 UTC to free memory`. Several kills are counted in the
+  message, such as `the kernel ended 3 processes to free memory since the
+  run before`, and listed in the alert's body, at most 12 of them.
+- **A unit with a memory limit of its own,** `MemoryMax=` in systemd, can
+  run out of memory while the machine has plenty. The kernel ends a process
+  belonging to the unit with `MemoryMax=`, and the count rises. The
+  description of each killed process ends with `, because its
+  control group reached its memory limit`.
+- **A run is healthy** when the count did not rise: `the kernel ended no
+  process to free memory since the run before`.
+- **The check's first run only notes the count** and is healthy: `the kernel
+  has ended no process to free memory since this check began to watch`. A
+  process kill from before the check's first run does not cause a failure
+  or an alert.
+- **When MMWatchdog cannot read the names from the kernel's log,** the run still
+  fails, and the alert's body says that the names are missing.
+- **MMWatchdog cannot check, and the check is unknown,** when the kernel does not
+  count processes ended to free memory, or when MMWatchdog cannot read
+  `/proc/vmstat` or the boot ID.
+
+A run fails only when it sees a kill, and the next run without one is
+healthy. `recovered_after_healthy_for` counts from that first run without a
+new kill. The wait can begin up to one `check_every` after the last run that
+reports a kill. The first run that sees a kill opens the incident.
+The check refuses `alert_after_failing_for` and ignores the check group's
+value ([the failing time](../../docs/how-to/decide-when-a-check-alerts.md)).
+
+## Examples
+
+```yaml
+# /etc/mmwatchdog/check_groups/out_of_memory.yml
+check_groups:
+  out_of_memory:
+    check_every: 1m
+    time_limit_per_run: 5s
+    recovered_after_healthy_for: 30m
+    out_of_memory_kills:
+      fail_when: the_kernel_kills_a_process_for_lack_of_memory
+    alert_severity: warn
+```
+
+Every minute, MMWatchdog on the node compares the kernel's count of processes
+ended to free memory with the count of the run before. At 03:12 the kernel
+ends `mysqld`. The run at 03:13 sees the count rise and fails. MMWatchdog
+sends the `warn` alert at once: `the kernel ended mysqld (process
+1234) at 03:12 UTC to free memory`. The run at 03:14 is healthy again. With
+`recovered_after_healthy_for: 30m`, the incident closes at the first healthy
+run at or after 03:44, provided every run since 03:14 found no new kill. MMWatchdog
+then sends the recovery.
+
+## How it works
+
+1. MMWatchdog reads the kernel's count of processes ended to free memory,
+   the line `oom_kill` of `/proc/vmstat`, and the ID of the current boot from
+   `/proc/sys/kernel/random/boot_id`.
+2. MMWatchdog keeps the count, the boot ID, and the time of the run with the
+   check's state, so a kill while MMWatchdog restarts is still found. The kernel
+   starts the count at zero in each boot, so in a new boot every kill that
+   the kernel has counted came after the run before. `mmwatchdog check-now` stores
+   nothing, so looking at the check never hides a kill from the next
+   scheduled run.
+3. When the count rose, MMWatchdog reads the kernel's log with `journalctl
+   --no-pager --dmesg --output=json --all --output-fields=MESSAGE`, as
+   root, from one second before the run before, to allow for the two
+   clocks. MMWatchdog reads at most 16 MiB. The kernel writes one line for
+   each process of the node before naming the killed process, so the log
+   of one kill can be long.
+4. MMWatchdog takes the newest lines that name an ended process, as many as the
+   count rose, and writes one sentence for each, with the command, its
+   process ID, and the time in UTC. A time on another day than the alert
+   carries its date.
+
+## Errors and what they mean
+
+| Message | What the message means, and what to do |
+| --- | --- |
+| `out_of_memory_kills.fail_when: is required: The check fails when the kernel kills a process for lack of memory; write the_kernel_kills_a_process_for_lack_of_memory, the only value.` | Write `fail_when: the_kernel_kills_a_process_for_lack_of_memory` below `out_of_memory_kills`. |
+| `out_of_memory_kills.fail_when: expected one of the_kernel_kills_a_process_for_lack_of_memory` | Use `the_kernel_kills_a_process_for_lack_of_memory`, the only allowed value. |
+| `the kernel of this machine does not count the processes that it ends to free memory (/proc/vmstat has no oom_kill)` | The kernel is too old to count processes ended to free memory. The check cannot work on the node running the check. |
+| `MMWatchdog could not read the names of the processes from the kernel's log: ...`, in the alert's body | The kill happened, but `journalctl` failed. The message gives the `journalctl` error. `journalctl --dmesg` on the node shows the kernel's log. |
+| `the kernel's log does not name the processes`, in the alert's body | The kill happened, but the kernel's log held no line that names the process. `journalctl --dmesg` on the node shows what the log holds. |
+
+## Tested on
+
+- **Go tests** in `node_checks_test.go`: `TestOutOfMemoryKillsCheck`
+  covers the first run and a rise of the count.
+  The test covers one kill as the message and several as details, using
+  the newest log entries.
+  Further cases cover a kill by a control group's memory limit, a new boot,
+  and a log that cannot be read or names nothing.
+  The test also covers `mmwatchdog check-now` storing nothing and a kernel
+  without the count.
+
+  `TestNodeChecksRequireTheirFailureRule` checks the required `fail_when`
+  input and rejects another value.
+- **The node suite** (`node_scenarios.py`) makes a real out-of-memory kill
+  in a unit with a memory limit of 20 MiB, on [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution).
+  The alert names the command, its process ID, the time, and the cause,
+  and the check is healthy again at the next run. A kill while MMWatchdog was
+  stopped is found when MMWatchdog runs again. The guests are VMs, because
+  a container shares the kernel of the host machine running the container.
+- The latest run passed on every target distribution
+  ([validation record](../../docs/changing-mmwatchdog/validation.md)).
+
+## Why it works this way
+
+- **A new event opens its incident at once.** The event happened even when
+  the next run is healthy; a waiting time must not hide it. Lasting health
+  closes the incident after `recovered_after_healthy_for`, counted from the
+  first run without a new kill. MMWatchdog counts observed health.
+  After the last run that reports a kill, the incident can stay open for
+  `recovered_after_healthy_for` plus up to one `check_every`.
+- **A timing-only reload keeps the module's state.** Changing when a
+  check runs must not discard an event that has not been read yet.
+- **The kernel's count decides the result, and the log only adds the
+  names.** The kernel's log can be unreadable or exceed the 16 MiB that
+  MMWatchdog reads. Process names can then be missing from the alert, but
+  MMWatchdog still sends the alert.
+- **The check keeps the last count with its state.** A kill while MMWatchdog
+  restarts is still found.
+- **The first run only notes the count.** A process kill from before the
+  check's first run does not cause a failure or an alert.

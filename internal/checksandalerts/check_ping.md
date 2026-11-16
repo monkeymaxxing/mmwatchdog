@@ -1,0 +1,140 @@
+# `ping`
+
+`ping` asks another machine to answer, with the same kind of request that
+the `ping` program sends: an ICMP echo request. MMWatchdog sends the requests
+itself, so the node needs no `ping` program. The check is healthy when an
+answer arrives, and it reports the time that the answer took.
+
+Choose `ping` to know that a machine is up and reachable from the node,
+such as a database machine or a router. A machine that answers a ping can
+still have a service that is down: check the service itself with
+[`tcp`](check_tcp.md), [`http`](check_http.md), or the module of its
+protocol.
+
+## When the check fails, and when it cannot check
+
+In each run, MMWatchdog sends up to three requests and stops at the first answer.
+The run is healthy when an answer arrives within the check group's
+`time_limit_per_run`.
+The message is, for example, `db-1.internal.example.com
+(10.0.0.5) answered a ping request in 0.42 ms`. For a name, the message
+gives the name and, in brackets, the address that MMWatchdog asked. For an address,
+the message gives the address alone, such as `10.0.0.5 answered a ping request in
+0.42 ms`. A check with a limit on `round_trip_milliseconds` puts the reading
+and its limit in front, such as `round_trip_milliseconds is 0.42 (fails
+above 100); db-1.internal.example.com (10.0.0.5) answered a ping request in
+0.42 ms`.
+
+The run fails when:
+
+- **no answer arrives:** `db-1.internal.example.com (10.0.0.5) did not
+  answer 3 ping requests within 10s (time_limit_per_run)`;
+- **the node cannot find the address of the name:** `MMWatchdog cannot find the
+  address of db-1.internal.example.com: `, followed by the resolver's
+  reason;
+- **the request cannot be sent,** such as when the node has no route to
+  the address: `MMWatchdog cannot send a ping request to ...`, followed by the
+  cause;
+- **the round trip passes a limit** that the check states on
+  `round_trip_milliseconds`
+  ([checks that measure a number](../../docs/reference/configuration-files.md#checks-that-measure)),
+  with the message that says the machine answered a ping request, preceded
+  by the reading and the limit. A reading equal to the limit passes.
+  Without a limit the check fails only when no answer arrives.
+
+MMWatchdog cannot check when the process running the check is not root, so
+the run is unknown. Only root may send such a request. The daemon runs as root.
+A run of `mmwatchdog check-now CHECK_GROUP --without-daemon` by another
+account is unknown, with `MMWatchdog needs the rights of root to send a ping
+request`.
+
+An unknown run opens no failure incident. The unknown run follows the
+check's waiting times on a separate cannot-check incident
+([unknown results](../../docs/changing-mmwatchdog/design/checks.md#the-failing-time)).
+
+A failed run starts or continues the check's
+[failing time](../../docs/how-to/decide-when-a-check-alerts.md).
+
+## Examples
+
+```yaml
+# /etc/mmwatchdog/check_groups/database_machine.yml
+check_groups:
+  database_machine:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 5m
+    recovered_after_healthy_for: 2m
+    ping: db-1.internal.example.com
+    fail_when_measurement_above:
+      round_trip_milliseconds: 100
+    alert_severity: warn
+```
+
+The check is written directly on the check group, so status shows it as
+`database_machine/ping`. Every minute, MMWatchdog on the node looks up the address
+of `db-1.internal.example.com` and sends it up to three ping requests. The
+run is healthy when an answer arrives within 10 seconds and took at most 100
+milliseconds. When the runs have been failing for 5 minutes, MMWatchdog sends the
+`warn` alert.
+
+The round-trip limit is optional. Without a round-trip limit, only a
+machine that does not answer fails the check.
+
+## How it works
+
+- **The value is the name or the address of the machine,** written alone
+  after `ping:`: a host name, or an address of IP version 4 or 6, such as
+  `10.0.0.5` or `::1`.
+- **MMWatchdog asks one address.** For a name, MMWatchdog takes the first
+  address that the node's resolver gives.
+- **Up to three requests, at most a second apart.** MMWatchdog sends the next
+  request when no earlier request has an answer for a second, or for a
+  third of the run's remaining time, whichever is shorter.
+  After the third request, MMWatchdog waits for an answer until
+  `time_limit_per_run`. An answer to any of the three requests counts.
+- **`round_trip_milliseconds`** is the time between the request that was
+  answered and its answer. MMWatchdog records `round_trip_milliseconds` in the
+  [measurement history](../../docs/how-to/look-back-at-measurements.md) like every
+  measurement. A run without an answer has no reading.
+- **MMWatchdog recognizes its own answers.** Each request carries a random marker,
+  so answers to the `ping` program and other messages that reach the node
+  are left out.
+
+## Errors and what they mean
+
+`mmwatchdog validate` and `mmwatchdog reload` print each error after the file, the line, and
+the column, which the table leaves out.
+
+| Message | What the message means, and what to do |
+| --- | --- |
+| `check_groups.database_machine.ping: must be the name or the address of a machine, such as db-1.internal.example.com or 10.0.0.5` | The value is empty, longer than 253 characters, or holds a space, a `/`, or `://`, such as a URL. Write the name or the address alone |
+| `check_groups.database_machine.ping: expected a string, found a mapping` | The check is written as a mapping, such as `ping: {host: db-1.internal.example.com}`, or as a list, which the message names. Write the name alone: `ping: db-1.internal.example.com` |
+| `check_groups.database_machine.fail_when_measurement_above.latency: this check has no such measurement; it measures round_trip_milliseconds` | The limit names a measurement that `ping` does not report. Write `round_trip_milliseconds` |
+| `MMWatchdog needs the rights of root to send a ping request` | At a run, not at validation: the run was not made as root. Run `mmwatchdog check-now` with `sudo`, or leave the run to the daemon |
+
+## Tested on
+
+- **Go tests** in `internal/checksandalerts`: `TestPingRequestAndReply` (the echo request
+  with its checksum, by the example of RFC 1071; the answer by its marker
+  and number; messages of other programs and of routers left out) and
+  `TestPingCheckOnThisMachine` (as root: the machine answers itself, the
+  reading and its limit, a name with its address in the message, a name
+  without an address; as another account: unknown). `TestPingCheckOnThisMachine` needs root,
+  so the test skips on macOS. The two Go tests ran as root in the native suite, on the AMD64
+  guest of [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution).
+- **The node suite** (`tests/integration/node_scenarios.py`), on [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution): a ping of the guest itself as `127.0.0.1`,
+  as `::1`, and as `localhost`, with a limit on the round trip; an address
+  on a test network that never answers; and a name without an address.
+
+## Why it works this way
+
+- **MMWatchdog sends the requests itself.** The node needs no `ping` program, and MMWatchdog
+  measures the round trip without reading the output of another program.
+- **Up to three requests in a run.** One lost packet does not fail the
+  check, and the run still ends at the first answer.
+- **`ping` is a core module, built into `mmwatchdog`.** Whether a machine
+  answers is a question about any Linux server, not about one tool.
+- **The round trip is a measurement, with an optional limit.** MMWatchdog applies
+  the limit in the same way as for every module, and the readings reach the
+  measurement history.

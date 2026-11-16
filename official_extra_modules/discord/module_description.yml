@@ -1,0 +1,26 @@
+summary: Delivers each alert to a Discord channel through a webhook.
+used_as: alert_destination
+inputs:
+  webhook_url_file:
+    type: string
+    required: true
+    description: >-
+      The absolute path of a file that holds the address of the Discord
+      webhook, and nothing else. The address is a secret. MMWatchdog reads the file
+      for every delivery and gives the module its content.
+  mention:
+    type: string
+    required: false
+    description: >-
+      A Discord mention that starts every message of this destination, in
+      quotes and in Discord's notation: "<@USER_ID>" for a person,
+      "<@&ROLE_ID>" for a role, "@everyone", or "@here". Only this mention
+      notifies anybody; no text of an alert does.
+examples:
+  - description: Send every alert to the team's channel, and mention one person.
+    config: |
+      discord:
+        webhook_url_file: /etc/mmwatchdog/secrets/discord-webhook-team
+        mention: "<@123456789012345678>"
+      remind_every: never
+      alert_severities: [info, warn, sos]

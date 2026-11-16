@@ -1,0 +1,333 @@
+# `dnf_security_updates`
+
+`dnf_security_updates` fails while a security update waits to be installed on
+a node of the Red Hat family, such as Rocky Linux, AlmaLinux, and Fedora, and
+its message names the packages. The check asks the node's own package manager,
+`dnf`. The check downloads nothing and reads only what dnf already knows. Set
+`fail_when` to `a_security_update_waits_to_be_installed` to state when the
+check fails.
+
+On this family, `known_exploited_vulnerabilities_in_installed_packages` is
+unknown, because the vulnerability data that the family publishes is too
+incomplete, so this check is the one that alerts on waiting security fixes.
+[Limits on each distribution](../../docs/reference/limits-on-each-distribution.md)
+says what was measured and what you can do.
+
+On Debian and Ubuntu, use [`apt_security_updates`](check_apt_security_updates.md)
+instead, and on SUSE, use [`zypper_security_patches`](check_zypper_security_patches.md).
+Fedora's dnf is dnf 5, and the other distributions of the family have dnf 4.
+The check tells them apart by the node and reads each in its own way, as
+[How it works](#how-it-works) says.
+
+To learn whether the node must restart to use updates that are already
+installed, such as a new kernel, use [`reboot_after_updates`](check_reboot_after_updates.md).
+To learn when the release's security support ends, use
+[`distribution_release_security_support`](check_distribution_release_security_support.md).
+
+To find known exploited flaws in installed packages, use
+[`known_exploited_vulnerabilities_in_installed_packages`](check_known_exploited_vulnerabilities_in_installed_packages.md).
+That check does not know the Red Hat family yet, and is unknown there.
+
+## Set up
+
+The node must refresh dnf's package data by itself. MMWatchdog never refreshes
+the node's package data, because a refresh downloads from the network and needs
+root privileges.
+
+Rocky Linux 9 and AlmaLinux 10 turn on `dnf-makecache.timer` by default. It
+runs `dnf makecache --timer` every hour, and dnf lets it work every three hours.
+Fedora turns on the same timer, which runs `dnf5 makecache` every three hours
+or so. On a node where the timer is off, turn it on as root, and keep it for
+every boot:
+
+```sh
+systemctl enable --now dnf-makecache.timer
+```
+
+To refresh at once, run `dnf makecache` as root. Without a refresh, the check is
+unknown after seven days (dnf 5: after the repository's own
+`metadata_expire` and one day, but at least seven days and at most 15 days).
+
+On Fedora, `dnf5 makecache` refreshes a repository only when the repository's
+package data is older than its `metadata_expire`: 6 hours for the updates,
+7 days for the release, and 14 days for the openh264 repository. When it
+refreshes a repository, it touches the repository's file of package data
+whenever the server answered, also for a repository that has not changed, and
+never when the refresh fails. dnf 5 has no stamp like `last_makecache`.
+
+On Rocky Linux and AlmaLinux, `dnf makecache --timer`, which the timer runs, does nothing for three hours
+after its last run (dnf's setting `metadata_timer_sync`, counted from
+`/var/cache/dnf/last_makecache`). After that, it asks the server of every enabled
+repository, also for a repository whose package data has not expired yet, and
+downloads only the small index file of a repository that has not changed. It
+touches the repository's file of package data whenever the server answered.
+The check reads that file's modification time, and the file is the only thing
+that tells a refresh that worked from one that failed: `dnf makecache --timer`
+touches its stamp, `/var/cache/dnf/last_makecache`, also when every repository
+fails, so the stamp tells only that the timer ran.
+
+## When the check fails, and when it cannot check
+
+- **The check fails** while at least one security update waits. The message
+  looks like `2 security updates wait to be installed: bind-libs, kernel`.
+  Each package is named once, however many security advisories name it. The
+  message names 20 packages at most and counts the rest, such as `, and 4 more`.
+- **The check is healthy** with `no security update waits to be installed`.
+- **MMWatchdog cannot check, and the check is unknown,** when any condition
+  below applies. The message explains why. An unknown result is never healthy:
+  - An enabled repository has no package data in dnf's cache. The message
+    names the repository.
+  - The newest package data of an enabled repository was touched more than 7
+    days ago (dnf 5: more than the limit of the repository). The message
+    names the repository and the age, and says how to turn on the refresh
+    timer in [Set up](#set-up).
+  - No repository is enabled.
+  - dnf cannot be run, or it ends with an error, or its answer is a list that
+    MMWatchdog does not understand.
+  - The node runs a distribution that MMWatchdog does not know, or Debian,
+    Ubuntu, or SUSE. On those, the message names the check to use.
+
+An unknown result opens a cannot-check incident once it has lasted for the
+check's `alert_after_failing_for`, as for every check
+([the failing time](../../docs/how-to/decide-when-a-check-alerts.md)).
+
+## Examples
+
+### Tell the team when a security update waits
+
+```yaml
+# /etc/mmwatchdog/check_groups/node_software.yml
+check_groups:
+  node_software:
+    check_every: 1h
+    time_limit_per_run: 2m
+    alert_after_failing_for: 0s
+    recovered_after_healthy_for: 0s
+    checks:
+      no_security_update_waits:
+        dnf_security_updates:
+          fail_when: a_security_update_waits_to_be_installed
+        alert_severity: warn
+```
+
+Once an hour, MMWatchdog on the node asks dnf which security updates wait.
+`alert_after_failing_for: 0s` sends the `warn` alert after the first run that
+finds a waiting security update. The alert message names the packages. After
+the updates are installed, the next run is healthy, and
+`recovered_after_healthy_for: 0s` sends the recovery at once.
+
+### A node that installs its updates by itself
+
+```yaml
+# /etc/mmwatchdog/check_groups/node_software.yml
+check_groups:
+  node_software:
+    check_every: 1h
+    time_limit_per_run: 2m
+    alert_after_failing_for: 0s
+    recovered_after_healthy_for: 0s
+    checks:
+      automatic_security_updates_still_work:
+        dnf_security_updates:
+          fail_when: a_security_update_waits_to_be_installed
+        alert_severity: warn
+        alert_after_failing_for: 3d
+```
+
+On a node where `dnf-automatic` installs the security updates, the check fails
+only between the day an update appears and the next installation. With
+`alert_after_failing_for: 3d`, MMWatchdog sends no alert for an update that the
+next installation takes care of. When the check has failed for 3 days, the
+alert says that the automatic installation has stopped working.
+
+## How it works
+
+MMWatchdog reads `/etc/os-release` on the node. The check runs when the
+distribution's `ID` or any name in `ID_LIKE` is `rhel`, `rocky`, `almalinux`,
+or `centos`, or when the `ID` is `fedora`: Rocky Linux and AlmaLinux have
+`ID_LIKE="rhel centos fedora"`, and CentOS Stream says `rhel`. Fedora has
+`ID=fedora` and no `ID_LIKE`, so only its `ID` counts. Amazon Linux says only
+that it is like fedora (`ID_LIKE=fedora`), which does not count, so the check
+is unknown on Amazon Linux.
+
+MMWatchdog then looks at the program `dnf`. On Fedora 41 and newer, `dnf` is a
+link to `dnf5`, and the check follows the dnf 5 steps below. Anywhere else, it
+follows the dnf 4 steps. A `dnf5` installed beside a dnf 4 does not count,
+because the program `dnf` is the one that runs.
+
+**dnf 4 (Rocky Linux, AlmaLinux, and the rest):**
+
+1. MMWatchdog reads the repository files `/etc/yum.repos.d/*.repo`. Each
+   section is a repository, named by its id. A repository without `enabled=`
+   is enabled, and one with `enabled=0` needs nothing. For each enabled
+   repository, MMWatchdog looks in dnf's cache for the directories named
+   `ID-` and 16 hexadecimal digits, such as `baseos-522ed8e2b2f761ff`. The
+   digits come from the address of the repository, so an old directory can stay
+   beside the current one. In those directories, the file
+   `repodata/*primary.*` is the repository's package data. The newest such file
+   of the repository must be there, with a modification time at most 7 days
+   old. A missing or older file makes the check unknown. The oldest repository
+   decides.
+2. MMWatchdog runs `dnf --quiet --cacheonly updateinfo list --security
+   --updates` with `LC_ALL=C`, as MMWatchdog itself, which is root. dnf's cache
+   belongs to root, and dnf run as an unprivileged account reads a cache of
+   its own, which is empty: `--cacheonly` then ends with exit code 0 and no
+   list, which would read as "no update waits". `--cacheonly` keeps dnf from
+   fetching or changing anything. `--updates` lists only the advisories for
+   which dnf has an update that it would install, so an advisory for a package
+   of a module stream that the node does not use does not count.
+3. MMWatchdog reads the list: one line for each advisory and package, with
+   three columns, the advisory, its kind (such as `Important/Sec.`), and the
+   package with its version. The check counts each package once, however many
+   advisories name it. An `Error:` that dnf writes, or a line with another form,
+   makes the check unknown.
+
+**dnf 5 (Fedora):**
+
+1. MMWatchdog runs `dnf --quiet --cacheonly repo info --enabled --json` with
+   `LC_ALL=C`, as MMWatchdog itself. dnf 5 knows the enabled repositories
+   wherever their files are (Fedora keeps them in `/usr/share/dnf5/repos.d`,
+   and a file of the same name in `/etc/yum.repos.d` replaces one). For each
+   repository, dnf 5 states `timestamp`, the modification time of the
+   repository's file `repodata/*primary.*` in its cache (dnf 5's directory
+   `/var/cache/libdnf5/ID-HASH`), and `metadata_expire`, the repository's own
+   time after which dnf 5 refreshes the repository. The `timestamp` must be
+   at most `metadata_expire` plus one day old, but at least 7 days and at
+   most 15 days. The
+   oldest repository decides. An answer that is not a JSON array of
+   repositories with an `id`, a `timestamp`, and a `metadata_expire`, a
+   repository without data, an empty list, and an error such as
+   `Cache-only enabled but no cache for repository "updates"` make the check
+   unknown.
+2. MMWatchdog runs `dnf --quiet --cacheonly updateinfo list --security
+   --updates --json` with `LC_ALL=C`, as MMWatchdog itself. Run by an
+   unprivileged account, dnf 5 also reads the system's cache; the check runs
+   it as root anyway, as for dnf 4, so that both versions run in one way.
+3. MMWatchdog reads the JSON: an array with one object for each advisory and
+   package, with the advisory's `type`, which must be `security`, and the
+   package with its version in `nevra`, such as `pcre2-10.49-1.fc45.x86_64`.
+   The array is empty when no update waits. The check counts each package
+   once. Anything else makes the check unknown, with the first 200 characters
+   of what dnf wrote.
+
+## Errors and what they mean
+
+| Message | Meaning of the message, and what to do |
+| --- | --- |
+| `dnf_security_updates.fail_when: is required: The check fails while a security update waits to be installed; write a_security_update_waits_to_be_installed, the only value.` | Write `fail_when: a_security_update_waits_to_be_installed` below `dnf_security_updates`. |
+| `dnf_security_updates.fail_when: expected one of a_security_update_waits_to_be_installed` | Use `a_security_update_waits_to_be_installed`, the only allowed value. |
+| `the package data of the repository ID (a file *primary.* in /var/cache/dnf/ID-HASH/repodata), which dnf touches at each successful refresh of the repository, is 9 days old, so MMWatchdog cannot know which updates wait: ...` | The last successful refresh of the repository is too old. Turn on the refresh timer in [Set up](#set-up), and look at `systemctl status dnf-makecache.service` for the reason that the refresh fails. |
+| `the package data of the repository ID, which dnf touches at each successful refresh of the repository, is 20 days old (the limit for this repository is 15 days), so MMWatchdog cannot know which updates wait: ...` | The same on Fedora (dnf 5). The limit is the repository's `metadata_expire` plus one day, but at least 7 days and at most 15 days. When the message says that the repository's `metadata_expire` is longer than MMWatchdog accepts, set `metadata_expire` to at most 14 days in the repository's file. |
+| `the repository ID has no package data in dnf's cache, so MMWatchdog cannot know which updates wait: ...` | dnf 5 states no time for the repository's package data. Run `dnf makecache` as root, and turn on the refresh timer in [Set up](#set-up). |
+| `MMWatchdog cannot ask dnf about its repositories: ...` | dnf 5 ended with an error, and the message gives dnf's text. The usual text is `Cache-only enabled but no cache for repository "ID"`: the repository was never refreshed, or its cache was removed. Run `dnf makecache` as root, and turn on the refresh timer in [Set up](#set-up). |
+| `dnf gave a list of repositories that MMWatchdog does not understand: ...` | The answer of dnf 5 to `repo info --enabled --json` has another form than a JSON array of repositories. |
+| `dnf has no enabled repository, so MMWatchdog cannot know which updates wait` | dnf 5 lists no enabled repository. Enable one (dnf 4 says the same, and adds `in /etc/yum.repos.d`). |
+| `the repository ID has no package data in dnf's cache (a file *primary.* in /var/cache/dnf/ID-HASH/repodata), so MMWatchdog cannot know which updates wait: ...` | The repository was never refreshed, or its cache was removed. Run `dnf makecache --timer` as root, and turn on the refresh timer in [Set up](#set-up). |
+| `dnf has no enabled repository in /etc/yum.repos.d, so MMWatchdog cannot know which updates wait` | Enable a repository, for example with `dnf config-manager --set-enabled ID`. |
+| `MMWatchdog cannot run dnf: ...` | `dnf` is not installed, or not in the standard path. |
+| `MMWatchdog cannot ask dnf which updates wait: ...` | dnf ended with an error, and the message gives dnf's text. Run the command of "How it works" by hand as root to see the whole answer. |
+| `dnf gave a list of security updates that MMWatchdog does not understand: ...` | dnf 4's list has a form other than three columns, or dnf 5's list is not a JSON array of security advisories with a package. |
+| `this node runs NAME, whose package manager is apt, not dnf: use the check apt_security_updates` | The node runs Debian or Ubuntu. |
+| `this node runs NAME, whose package manager is zypper, not dnf: use the check zypper_security_patches` | The node runs SUSE. |
+| `MMWatchdog does not know the package manager of NAME: it knows only that of Debian and Ubuntu (apt_security_updates), that of the Red Hat family (dnf_security_updates), and that of SUSE (zypper_security_patches)` | The distribution is not one of MMWatchdog's targets, such as Amazon Linux. |
+
+## Tested on
+
+[Limits on each distribution](../../docs/reference/limits-on-each-distribution.md) says what MMWatchdog cannot do on each distribution, or did not test there, and why.
+
+- **Go tests:** `red_hat_checks_test.go` tests the check on dnf 4:
+  `TestDnfSecurityUpdatesCheck` covers dnf's list with no update, one update,
+  and several updates (a package that several advisories name counts once), a
+  list in another form, an error of dnf beside exit code 0 and a failed dnf,
+  fresh, missing, old, and empty package data among several repositories (one
+  of them disabled, one without `enabled=`, one with an old directory beside
+  the current one), a fresh stamp `last_makecache` beside old package data,
+  the arguments, and the unknown messages of Debian and SUSE and of the other
+  checks on Red Hat. `fedora_checks_test.go` tests the check on dnf 5, with a
+  `dnf5` stand-in and the link `dnf`: `TestDnfSecurityUpdatesCheckOnDnfFive`
+  covers an empty list, waiting updates (a package that several advisories
+  name counts once), lists that are not understood (dnf 5's text
+  list, no output, `null`, an object, another advisory type, no package, and
+  more), a failed dnf, the repository limits of 7, 8, and 15 days at their
+  edges (the repository's `metadata_expire` plus one day, but at least 7
+  days), the oldest repository, a repository without data, no enabled
+  repository, answers about the repositories that are not understood,
+  and a failed `repo info`. `TestFedoraIsInTheRedHatFamilyByItsOwnID` checks
+  that Fedora is in the family and Amazon Linux is not.
+  `TestNodeDistributionFamily` in `server_checks_test.go` checks `ID` and
+  `ID_LIKE`, and `TestUpdateChecksOnUnknownDistributions` checks the unknown
+  result on Amazon Linux.
+- **The node suite** (`node_scenarios.py`) runs the check against the real dnf
+  on Rocky Linux 9, AlmaLinux 10, and Fedora 45, three of the
+  [target distributions](../../docs/changing-mmwatchdog/testing.md#every-target-distribution), with
+  SELinux enforcing. The suite turns on the refresh timer with the command of
+  [Set up](#set-up), starts the service, compares the directories that the
+  refresh touched with the enabled repositories, and sees that a second run of
+  the service right after the first touches nothing. It then picks a package at run
+  time that has a security advisory, installs the version before the update, and
+  compares the check's answer with the updates that dnf lists as root. It also
+  tests package data that is old (nine days; on Fedora twenty, because one of
+  Fedora's repositories keeps its package data 14 days), also after a refresh
+  that failed with the servers blocked (on Rocky Linux and AlmaLinux that
+  refresh touched dnf's stamp; on Fedora it touched no package data, and
+  there is no stamp), and package data that is missing.
+
+## Why it works this way
+
+- **The check reads only package data that a refresh touched recently.**
+  Without a refresh, dnf does not know the updates of the last days, and "no
+  update waits" would be a guess.
+- **The check does not read dnf 4's stamp.** `dnf makecache --timer`, which
+  `dnf-makecache.timer` runs, touches `/var/cache/dnf/last_makecache` also
+  when the refresh fails. A node whose refresh fails for weeks would look
+  fresh, and the check would say that no update waits. The modification time of the
+  package data is touched only after the repository's server answered, also
+  when the repository has not changed, and so it shows the refresh that
+  failed. dnf 5 has no stamp, and its package data behaves in the same way:
+  the test on Fedora 45 touched the package data of every repository with a
+  refresh that worked, and none with the servers blocked.
+- **The limit of a dnf 5 repository is its own `metadata_expire` plus a day,
+  but at least seven days.** dnf 5 refreshes a repository only when the
+  package data is older than the repository's `metadata_expire`, and Fedora
+  gives its repositories 6 hours, 7 days, and 14 days. A node whose refresh
+  works therefore has package data as old as `metadata_expire` plus the wait
+  for the next run of the timer, which is three hours and up to an hour more.
+  A flat seven days would make the check unknown on every healthy Fedora
+  node, for the repositories of 7 and 14 days. The day is a margin for a node
+  that was off for a short time. dnf 4 on Rocky Linux and AlmaLinux refreshes
+  every enabled repository at each run of its timer, so seven days need no
+  such rule. A `metadata_expire` that is not a positive number of seconds
+  leaves the limit at seven days, as for the other package managers.
+- **A repository's own `metadata_expire` raises the limit to 15 days at
+  most.** Without a ceiling, a repository with a `metadata_expire` of months
+  would let the check report that no update waits from data months old.
+  Fedora's longest `metadata_expire` is 14 days, so 15 days covers every
+  Fedora repository as Fedora ships it. Beyond that, the message names the
+  repository's own setting as the cause.
+- **The seven days are the same as for `apt_security_updates` and
+  `zypper_security_patches`.** All three checks use one rule for how old the
+  package manager's data may be, and dnf 5 raises the limit only as far as a
+  repository's own `metadata_expire` makes necessary.
+- **dnf 5 states the repositories and the time itself.** Fedora keeps its
+  repository files in `/usr/share/dnf5/repos.d`, and a file of the same name
+  in `/etc/yum.repos.d` replaces one, while `/etc/yum.repos.d` is empty on a
+  fresh installation. `dnf repo info --enabled --json` gives the enabled
+  repositories whatever their files and overrides are, with the time of the
+  package data, which the test showed to be the modification time of the
+  `primary` file, and not the one of `repomd.xml`. The check does not parse
+  dnf 5's repository files itself.
+- **dnf 5's JSON, not its text.** The text list of dnf 5 has a header line
+  and a date with a space, and is empty when no update waits. The JSON has
+  named fields and an empty array in that case. Either form that the check
+  does not understand makes the check unknown, so a change of dnf 5's output
+  turns into `unknown` and never into "no update waits".
+- **The check tells dnf 5 from dnf 4 by the link `dnf` to `dnf5`,** which
+  Fedora 41 and newer have, and not by the distribution's `ID`: the program
+  that runs decides which output the check must read, and a node of the
+  family may have either.
+- **dnf runs as MMWatchdog itself.** dnf's cache belongs to root, and dnf 4 run
+  as an unprivileged account does not read it and reports no update without
+  an error. `--cacheonly` keeps dnf from fetching or changing anything.
+- **The check names packages.** dnf's list names the package of each advisory.
+  Several advisories for one package, such as the 27 of a kernel that is a year
+  old, count as one update, as `dnf check-update --security` counts.

@@ -1,0 +1,14 @@
+summary: Reports each job in the application's file of failed jobs as one finding.
+used_as: check
+one_incident_for_each_finding: true
+inputs:
+  failed_jobs_file_path:
+    type: string
+    required: true
+    description: The absolute path of the file into which the application writes the name of each failed job, one on a line.
+examples:
+  - description: Send one alert for each failed job.
+    config: |
+      failed_jobs:
+        failed_jobs_file_path: /var/lib/myapp/failed_jobs
+      alert_severity: warn

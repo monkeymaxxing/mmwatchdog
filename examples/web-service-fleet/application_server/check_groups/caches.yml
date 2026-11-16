@@ -1,0 +1,70 @@
+# /etc/mmwatchdog/check_groups/caches.yml on the application server: two instances
+# of Redis, one check group for each, so that an alert names the instance;
+# and memcached, which MMWatchdog only reports and never restarts.
+check_groups:
+  sessions_redis:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      sessions_redis_is_running:
+        systemd_unit_state:
+          systemd_unit: redis-server@sessions.service
+          fail_when: the_unit_is_not_active
+        alert_severity: warn
+      sessions_redis_answers_ping:
+        redis:
+          connection_security: unencrypted
+          address: 127.0.0.1:6380
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail: [sessions_redis/sessions_redis_is_running]
+    restart_systemd_unit:
+      systemd_unit: redis-server@sessions.service
+      triggered_by_checks: [sessions_redis_is_running, sessions_redis_answers_ping]
+      restart_after_failing_for: 3s
+      max_attempts: 3
+      min_time_between_attempts: 2s
+      reset_attempts_after_healthy_for: 5s
+
+  job_queue_redis:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      job_queue_redis_is_running:
+        systemd_unit_state:
+          systemd_unit: redis-server@job-queue.service
+          fail_when: the_unit_is_not_active
+        alert_severity: warn
+      job_queue_redis_answers_ping:
+        redis:
+          connection_security: unencrypted
+          address: 127.0.0.1:6381
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail: [job_queue_redis/job_queue_redis_is_running]
+    restart_systemd_unit:
+      systemd_unit: redis-server@job-queue.service
+      triggered_by_checks: [job_queue_redis_is_running, job_queue_redis_answers_ping]
+      restart_after_failing_for: 3s
+      max_attempts: 3
+      min_time_between_attempts: 2s
+      reset_attempts_after_healthy_for: 5s
+
+  # No restart_systemd_unit: MMWatchdog tells, and a person decides.
+  memcached:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      memcached_is_running:
+        systemd_unit_state:
+          systemd_unit: memcached.service
+          fail_when: the_unit_is_not_active
+        alert_severity: warn
+      memcached_answers_statistics_request:
+        memcached: 127.0.0.1:11211
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail: [memcached/memcached_is_running]

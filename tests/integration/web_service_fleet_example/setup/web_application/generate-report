@@ -1,0 +1,10 @@
+#!/usr/bin/env python3
+"""The web application's report job, which report-generator.service runs
+once and which then ends. It takes as many MiB of memory as the file
+/var/lib/web-application/report-size-mebibytes says. The unit allows the job
+32 MiB, so a report of 256 MiB makes the kernel end it."""
+from pathlib import Path
+
+mebibytes = int(Path('/var/lib/web-application/report-size-mebibytes').read_text())
+report = [bytearray(b'\x01') * (1024 * 1024) for _ in range(mebibytes)]
+print(f'the report took {len(report)} MiB of memory')

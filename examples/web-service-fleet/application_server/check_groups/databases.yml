@@ -1,0 +1,58 @@
+# /etc/mmwatchdog/check_groups/databases.yml on the application server: the
+# primary MariaDB server on 127.0.0.1:3306 and its replica on
+# 127.0.0.1:3307.
+check_groups:
+  database_primary:
+    check_every: 1s
+    time_limit_per_run: 800ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      # The server answers, through its local socket, and its own count of
+      # open connections stays below half of what it allows.
+      connections_are_below_50_percent:
+        mysql: {}
+        fail_when_measurement_above:
+          connections_used_percent: 50
+        alert_severity: warn
+      # A real query that the reports need, with the expected answer. The
+      # account mmwatchdog logs in through the local socket as the MariaDB account
+      # mmwatchdog@localhost, which may only read the database reporting.
+      reporting_database_answers_a_real_query:
+        shell: |
+          set -o pipefail
+          rows=$(mariadb --batch --skip-column-names --execute 'SELECT COUNT(*) FROM reporting.daily_totals') || exit 1
+          echo "reporting.daily_totals holds $rows rows, and the reports need at least 1"
+          [ "$rows" -ge 1 ]
+        alert_severity: warn
+        no_alerts_or_recovery_actions_while_these_checks_fail: [database_primary/connections_are_below_50_percent]
+
+  # Told again as it gets worse: a warning when the replica is more than 5
+  # seconds behind, and an urgent alert when it is more than 15. A replica
+  # that does not follow its source fails both checks by itself.
+  database_replica:
+    check_every: 1s
+    time_limit_per_run: 800ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      replica_is_less_than_5_seconds_behind:
+        mysql:
+          database_server_host: 127.0.0.1
+          database_server_port: 3307
+          connection_security: unencrypted    # the connection stays on this node
+          login_user: mmwatchdog_monitoring
+          login_password_file: /etc/mmwatchdog/secrets/mariadb-replica-mmwatchdog-monitoring-password
+        fail_when_measurement_above:
+          replication_lag_seconds: 5
+        alert_severity: warn
+      replica_is_less_than_15_seconds_behind:
+        mysql:
+          database_server_host: 127.0.0.1
+          database_server_port: 3307
+          connection_security: unencrypted
+          login_user: mmwatchdog_monitoring
+          login_password_file: /etc/mmwatchdog/secrets/mariadb-replica-mmwatchdog-monitoring-password
+        fail_when_measurement_above:
+          replication_lag_seconds: 15
+        alert_severity: sos

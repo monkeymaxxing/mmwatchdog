@@ -1,0 +1,12 @@
+# Where this node sends alerts. Each destination receives the alerts of the
+# severities in its alert_severities. Add one, provision its token file with
+# your secrets, and deploy:
+#
+# destinations:
+#   operations:
+#     webhook:
+#       url: https://alerts.example.com/mmwatchdog
+#       bearer_token_file: /etc/mmwatchdog/secrets/webhook
+#     alert_severities: [info, warn, sos]
+#     remind_every: 4h   # repeat open incidents every 4 hours; never disables reminders
+destinations: {}

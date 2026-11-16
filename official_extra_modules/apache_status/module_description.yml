@@ -1,0 +1,25 @@
+summary: Reads the status page of an Apache web server, which mod_status serves, and measures how many of Apache's workers are busy.
+used_as: check
+inputs:
+  url:
+    type: string
+    required: true
+    description: The address of Apache's status page in the form for programs, which ends with ?auto, such as http://127.0.0.1/server-status?auto.
+measurements:
+  busy_workers:
+    unit: workers
+    description: The workers that serve a request now.
+  idle_workers:
+    unit: workers
+    description: The workers that wait for a request.
+  busy_workers_percent:
+    unit: percent
+    description: The busy workers as a share of the most workers that Apache starts. At 100, Apache makes new requests wait.
+examples:
+  - description: Fail when Apache does not answer, and when more than 90 percent of its workers are busy.
+    config: |
+      apache_status:
+        url: http://127.0.0.1/server-status?auto
+      fail_when_measurement_above:
+        busy_workers_percent: 90
+      alert_severity: warn

@@ -1,0 +1,391 @@
+# Deploy the hub first and store mmwatchdog_join_code in the MMX vault.
+fleet_stages:
+  - id: prepare
+    nodes: all
+    node_tasks:
+      - id: create_group
+        group: {name: mmwatchdog, system: true}
+
+      - id: create_check_user
+        user: {name: mmwatchdog, system: true, primary_group: mmwatchdog, home: /var/lib/mmwatchdog-checks, create_home_directory: false}
+
+      - id: check_home
+        directory: {path: /var/lib/mmwatchdog-checks, owner: mmwatchdog, group: mmwatchdog, permissions_mode: "0700"}
+
+      - id: library_dir
+        directory: {path: /usr/local/lib/mmwatchdog, owner: root, group: root, permissions_mode: "0755"}
+
+      - id: config_dir
+        directory: {path: /etc/mmwatchdog, owner: root, group: root, permissions_mode: "0755"}
+
+      - id: secrets_dir
+        directory: {path: /etc/mmwatchdog/secrets, owner: root, group: root, permissions_mode: "0700"}
+
+  # The secret files that the inventory's mmwatchdog_secret_files names, from
+  # the MMX vault. They are written before validation, because validation
+  # reads every file that the configuration names. A project without secret
+  # files skips this fleet stage, and so needs no vault.
+  - id: write_secret_files
+    nodes: all
+    when: {not: {equals: ["{{ .vars.mmwatchdog_secret_files }}", []]}}
+    node_tasks:
+      - id: secret_files
+        loop: "{{ .vars.mmwatchdog_secret_files }}"
+        as: secret_file
+        file:
+          path: "/etc/mmwatchdog/secrets/{{ .secret_file }}"
+          content: "{{ .secrets.mmwatchdog_secret_files[.secret_file] }}\n"
+          owner: root
+          group: root
+          permissions_mode: "0600"
+
+  - id: stage_binary
+    nodes: all
+    node_tasks:
+      - id: stage_binary
+        file:
+          path: /usr/local/lib/mmwatchdog/mmwatchdog-candidate
+          source: mmwatchdog
+          owner: root
+          group: root
+          permissions_mode: "0755"
+          check_new_file:
+            shell:
+              script: '"$NEW_FILE" version'
+              run_script_in_dryrun: true
+              env: {NEW_FILE: "{{ .new_file.path }}"}
+
+  - id: stage_candidate
+    nodes: all
+    node_tasks:
+      # Exact copies remove stale candidate files and leave unchanged files alone.
+      # The install block validates this complete set before installing it.
+      - id: stage_config
+        directory:
+          path: /usr/local/lib/mmwatchdog/candidate_config
+          source: "{{ .vars.mmwatchdog_config_source_dir }}"
+          also_delete_entries_not_in_source: true
+          owner: root
+          group: root
+          permissions_mode: "0700"
+          file_permissions_mode: "0644"
+      # A node gets the modules that are not core from two directories of
+      # this project: official_extra_modules/, which comes with the MMWatchdog
+      # release, and mmwatchdog_external_modules/, which holds the modules of the
+      # project's own. Each holds one directory for each module. The two
+      # candidate directories are exact copies, so they hold only the modules
+      # of this deploy. The installed directories stay as they are until the
+      # install stage.
+      - id: stage_official_extra_modules
+        directory:
+          path: /usr/local/lib/mmwatchdog/candidate_official_extra_modules
+          source: official_extra_modules
+          also_delete_entries_not_in_source: true
+          owner: root
+          group: root
+          permissions_mode: "0755"
+          file_permissions_mode: "0644"
+      # Every project keeps mmwatchdog_external_modules, even without modules
+      # of its own. A missing source fails before anything live changes.
+      - id: stage_mmwatchdog_external_modules
+        directory:
+          path: /usr/local/lib/mmwatchdog/candidate_external_modules
+          source: mmwatchdog_external_modules
+          also_delete_entries_not_in_source: true
+          owner: root
+          group: root
+          permissions_mode: "0755"
+          file_permissions_mode: "0644"
+      # A module that is an executable has its program in the file
+      # module_executable, and the node must be allowed to run that file.
+      # The permission does not depend on the machine that holds the project.
+      - id: allow_module_executables_to_run
+        shell:
+          script: find /usr/local/lib/mmwatchdog/candidate_external_modules -mindepth 2 -maxdepth 2 -type f -name module_executable -exec chmod 0755 {} +
+          # The dryrun only looks: it lists the files that the run would change.
+          dryrun: find /usr/local/lib/mmwatchdog/candidate_external_modules -mindepth 2 -maxdepth 2 -type f -name module_executable ! -perm 0755
+          changed_when: false
+
+  - id: install
+    nodes: all
+    node_tasks:
+      # Track the set of names too: MMX stops comparing a file removed from
+      # directory.source, but MMWatchdog must restart to retire that file's checks.
+      - id: config_file_list
+        shell:
+          script: set -o pipefail; find . -type f -print | LC_ALL=C sort
+          run_script_in_dryrun: true
+          run_from_directory: /usr/local/lib/mmwatchdog/candidate_config
+          changed_when: false
+
+      # MMWatchdog reads the description of each module that its configuration names
+      # when it starts, so a changed module restarts MMWatchdog. A command installs
+      # the module directories, and MMX does not follow what a command
+      # writes. MMX follows this one checksum of every module file instead.
+      - id: module_files_checksum
+        shell:
+          script: set -o pipefail; find candidate_official_extra_modules candidate_external_modules -type f -exec sha256sum {} + | LC_ALL=C sort -k 2 | sha256sum
+          run_script_in_dryrun: true
+          run_from_directory: /usr/local/lib/mmwatchdog
+          changed_when: false
+
+      # The id differs from hub_and_standalone.yml's install_monitoring: MMX
+      # keeps one command record for each task path in the project, and the
+      # two playbooks' commands must not share one.
+      # MMWatchdog reads some secret files only when it starts, so a changed
+      # secret file restarts MMWatchdog. MMX follows this one checksum of
+      # every file in /etc/mmwatchdog/secrets.
+      - id: secret_files_checksum
+        shell:
+          script: set -o pipefail; find secrets -type f -exec sha256sum {} + | LC_ALL=C sort -k 2 | sha256sum
+          run_script_in_dryrun: true
+          run_from_directory: /etc/mmwatchdog
+          changed_when: false
+
+      - id: install_monitoring_on_a_joined_node
+        task_block:
+          id: monitoring
+          changes:
+            - id: config_dir
+              directory: {path: /etc/mmwatchdog, owner: root, group: root, permissions_mode: "0755"}
+            - id: secrets_dir
+              directory: {path: /etc/mmwatchdog/secrets, owner: root, group: root, permissions_mode: "0700"}
+            # The join code is written inside this block so a new code restarts
+            # MMWatchdog, and before validation because runtime validation reads it.
+            # If validation fails, nothing after it is installed.
+            - id: join_code
+              file:
+                path: /etc/mmwatchdog/secrets/fleet-hub-join-code
+                content: "{{ .secrets.mmwatchdog_join_code }}\n"
+                owner: root
+                group: root
+                permissions_mode: "0600"
+            - id: validate_config
+              shell:
+                script: |
+                  candidate_config=/usr/local/lib/mmwatchdog/candidate_config
+                  # Validation looks for modules in the two candidate directories, so a
+                  # module and the check that names it arrive in one deploy. MMWatchdog names
+                  # a module that neither directory holds, a module of the project
+                  # that has the name of an official extra module, and official extra
+                  # modules of another MMWatchdog release than the candidate mmwatchdog program.
+                  validate() {
+                    /usr/local/lib/mmwatchdog/mmwatchdog-candidate validate --config-dir "$candidate_config" \
+                      --official-extra-module-dir /usr/local/lib/mmwatchdog/candidate_official_extra_modules \
+                      --external-module-dir /usr/local/lib/mmwatchdog/candidate_external_modules "$@"
+                  }
+                  validate || exit 1
+                  # This workflow installs modules in MMWatchdog's default directories. With
+                  # another directory in its settings, a node would look for its
+                  # modules where this workflow puts none.
+                  settings=$(validate --json) || exit 1
+                  for setting in official_extra_module_dir=/usr/local/lib/mmwatchdog/official_extra_modules external_module_dir=/usr/local/lib/mmwatchdog/external_modules; do
+                    if ! printf '%s' "$settings" | grep -qF "\"${setting%%=*}\": \"${setting#*=}\""; then
+                      echo "mmwatchdog_node_settings.yml states an ${setting%%=*} other than ${setting#*=}, the directory in which this workflow installs these modules. Remove the setting from mmwatchdog_node_settings.yml, or state that directory" >&2
+                      exit 1
+                    fi
+                  done
+                # A dryrun stages nothing, so this validates the candidate copy that the
+                # last run left on the node. It cannot check a changed configuration
+                # (the run does).
+                dryrun: |
+                  /usr/local/lib/mmwatchdog/mmwatchdog-candidate validate --config-dir /usr/local/lib/mmwatchdog/candidate_config \
+                    --official-extra-module-dir /usr/local/lib/mmwatchdog/candidate_official_extra_modules \
+                    --external-module-dir /usr/local/lib/mmwatchdog/candidate_external_modules
+                changed_when: false
+            - id: check_groups_dir
+              directory: {path: /etc/mmwatchdog/check_groups, owner: root, group: root, permissions_mode: "0755"}
+            # Directory copies keep unlisted files; remove obsolete check groups.
+            - id: remove_unlisted_check_groups
+              shell:
+                script: |
+                  changed=0
+                  for installed in /etc/mmwatchdog/check_groups/*.yml; do
+                    [ -e "$installed" ] || [ -L "$installed" ] || continue
+                    if [ ! -f "/usr/local/lib/mmwatchdog/candidate_config/check_groups/${installed##*/}" ]; then
+                      rm -f -- "$installed" || exit 1
+                      changed=2
+                    fi
+                  done
+                  exit "$changed"
+                dryrun: |
+                  changed=0
+                  for installed in /etc/mmwatchdog/check_groups/*.yml; do
+                    [ -e "$installed" ] || [ -L "$installed" ] || continue
+                    if [ ! -f "/usr/local/lib/mmwatchdog/candidate_config/check_groups/${installed##*/}" ]; then
+                      changed=2
+                    fi
+                  done
+                  exit "$changed"
+                success_exit_codes: [0, 2]
+                changed_when: {equals: ["{{ .this_node_task.exit_code }}", 2]}
+            - id: track_config_files
+              file:
+                path: /usr/local/lib/mmwatchdog/installed_config_files
+                content: "{{ .node_tasks.config_file_list.stdout }}"
+                owner: root
+                group: root
+                permissions_mode: "0644"
+            - id: track_secret_files
+              file:
+                path: /usr/local/lib/mmwatchdog/installed_secret_files_checksum
+                content: "{{ .node_tasks.secret_files_checksum.stdout }}"
+                owner: root
+                group: root
+                permissions_mode: "0644"
+            - id: track_module_files
+              file:
+                path: /usr/local/lib/mmwatchdog/installed_module_files_checksum
+                content: "{{ .node_tasks.module_files_checksum.stdout }}"
+                owner: root
+                group: root
+                permissions_mode: "0644"
+            - id: install_config
+              directory:
+                path: /etc/mmwatchdog
+                source: "{{ .vars.mmwatchdog_config_source_dir }}"
+                owner: root
+                group: root
+                permissions_mode: "0755"
+                file_permissions_mode: "0644"
+            # Joined nodes receive alert destinations from the hub.
+            - id: remove_local_alert_destinations
+              file: {path: /etc/mmwatchdog/alert_destinations.yml, state: absent}
+            - id: install_binary
+              file:
+                path: /usr/local/bin/mmwatchdog
+                source: mmwatchdog
+                owner: root
+                group: root
+                permissions_mode: "0755"
+            - id: install_unit
+              systemd_unit:
+                name: mmwatchdog.service
+                template: mmwatchdog.service
+            # A copy of each candidate module directory, which validation
+            # has seen, takes the place of the installed directory as the
+            # last change, right before the new configuration goes live. So
+            # a node has exactly the modules of this deploy: a module that
+            # the project no longer holds is gone, and so is a file that
+            # someone put there by hand.
+            - id: install_modules
+              shell:
+                script: |
+                  changed=0
+                  for modules in official_extra_modules external_modules; do
+                    candidate=/usr/local/lib/mmwatchdog/candidate_$modules
+                    installed=/usr/local/lib/mmwatchdog/$modules
+                    if [ ! -d "$candidate" ]; then
+                      echo "$candidate is missing: run the whole playbook, which copies it from this project" >&2
+                      exit 1
+                    fi
+                    # The names, kinds, permissions, and owners of everything
+                    # in a directory, and of the directory itself.
+                    listing() { find "$1" -printf '%P %y %m %u:%g\n' 2>/dev/null | LC_ALL=C sort; }
+                    if [ "$(listing "$candidate")" = "$(listing "$installed")" ] && diff -r -q "$candidate" "$installed" >/dev/null; then
+                      continue
+                    fi
+                    rm -rf -- "$installed.mmwatchdog-new" "$installed.mmwatchdog-old" || exit 1
+                    cp -a -- "$candidate" "$installed.mmwatchdog-new" || exit 1
+                    if [ -e "$installed" ] || [ -L "$installed" ]; then
+                      mv -- "$installed" "$installed.mmwatchdog-old" || exit 1
+                    fi
+                    mv -T -- "$installed.mmwatchdog-new" "$installed" || exit 1
+                    rm -rf -- "$installed.mmwatchdog-old"
+                    changed=2
+                  done
+                  exit "$changed"
+                # The dryrun compares as the run does and changes nothing. A missing
+                # candidate directory is a first install here, which the run stages
+                # first, so it counts as a change instead of a failure.
+                dryrun: |
+                  changed=0
+                  for modules in official_extra_modules external_modules; do
+                    candidate=/usr/local/lib/mmwatchdog/candidate_$modules
+                    installed=/usr/local/lib/mmwatchdog/$modules
+                    listing() { find "$1" -printf '%P %y %m %u:%g\n' 2>/dev/null | LC_ALL=C sort; }
+                    if [ ! -d "$candidate" ] || [ ! -d "$installed" ] || [ "$(listing "$candidate")" != "$(listing "$installed")" ] || ! diff -r -q "$candidate" "$installed" >/dev/null; then
+                      changed=2
+                    fi
+                  done
+                  exit "$changed"
+                success_exit_codes: [0, 2]
+                changed_when: {equals: ["{{ .this_node_task.exit_code }}", 2]}
+          activate:
+            # Only a run that restarts MMWatchdog opens a window, just before the
+            # restart; a run that dies before verify leaves it to expire.
+            # A first install has no running MMWatchdog and nothing to hold, so the
+            # script ends with success there instead of using a guard: MMX
+            # keeps a command that a guard skipped owed, and the next
+            # unchanged run would open a window.
+            - id: start_maintenance
+              shell:
+                script: |
+                  # The marker file says that this deploy opened a window, for
+                  # end_maintenance. This command removes any marker first, so a
+                  # window that it does not open is never ended afterwards.
+                  rm -f /usr/local/lib/mmwatchdog/deploy_opened_maintenance || exit 1
+                  mmwatchdog_state=0
+                  systemctl is-active --quiet mmwatchdog || mmwatchdog_state=$?
+                  case $mmwatchdog_state in
+                    0) ;;
+                    3|4) exit 0 ;;
+                    *) exit 1 ;;
+                  esac
+                  # A whole-node window that a person opened stays as it is:
+                  # the deploy opens no window of its own, so end_maintenance
+                  # (which ends only a window with the marker) cannot end
+                  # theirs, and on replaces a window of the same name. The check reads
+                  # the line "Maintenance on: every_check_group ..." of
+                  # mmwatchdog status, because the node may have neither jq
+                  # nor python and that line needs only grep. The status exit
+                  # codes 1 and 3 say how the checks are, not that the command
+                  # failed; 4 means the status could not be read, which fails
+                  # the deploy here, as maintenance on would.
+                  status_state=0
+                  status_text=$(/usr/local/bin/mmwatchdog status) || status_state=$?
+                  [ "$status_state" -le 3 ] || exit 1
+                  if printf '%s\n' "$status_text" | grep -q '^Maintenance on: every_check_group '; then
+                    exit 0
+                  fi
+                  # Exit status 1: the window is on, but the hub did not get
+                  # it. The restart that follows is short, and the node
+                  # reports again long before the hub would count it as
+                  # silent, so the deploy goes on.
+                  maintenance_state=0
+                  /usr/local/bin/mmwatchdog maintenance on --every-check-group --for 15m --reason "mmwatchdog deploy" || maintenance_state=$?
+                  [ "$maintenance_state" -le 1 ] || exit 1
+                  touch /usr/local/lib/mmwatchdog/deploy_opened_maintenance || exit 1
+                  exit 2
+                only_when_tracked_inputs_changed: true
+                success_exit_codes: [0, 2]
+                changed_when: {equals: ["{{ .this_node_task.exit_code }}", 2]}
+            - id: activate_daemon
+              systemd_service: {name: mmwatchdog, state: running, start_at_boot: true, refresh: restart}
+          verify:
+            - id: wait_for_inspection_socket
+              wait_for:
+                path_exists: /run/mmwatchdog/mmwatchdog.sock
+                wait_at_most: 10s
+            - id: verify_daemon
+              shell:
+                script: /usr/local/bin/mmwatchdog config --json
+                run_script_in_dryrun: true
+                changed_when: false
+            # No condition on start_maintenance's change: a dryrun cannot know
+            # that change, and a condition on it would leave the dryrun of an
+            # update unfinished (exit code 3). The marker file says it instead,
+            # and the dryrun reads it.
+            - id: end_maintenance
+              shell:
+                script: |
+                  marker=/usr/local/lib/mmwatchdog/deploy_opened_maintenance
+                  [ -e "$marker" ] || exit 0
+                  /usr/local/bin/mmwatchdog maintenance off --every-check-group || exit 1
+                  rm -f "$marker" || exit 1
+                  exit 2
+                dryrun: |
+                  [ -e /usr/local/lib/mmwatchdog/deploy_opened_maintenance ] && exit 2
+                  exit 0
+                success_exit_codes: [0, 2]
+                changed_when: {equals: ["{{ .this_node_task.exit_code }}", 2]}

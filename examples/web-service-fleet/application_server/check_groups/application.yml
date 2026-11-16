@@ -1,0 +1,58 @@
+# /etc/mmwatchdog/check_groups/application.yml on the application server: the
+# checks of the web application that do real work, and so run less often
+# than the others.
+check_groups:
+  # The application's own health command, as the application runs: as its
+  # account, in its directory, with its environment.
+  job_queue:
+    check_every: 5s
+    time_limit_per_run: 4s
+    alert_after_failing_for: 5s
+    recovered_after_healthy_for: 5s
+    checks:
+      job_queue_health_command_succeeds:
+        shell:
+          script: /opt/web-application/bin/check-job-queue
+          run_as_user_account: webapp
+          run_from_directory: /opt/web-application
+          env:
+            WEB_APPLICATION_ENVIRONMENT: production
+        alert_severity: warn
+        # While the job queue's Redis does not answer, its own alert is the one alert.
+        no_alerts_or_recovery_actions_while_these_checks_fail: [job_queue_redis/job_queue_redis_answers_ping]
+
+  # A real piece of work proves that the audio encoder of the media
+  # pipeline still works: it encodes a test tone to MP3.
+  audio_encoder:
+    check_every: 5s
+    time_limit_per_run: 4s
+    alert_after_failing_for: 5s
+    recovered_after_healthy_for: 5s
+    checks:
+      audio_encoder_encodes_a_test_tone:
+        shell: |
+          set -e
+          work=$(mktemp -d)
+          trap 'rm -rf "$work"' EXIT
+          lame --quiet -b 128 /opt/web-application/test-media/test-tone.wav "$work/test-tone.mp3"
+          test -s "$work/test-tone.mp3"
+          echo "lame encoded the test tone to $(stat -c %s "$work/test-tone.mp3") bytes of MP3"
+        alert_severity: warn
+
+  # The deployed version is the one that the deployment tool installed. A
+  # deployment through MMX writes the expected version into this file from
+  # the same variable as the one it deploys.
+  application_version:
+    check_every: 5s
+    time_limit_per_run: 4s
+    alert_after_failing_for: 5s
+    recovered_after_healthy_for: 5s
+    checks:
+      deployed_application_is_version_2_4_1:
+        shell:
+          script: |
+            deployed=$(/opt/web-application/bin/web-application-version)
+            echo "the deployed web application is version $deployed, and 2.4.1 is expected"
+            [ "$deployed" = 2.4.1 ]
+          run_as_user_account: webapp
+        alert_severity: warn

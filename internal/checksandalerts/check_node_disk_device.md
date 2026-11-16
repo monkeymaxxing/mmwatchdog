@@ -1,0 +1,162 @@
+# `node_disk_device`
+
+`node_disk_device` measures one disk device of the node: how busy it is, and
+how much data is read from it and written to it. The value of the check is
+the path of the disk device, such as `/dev/sda`. MMWatchdog reads the kernel's
+counters in `/proc/diskstats` and runs no program to measure the disk device.
+
+A disk device is the disk itself. A filesystem is what is mounted at a path.
+For the space on a filesystem, use [`node_filesystem`](check_node_filesystem.md).
+For the time that the whole node waits for its disks, use
+[`node_resource: io_wait`](check_node_resource.md).
+
+## When the check fails, and when it cannot check
+
+- **The check fails** when a reading passes one of its limits, at its
+  `alert_severity`. A reading strictly above its
+  `fail_when_measurement_above` number, or strictly below its
+  `fail_when_measurement_below` number, fails the check; an equal reading
+  passes ([checks that measure a number](../../docs/reference/configuration-files.md#checks-that-measure)).
+- **A check with `only_record_readings: true` only records** its readings, never fails, and
+  takes no `alert_severity`
+  ([checks that only record](../../docs/how-to/look-back-at-measurements.md)).
+- **MMWatchdog cannot check** when the disk device does not exist, or when its
+  counters cannot be read. If MMWatchdog cannot resolve the device path,
+  the check returns an unknown observation with the full path in the message.
+  MMWatchdog never guesses a device from the device path's last component.
+  The unknown observation includes the reason, never a reading of zero.
+  An unknown result of a check that can alert opens a separate cannot-check
+  incident after `alert_after_failing_for`
+  ([scheduling and observed state](../../docs/changing-mmwatchdog/design/checks.md#scheduling-and-observed-state)).
+
+## Examples
+
+```yaml
+# /etc/mmwatchdog/check_groups/disk_devices.yml
+check_groups:
+  disk_devices:
+    check_every: 30s
+    time_limit_per_run: 5s
+    alert_after_failing_for: 10m
+    recovered_after_healthy_for: 5m
+    checks:
+      disk_sda_is_busy_less_than_90_percent:
+        node_disk_device: /dev/sda
+        fail_when_measurement_above:
+          disk_device_busy_percent: 90
+        alert_severity: warn
+      disk_sdb_traffic_is_recorded:
+        only_record_readings: true
+        node_disk_device: /dev/sdb               # records only
+```
+
+Every 30 seconds, MMWatchdog on the node reads the counters of `/dev/sda` and
+`/dev/sdb`. The first check fails when `/dev/sda` had work to do in more than
+90 percent of the time since the run before. The message of
+`disk_sda_is_busy_less_than_90_percent` is, for example,
+`disk_device_busy_percent is 97.5 (fails above 90) over 30.000s`.
+
+After 10 minutes, MMWatchdog sends a `warn` alert.
+
+The second check stores the busy time and the data read and written of
+`/dev/sdb` in the node's
+[measurement history](../../docs/how-to/look-back-at-measurements.md), and never
+alerts.
+
+## How it works
+
+| Measurement | Meaning |
+| --- | --- |
+| `disk_device_busy_percent` | The share of the time in which the disk device had at least one request to work on, 0 to 100 |
+| `read_mib_per_second` | The data read from the disk device, in MiB per second |
+| `write_mib_per_second` | The data written to the disk device, in MiB per second |
+
+- **A reading covers the time since the check's run before.** The kernel's
+  counters only grow, so the check measures the increase between
+  two runs. The first run takes a fresh sample of 200 ms.
+  A run after a gap of more than `2 × check_every + time_limit_per_run`
+  or after a counter decreases also takes a fresh sample of 200 ms.
+  So the check group's `time_limit_per_run` must be longer than `200ms`.
+
+  The message ends with the time that the reading covers, such as
+  `over 30.000s`. The [CPU sampling](../../docs/reference/configuration-files.md#readings-over-a-time)
+  section of the configuration files reference gives the rules that every module that
+  measures a rate shares.
+- **MMWatchdog reads three counters of the device:** the sectors read, the sectors
+  written, and the milliseconds in which the device had work.
+  `/proc/diskstats` counts in sectors of 512 bytes, whatever the sector size
+  of the disk is.
+- **A path that is a link to a disk device,** such as `/dev/mapper/data` or
+  a path below `/dev/disk/by-id/`, names the device that the link leads
+  to, such as `dm-0`.
+
+## Errors and what they mean
+
+Each validation error starts with the file, the line, and the path of the
+setting, such as `check_groups.disk_devices.checks.disk_sda_is_busy_less_than_90_percent.node_disk_device:`.
+
+- **`must be the path of a disk device, such as /dev/sda`.** The path does
+  not start with `/dev/`, or is not written in plain form.
+- **`this check has no such measurement; it measures disk_device_busy_percent,
+  read_mib_per_second, write_mib_per_second`.** A limit names another
+  measurement.
+- **`expected a number from 0 to 100`** for a limit on
+  `disk_device_busy_percent`, and **`expected a number of 0 or more`** for
+  `read_mib_per_second` and `write_mib_per_second`.
+- **`a node_disk_device check needs a limit to alert`.** Add a measurement limit,
+  or replace the severity with `only_record_readings: true`.
+
+- **`time_limit_per_run: must exceed 200ms for the initial sample of the
+  disk device`.**
+
+When MMWatchdog cannot make a reading, the observation is unknown with one of these
+messages:
+
+- **`the disk device /dev/sdz does not exist: the kernel's list of disk
+  devices (/proc/diskstats) has no sdz`.** Check the name with `lsblk`.
+- **`the kernel's counters changed while sampling; awaiting a fresh
+  sample`.** A counter fell back during the fresh sample, for example
+  because the device was removed and added again. The next run takes a new
+  sample.
+- **`/proc/diskstats: invalid counter of sda`.** The kernel's file has a
+  form that MMWatchdog does not know.
+
+## Tested on
+
+- **Go tests** in `internal/checksandalerts/node_measurements_test.go`:
+  `TestCounterReadingsOfACheck` covers a rate from two readings (the sample
+  of a first run, the next run without a wait, a fresh sample after a
+  counter fell back and after a baseline that is too old, no baseline kept
+  after a reading that failed), and `TestNodeDiskDeviceCheck` covers the
+  readings and the validation of the path.
+- **On virtual machines (VMs)**, the suite `node_scenarios.py` measures the
+  VM's own disk device, which holds the VM's root filesystem: a write of 64 MiB
+  shows in `write_mib_per_second`, and a device that does not exist is
+  unknown with its message.
+- The suite and the Go tests passed on
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution)
+  in the latest run of the whole catalog
+  ([validation record](../../docs/changing-mmwatchdog/validation.md)). The guests are VMs,
+  because a container shares the disk counters of the machine below it.
+
+## Why it works this way
+
+- **The configured device path must resolve.** A different device with the
+  configured device path's last component must not supply the
+  `node_disk_device` check's readings.
+
+- **Recording readings is an explicit choice.** State
+  `only_record_readings: true` to record readings without alerts or recovery.
+  A missing severity must not silently turn an intended alert into readings only.
+
+- **A disk device is a module of its own, apart from the filesystem.** One
+  disk can hold several filesystems, and a busy disk slows every one of
+  them, whatever their space.
+- **A reading is the growth since the run before.** The readings of
+  scheduled runs then cover the whole time between them, as the readings of
+  the CPU do.
+- **The name `node_disk_device`.** "Disk" alone could mean the disk or a
+  filesystem on it, and MMWatchdog's names say which thing they mean.
+- **A missing device is unknown, not failed.** MMWatchdog learned nothing about the
+  disk; a wrong path in the configuration should not look like a broken
+  disk.

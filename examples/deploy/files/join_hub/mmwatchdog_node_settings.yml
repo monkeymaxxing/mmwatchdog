@@ -1,0 +1,15 @@
+keep_undelivered_alerts_for: 24h
+undelivered_alerts_content_size_limit: 8MiB
+join_fleet_hub:
+  join_code_file: /etc/mmwatchdog/secrets/fleet-hub-join-code
+# The severity of the hub's alert when this node stops reporting: warn, so
+# one silent node among many wakes no one. Use sos for a node that matters.
+alert_severity_when_this_node_goes_silent: warn
+# The severity of the notice after a reboot of this node: info
+# for one node among many. Use warn or sos for a node whose reboot someone
+# must look at.
+alert_severity_when_this_node_has_rebooted: info
+# How long this node keeps the readings of its measurements, and how much of
+# its disk they may take. The oldest readings go first.
+keep_measurement_history_for: 7d
+measurement_history_size_limit: 256MiB

@@ -1,0 +1,202 @@
+# `redis`
+
+`redis` asks a Redis server for an answer, over TCP, in the Redis protocol:
+the check sends `PING` and expects `PONG`. With a password file, MMWatchdog
+logs in first. MMWatchdog speaks the protocol itself, so the node needs no
+Redis program for the check. The `redis` check works for a server that
+speaks the Redis protocol under another name, such as Valkey.
+
+`address` is the server's address, written as host:port, such as
+`127.0.0.1:6379`. The `redis` check has no default port, so the configured
+`address` shows where the check connects. `connection_security` is required
+on every check, including a check without a login: `verified_tls` encrypts
+and verifies the certificate; `unencrypted` sends without encryption.
+
+## Set up
+
+A server without a password needs nothing. For a server with a password,
+put the password on one line in a file that only root can read. MMWatchdog reads
+the password file as root. The command reads the password from the terminal: type
+the password, press Enter, and then Ctrl-D.
+
+```sh
+sudo install -d -m 0700 /etc/mmwatchdog/secrets
+sudo install -m 0600 /dev/stdin /etc/mmwatchdog/secrets/redis
+```
+
+`mmwatchdog validate` refuses a password file that its group or other accounts
+can read without explicit permission ([credential files that other accounts can use](../../docs/reference/configuration-files.md#secret-files)).
+
+## When the check fails, and when it cannot check
+
+- **The check fails** when the connection does not open, when the server
+  closes the connection before its answer is complete, and when the answer
+  does not arrive within the check group's `time_limit_per_run`. The check
+  also fails when the server answers with an error, such as `NOAUTH
+  Authentication required.` for a server that needs a password and got
+  none, `WRONGPASS` for a wrong password, or `LOADING Redis is loading the
+  dataset in memory` while a server starts. The message then holds the server's words. An answer that is not a Redis
+  server's answer fails the check too.
+- **MMWatchdog cannot check** when MMWatchdog cannot read the password file
+  or the file named in `trusted_certificate_authority_file`. The run is
+  then unknown.
+
+A failed run starts or continues the check's
+[failing time](../../docs/how-to/decide-when-a-check-alerts.md). An unknown run opens a
+cannot-check incident of its own after the same waiting times, as the
+design's [failing time](../../docs/changing-mmwatchdog/design/checks.md#the-failing-time)
+describes. The `redis` module reports no measurement, so a `redis` check takes no limit.
+
+## Examples
+
+### A Redis server with a password
+
+```yaml
+# /etc/mmwatchdog/check_groups/cache.yml
+check_groups:
+  cache:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 3m
+    recovered_after_healthy_for: 1m
+    checks:
+      redis_answers:
+        redis:
+          connection_security: unencrypted
+          address: 127.0.0.1:6379
+          login_password_file: /etc/mmwatchdog/secrets/redis
+        alert_severity: sos
+```
+
+Every minute, MMWatchdog on the node reads `/etc/mmwatchdog/secrets/redis`, opens a TCP
+connection to `127.0.0.1:6379`, logs in with the password (`AUTH`), and
+sends `PING`. When the server answers `PONG`, the run is healthy, with the
+message `the Redis server at 127.0.0.1:6379 answered PING`. When the server
+does not answer, or answers with an error, for 3 minutes, MMWatchdog sends an `sos`
+alert.
+
+### A server with accounts
+
+A server with accounts (Redis 6 and later, `ACL`) logs a client in as an
+account. `login_user` names the Redis account used for the login.
+Setting `login_user` requires setting `login_password_file`:
+
+```yaml
+# /etc/mmwatchdog/check_groups/sessions.yml
+check_groups:
+  sessions:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 3m
+    recovered_after_healthy_for: 1m
+    checks:
+      session_store_answers:
+        redis:
+          connection_security: verified_tls
+          address: sessions.internal.example.com:6380
+          trusted_certificate_authority_file: /etc/mmwatchdog/internal-ca.pem
+          login_user: mmwatchdog
+          login_password_file: /etc/mmwatchdog/secrets/redis-sessions
+        alert_severity: warn
+```
+
+MMWatchdog on the node logs in to the server on
+`sessions.internal.example.com` as the account `mmwatchdog`, with the
+password in `/etc/mmwatchdog/secrets/redis-sessions`, and sends `PING`.
+The connection to port 6380 uses TLS and trusts `/etc/mmwatchdog/internal-ca.pem`.
+
+## How it works
+
+- **MMWatchdog reads the password file for each run,** so a changed password needs
+  no reload. A file that cannot be read makes the run unknown, and
+  `mmwatchdog validate` on the node refuses it.
+- **The password never appears in a message.** When a server repeats the
+  password in a reply, MMWatchdog replaces the password with
+  `(the password)` in the displayed reply.
+- **`verified_tls` encrypts before any login or PING.** MMWatchdog verifies the
+  certificate for the host in `address`, using the system authorities or
+  `trusted_certificate_authority_file` in their place.
+  `dangerously_skip_server_certificate_check: true` skips authentication
+  of the server while keeping encryption.
+- **`unencrypted` is accepted for any host,** including with a login.
+  `connection_security: unencrypted` makes the choice to send without
+  encryption visible, for example inside a private tunnel.
+- **MMWatchdog reads at most 64 KiB of an answer,** and shows what a server sent
+  with every character replaced that changes how text is shown, as for every
+  check of a common service
+  ([protocols and common server software](../../docs/changing-mmwatchdog/design/checks.md#protocols-and-common-server-software)).
+
+## Errors and what they mean
+
+- **`check_groups.cache.checks.redis_answers.redis.address: address
+  127.0.0.1: missing port in address`.** Write the address as host:port.
+- **`... redis.login_password_file: required with login_user: the file that holds
+  the password of mmwatchdog`.** An account always logs in with a password. Add
+  `login_password_file`.
+- **`... redis.login_password_file: must be absolute`.** Write the whole path,
+  such as `/etc/mmwatchdog/secrets/redis`.
+- **`... redis.login_user: expected one word of at most 256 bytes`.** An
+  account name has no spaces.
+- **`... redis.login_password_file: open /etc/mmwatchdog/secrets/redis: no such file or
+  directory`,** from `mmwatchdog validate`. A run is unknown with the
+  `open /etc/mmwatchdog/secrets/redis: no such file or directory` message,
+  without the name of the setting. Create `/etc/mmwatchdog/secrets/redis`.
+- **`... redis.login_password_file: /etc/mmwatchdog/secrets/redis: expected one line with
+  the password: UTF-8 text of at most 1,024 bytes, without a tab or another
+  control character`.** The file is empty, or holds more than the
+  password's one line.
+- **`the Redis server at 127.0.0.1:6379 answered: NOAUTH Authentication
+  required.`** The server needs a password and the check states none. Add
+  `login_password_file`.
+- **`the Redis server at 127.0.0.1:6379 answered: WRONGPASS invalid
+  username-password pair or user is disabled.`** The password or account
+  is wrong.
+- **`the server at 127.0.0.1:6379 did not answer PING as a Redis server
+  does`.** Another program listens at `127.0.0.1:6379`, such as memcached.
+  The alert's body shows the listening program's reply, after
+  `the server sent:`.
+- **`dial tcp 127.0.0.1:6379: connect: connection refused`.** No program
+  listens at `127.0.0.1:6379`.
+- **`the connection to 127.0.0.1:6379 did not open within the time limit of the
+  run`.** The connection did not open before the time limit of the run ended it.
+
+## Tested on
+
+- **Go tests:** `TestRedisCheck` in `protocol_checks_test.go` runs the check
+  against a stand-in server on the test machine: with and without a login, a
+  wrong account, a password that never appears in a message, and a password
+  file that cannot be read. `TestRedisTLS` checks verified TLS, an untrusted
+  certificate, and explicit skipping of certificate verification. `TestTCPCheckSendsATextAndExpectsAReply` covers
+  a port where nothing listens.
+- **Real servers:** the `services` suite (`service_scenarios.py`) checks
+  Redis as each distribution installs Redis, or Valkey where the distribution
+  supplies Valkey instead of Redis. The suite's `redis` check gets `PONG` without a
+  password, fails with `NOAUTH Authentication required.` once the server has
+  a password, gets `PONG` after a login, fails with `WRONGPASS` for another
+  password without showing it, fails for a memcached server, and fails while
+  the Redis or Valkey server is stopped. The latest run passed on
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution)
+  ([validation record](../../docs/changing-mmwatchdog/validation.md)).
+- **Not verified on a real node:** a login with `login_user`, and a server
+  that answers a part and then waits. Go tests cover a login with `login_user` and a server that answers a part and then waits.
+
+## Why it works this way
+
+- **Every check states its connection security.** A reader sees whether a
+  password will travel without encryption, even across a private network.
+- **TLS verifies the server by default.** The certificate authority input
+  supports private authorities; skipping verification requires the explicit
+  dangerous setting because another machine can then pose as the server.
+- **Permission refusals belong to validation and reload.** Startup warns
+  once per file; a running check continues after a mode change so the
+  permission rule cannot stop monitoring. The
+  [credential permission rule](../../docs/reference/configuration-files.md#secret-files)
+  owns the settings and the reasons.
+
+- **The check logs in only when it states a password file.** `PING` needs
+  no login on a server without a password, and a check of a common service
+  logs in only where the service gives no answer without a login.
+- **MMWatchdog reads the password for each run.** A changed password then needs no
+  reload, and the password is never kept in the configuration.
+- **The address has no default port.** A reader sees on each check where it
+  connects.

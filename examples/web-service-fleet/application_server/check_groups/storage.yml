@@ -1,0 +1,66 @@
+# /etc/mmwatchdog/check_groups/storage.yml on the application server: the
+# filesystems, the software RAID mirror, and the ZFS pool.
+check_groups:
+  # Two levels on one filesystem: a warning above 90 percent of its space
+  # or of its inodes, and an urgent alert above 98 percent. Each check also
+  # fails while nothing is mounted at the path or it is mounted read-only.
+  uploads_filesystem:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      uploads_filesystem_is_below_90_percent:
+        node_filesystem: /srv/uploads
+        fail_when_measurement_above:
+          space_used_percent: 90
+          inodes_used_percent: 90
+        alert_severity: warn
+      uploads_filesystem_is_below_98_percent:
+        node_filesystem: /srv/uploads
+        fail_when_measurement_above:
+          space_used_percent: 98
+          inodes_used_percent: 98
+        alert_severity: sos
+
+  # The share must be mounted. When it is not, MMWatchdog alerts and mounts it again
+  # from /etc/fstab.
+  shared_storage:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      shared_storage_is_mounted:
+        node_filesystem: /srv/shared
+        alert_severity: warn
+    recovery_command:
+      triggered_by_checks: [shared_storage_is_mounted]
+      script: mount /srv/shared
+      run_as_user_account: root
+      run_after_failing_for: 3s         # after the alert, which goes out at 2 seconds
+      time_limit_per_attempt: 10s
+      max_attempts: 3
+      min_time_between_attempts: 2s
+      reset_attempts_after_healthy_for: 5s
+
+  raid_mirror:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    mdadm_array: /dev/md0
+    alert_severity: warn
+
+  zfs_data_pool:
+    check_every: 1s
+    time_limit_per_run: 800ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      data_pool_is_healthy_and_below_88_percent:
+        zfs_pool:
+          pool_name: datapool
+        fail_when_measurement_above:
+          space_used_percent: 88
+        alert_severity: warn

@@ -1,0 +1,27 @@
+# /etc/mmwatchdog/alert_destinations.yml on the application server. Each
+# destination stands in for one place that people read: the team's chat
+# channel for information, the team's chat channel for warnings and urgent
+# alerts, and the on-call pager, which takes only urgent (sos) alerts. In
+# the example's test, each one is a webhook receiver on the same machine,
+# at a path of its own, so that the test sees which destination got which
+# alert. README.md says which destination module each one is in a real
+# fleet.
+destinations:
+  team_chat_info:
+    remind_every: never
+    webhook:
+      url: http://127.0.0.1:18080/events/team_chat_info
+    time_limit_per_delivery_attempt: 1s
+    alert_severities: [info]
+  team_chat_warn_and_sos:
+    remind_every: never
+    webhook:
+      url: http://127.0.0.1:18080/events/team_chat_warn_and_sos
+    time_limit_per_delivery_attempt: 1s
+    alert_severities: [warn, sos]
+  on_call_pager:
+    remind_every: never
+    webhook:
+      url: http://127.0.0.1:18080/events/on_call_pager
+    time_limit_per_delivery_attempt: 1s
+    alert_severities: [sos]

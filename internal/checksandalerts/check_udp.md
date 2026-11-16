@@ -1,0 +1,129 @@
+# `udp`
+
+`udp` sends a text in one UDP packet from the node to an address and port,
+and is healthy when a reply arrives. A `udp` check can also expect text in
+the reply. UDP has no connection, so only a reply says that a program
+listens. The `udp` check always sends text because a reply is needed to
+confirm that a program listens.
+
+Choose `udp` for a server of the team's own, or a simple service, that
+answers a packet over UDP. A server that answers over TCP has
+[`tcp`](check_tcp.md), which accepts the reply rules of `udp`. A DNS
+server needs bytes that are no text and has [`dns`](check_dns.md).
+
+## When the check fails, and when it cannot check
+
+Without a rule for the reply, a run is healthy when any reply arrives, with
+the message `a reply arrived from 127.0.0.1:7001`. With `reply_contains`,
+`reply_matches_regex`, or both, the first packet that comes back must
+satisfy every configured reply rule. The message is
+`the reply holds what the check expects`.
+
+A run fails when:
+
+- **no reply arrives within the check group's `time_limit_per_run`:** `no
+  reply arrived from 127.0.0.1:7001 within 5s (time_limit_per_run)`. A
+  firewall that drops the packet, a machine that is down, and a program
+  that ignores the text all look like the timeout failure;
+- **the machine at `address` reports that no program listens on the port,**
+  which the machine does at once:
+  `no program listens on the UDP port of 127.0.0.1:7001`;
+- **the reply does not keep a rule:** `the reply is not one that contains
+  "READY"`, or `the reply is not one that matches the regular expression
+  ...`. The server's reply appears in the details and in the
+  [body of the alert](../../docs/reference/alert-format.md), for
+  example `the server sent: BUSY`;
+- **the packet cannot be sent,** such as for a host name without an
+  address. The failed observation's message contains the cause, using Go's
+  error text.
+
+A `udp` check has no unknown result of its own. Like every check, a `udp` check is
+unknown when the run does not end
+([a run that does not end](../../docs/how-it-works.md#a-run-that-does-not-end)). A
+failed run starts or continues the check's
+[failing time](../../docs/how-to/decide-when-a-check-alerts.md). `udp` reports no
+measurement, so a `udp` check takes no limit.
+
+## Examples
+
+```yaml
+# /etc/mmwatchdog/check_groups/myapp_ports.yml
+check_groups:
+  myapp_ports:
+    check_every: 30s
+    time_limit_per_run: 5s
+    alert_after_failing_for: 1m
+    recovered_after_healthy_for: 30s
+    checks:
+      myapp_answers_ready_over_udp:
+        udp:
+          address: 127.0.0.1:7001
+          text_to_send: "STATUS\n"
+          reply_contains: READY
+        alert_severity: sos
+```
+
+Every 30 seconds, MMWatchdog on the node sends the line `STATUS` in one UDP packet
+to port 7001 of the node itself. The run is healthy when the packet that
+comes back contains `READY`. When no such reply has come for 1 minute, MMWatchdog
+sends the `sos` alert.
+
+## How it works
+
+- **The check is always a mapping,** with `address` and `text_to_send`
+  required. The address is host:port, with a port from 1 to 65535 and no
+  default port.
+- **One packet out, one packet back.** MMWatchdog sends `text_to_send` in one
+  packet and takes the first packet that comes back, up to 64 KiB.
+  MMWatchdog applies the reply rules only to the first received packet.
+- **A host name with several addresses,** such as `localhost` with one of
+  each IP version, is tried at each address in turn, until any reply
+  arrives. Each address gets an equal share of the remaining
+  `time_limit_per_run`.
+- **A text with a line break is written in double quotes,** with `\r\n` or
+  `\n` for the break, as the example shows.
+- **A check can state `reply_contains` and `reply_matches_regex`,** and the
+  reply must satisfy each configured rule. `reply_contains` is a plain
+  text. `reply_matches_regex` has the syntax of
+  [RE2](https://github.com/google/re2/wiki/Syntax) and matches anywhere in
+  the reply unless the regular expression is anchored.
+
+## Errors and what they mean
+
+`mmwatchdog validate` and `mmwatchdog reload` print each error after the file, the line, and
+the column, which the table leaves out. The examples use a check group `c`
+with `udp` directly under `c`, rather than under a named entry in `checks`.
+
+| Message | What the message means, and what to do |
+| --- | --- |
+| `check_groups.c.udp.text_to_send: is required: the text that the check sends in one UDP packet` | The check has no `text_to_send`, or an empty one. UDP needs a packet to get a reply |
+| `check_groups.c.udp.address: address 127.0.0.1: missing port in address` | The address has no port. Write `address` as host:port |
+| `check_groups.c.udp.address: port must be a number from 1 to 65535` | The port is not a number from 1 to 65535 |
+| `check_groups.c.udp.reply_contains: cannot be empty` | `reply_contains` or `reply_matches_regex` is written with an empty text |
+| `check_groups.c.udp.reply_matches_regex: is no valid regular expression: error parsing regexp: ...` | The regular expression is not valid RE2 |
+| `check_groups.c.udp: expected a mapping, found the string "127.0.0.1:7001"` | The check is written as `udp: 127.0.0.1:7001`. Write the mapping with `address` and `text_to_send` |
+
+## Tested on
+
+- **Go tests** in `internal/checksandalerts`, against a stand-in server on the test
+  machine: `TestUDPCheck` (a reply, the rules, no reply in time, a port that
+  no program listens on), `TestChecksOfServersThatDoNotAnswerAsExpected` (a
+  host name with two addresses), and `TestTCPCheckSendsATextAndExpectsAReply`
+  for validation. They ran on macOS ARM64 and, as the native suite, on the
+  AMD64 guest of [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution).
+- **The services suite** (`tests/integration/service_scenarios.py`), on [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution): a small UDP server of the test, with a
+  check that expects `READY`, one whose text gets no reply within the time
+  limit, one of a port where no program listens, and the first check
+  failing once the server is stopped.
+
+## Why it works this way
+
+- **`text_to_send` is required.** UDP has no connection, so a program that
+  listens says so only by a reply, and it replies only to a packet.
+- **A machine that reports no listening program fails the check at once.**
+  The answer is certain, so the check does not wait for the time limit.
+- **Each address of a host name is tried.** A program often listens on one
+  IP version only: IPv4 or IPv6. The name `localhost` has an IPv4 address
+  and an IPv6 address.
+- **No default port.** A reader sees on each check where it sends
+  ([protocols and common server software](../../docs/changing-mmwatchdog/design/checks.md#protocols-and-common-server-software)).

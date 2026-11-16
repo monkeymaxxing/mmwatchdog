@@ -1,0 +1,22 @@
+# The directory of this project whose files each node gets as its
+# MMWatchdog configuration in /etc/mmwatchdog. A node or a group of
+# another role sets its own directory under files/ in its vars.
+vars:
+  mmwatchdog_config_source_dir: files/join_hub
+  # The secret files that each node gets in /etc/mmwatchdog/secrets, with
+  # mode 0600. List the file names here, and put each file's content in the
+  # MMX vault under the secret mmwatchdog_secret_files with mmx secrets edit:
+  #   mmwatchdog_secret_files:
+  #     slack-webhook-team: "https://hooks.slack.com/services/..."
+  # A node of this inventory gets the whole mmwatchdog_secret_files secret,
+  # and writes the files listed here.
+  mmwatchdog_secret_files: []
+
+nodes:
+  app-1:
+    address: app-1.example.com
+    ssh_user: deploy
+
+  app-2:
+    address: app-2.example.com
+    ssh_user: deploy

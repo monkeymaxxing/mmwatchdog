@@ -1,0 +1,32 @@
+summary: Checks a MongoDB server through MongoDB's own shell, mongosh. The check fails while the server does not answer, and for a member of a replica set while the member is neither primary, secondary, nor arbiter, or cannot reach another member.
+used_as: check
+inputs:
+  connection_string_file:
+    type: string
+    required: false
+    description: >-
+      The absolute path of a file that holds one MongoDB connection string,
+      such as mongodb://mmwatchdog_monitoring:PASSWORD@127.0.0.1:27017/, and nothing
+      else. MMWatchdog reads the file as root and gives its contents to the module.
+      Keep the file in /etc/mmwatchdog/secrets with mode 0600. Without
+      this input the check asks the server at mongodb://127.0.0.1:27017/
+      without a login.
+measurements:
+  connections_used_percent:
+    unit: percent
+    description: The open connections as a share of the connections that the server allows.
+  replication_lag_seconds:
+    unit: seconds
+    description: For a member of a replica set, how far the member is behind the primary. The primary itself is 0 seconds behind. A server that is in no replica set has no such measurement.
+examples:
+  - description: The MongoDB server of this node answers.
+    config: |
+      mongodb: {}
+      alert_severity: sos
+  - description: A member of a replica set logs in with a connection string from a file and is less than 30 seconds behind the primary.
+    config: |
+      mongodb:
+        connection_string_file: /etc/mmwatchdog/secrets/mongodb-connection-string
+      fail_when_measurement_above:
+        replication_lag_seconds: 30
+      alert_severity: warn

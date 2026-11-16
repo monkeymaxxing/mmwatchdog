@@ -1,0 +1,430 @@
+{
+  "guests": {
+    "mmwatchdog-dev": {
+      "mmwatchdog_configuration_directory": "../../../examples/web-service-fleet/application_server",
+      "host_names": ["application-server.web-service.internal", "app.example.com"],
+      "setup_scripts": [
+        "setup/application_server_packages.sh",
+        "setup/web_server_and_application.sh",
+        "setup/caches_dns_and_mail.sh",
+        "setup/databases.sh",
+        "setup/storage.sh"]},
+    "mmwatchdog-peer": {
+      "mmwatchdog_configuration_directory": "../../../examples/web-service-fleet/utility_host",
+      "host_names": ["utility-host.web-service.internal"],
+      "setup_scripts": ["setup/utility_host.sh"]}
+  },
+  "every_check_healthy_within_seconds": 90,
+  "no_alert_while_healthy_for_seconds": 15,
+  "allowed_alerts": [
+    {"node": "mmwatchdog-peer", "type": "reminder",
+     "reason": "team_chat_warn_and_sos on the utility host (mmwatchdog-peer) reminds of every open incident every 4 seconds, also while MMWatchdog confirms a recovery, so each scenario of the utility host's checks can get reminders; application_server_ssh_unreachable_from_the_utility_host waits for one"}
+  ],
+  "scenarios": [
+    {"name": "web_application_killed",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --signal=SIGKILL web-application.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "web_application_is_running", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_events_in_order.py web_application systemd_unit_restart_requested systemd_unit_restart_result", "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "systemctl is-active --quiet web-application.service", "within_seconds": 15},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "web_application_is_running", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py web_application/web_application_is_running failed team_chat_warn_and_sos,on_call_pager", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py web_application/web_application_is_running recovered team_chat_warn_and_sos,on_call_pager", "within_seconds": 10}]},
+
+    {"name": "web_application_hangs_and_gets_the_fix_command_then_a_restart",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGSTOP web-application.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "web_application_answers_health_request", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_events_in_order.py web_application recovery_command_started recovery_command_result systemd_unit_restart_requested systemd_unit_restart_result", "within_seconds": 20},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "web_application_answers_health_request", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15}]},
+
+    {"name": "web_server_stopped_by_an_operator",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop nginx.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_server", "check": "web_server_is_running", "type": "failed", "alert_severity": "sos"},
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "https_port_accepts_connections", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_events_in_order.py web_server systemd_unit_restart_withheld", "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "test \"$(systemctl is-active nginx.service)\" = inactive", "within_seconds": 5},
+       {"guest": "mmwatchdog-dev", "run": "systemctl start nginx.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_server", "check": "web_server_is_running", "type": "recovered", "alert_severity": "sos"},
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "https_port_accepts_connections", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15}]},
+
+    {"name": "default_site_answers_200_instead_of_404",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "sed -i 's/return 404;/return 200 welcome;/' /etc/nginx/sites-enabled/web-service.conf && systemctl reload nginx.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_server", "check": "default_site_answers_not_found", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py web_server/default_site_answers_not_found failed team_chat_warn_and_sos", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "run": "sed -i 's/return 200 welcome;/return 404;/' /etc/nginx/sites-enabled/web-service.conf && systemctl reload nginx.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_server", "check": "default_site_answers_not_found", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "status_page_reports_stalled_workers",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "echo 2 > /var/lib/web-application/stalled-workers"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "status_page_reports_no_stalled_workers", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "echo 0 > /var/lib/web-application/stalled-workers"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "status_page_reports_no_stalled_workers", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "status_page_login_file_missing",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "mv /etc/mmwatchdog/secrets/web-application-status-page-login /root/web-application-status-page-login.moved-away-by-the-test"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "status_page_reports_no_stalled_workers", "type": "cannot_check", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "mv /root/web-application-status-page-login.moved-away-by-the-test /etc/mmwatchdog/secrets/web-application-status-page-login"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "web_application", "check": "status_page_reports_no_stalled_workers", "type": "can_check_again"}],
+        "within_seconds": 15}]},
+
+    {"name": "one_of_two_redis_instances_hangs",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGSTOP redis-server@job-queue.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "job_queue_redis", "check": "job_queue_redis_answers_ping", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_events_in_order.py job_queue_redis systemd_unit_restart_requested systemd_unit_restart_result", "within_seconds": 15},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "job_queue_redis", "check": "job_queue_redis_answers_ping", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "redis-cli -p 6380 PING | grep -qx PONG && redis-cli -p 6381 PING | grep -qx PONG", "within_seconds": 5}]},
+
+    {"name": "memcached_killed_and_left_alone",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGKILL memcached.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "memcached", "check": "memcached_is_running", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py memcached/memcached_is_running --state failed --latest-run failed && systemctl is-failed --quiet memcached.service", "within_seconds": 5},
+       {"guest": "mmwatchdog-dev", "run": "systemctl start memcached.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "memcached", "check": "memcached_is_running", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "dns_cache_flaps_then_stops_answering",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGSTOP dnsmasq.service"},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py dns_cache/dns_cache_answers_for_the_site --state confirming_failure --latest-run failed", "within_seconds": 8},
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGCONT dnsmasq.service"},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py dns_cache/dns_cache_answers_for_the_site --state ok", "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGSTOP dnsmasq.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "dns_cache", "check": "dns_cache_answers_for_the_site", "type": "failed", "alert_severity": "info"}],
+        "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGCONT dnsmasq.service"},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py dns_cache/dns_cache_answers_for_the_site --state confirming_recovery --latest-run ok", "within_seconds": 8},
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGSTOP dnsmasq.service"},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py dns_cache/dns_cache_answers_for_the_site --state failed --latest-run failed", "within_seconds": 8},
+       {"guest": "mmwatchdog-dev", "run": "systemctl kill --kill-whom=main --signal=SIGCONT dnsmasq.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "dns_cache", "check": "dns_cache_answers_for_the_site", "type": "recovered", "alert_severity": "info"}],
+        "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py dns_cache/dns_cache_answers_for_the_site failed team_chat_info && python3 step_commands/alert_reached_destinations.py dns_cache/dns_cache_answers_for_the_site recovered team_chat_info", "within_seconds": 10}]},
+
+    {"name": "report_job_killed_by_the_kernel",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "echo 256 > /var/lib/web-application/report-size-mebibytes && systemctl start --no-block report-generator.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "out_of_memory_kills", "check": "out_of_memory_kills", "type": "failed", "alert_severity": "warn"},
+          {"node": "mmwatchdog-dev", "check_group": "failed_systemd_units", "check": "machine_has_no_failed_systemd_unit", "finding": "report-generator.service", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 20},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "out_of_memory_kills", "check": "out_of_memory_kills", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "echo 1 > /var/lib/web-application/report-size-mebibytes && systemctl reset-failed report-generator.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "failed_systemd_units", "check": "machine_has_no_failed_systemd_unit", "finding": "report-generator.service", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "application_leaks_memory_and_gets_restarted",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "curl --silent --max-time 60 'http://127.0.0.1:8000/allocate?until_memory_used_percent=85' || true"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_memory", "check": "memory_is_below_75_percent", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 20},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_events_in_order.py node_memory systemd_unit_restart_requested systemd_unit_restart_result", "within_seconds": 15},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_memory", "check": "memory_is_below_75_percent", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 20},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "curl --silent --fail -H 'Host: app.example.com' http://127.0.0.1/health | grep -qx ready", "within_seconds": 10}]},
+
+    {"name": "swap_in_use_while_memory_is_free_and_then_nearly_full",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemd-run --unit=swap-held-by-an-idle-program -p MemoryMax=64M -p MemorySwapMax=1G python3 /var/tmp/mmwatchdog-monitoring-setup/step_commands/hold_memory.py --mebibytes 400"},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/node_memory.py swap at-least 25", "within_seconds": 60},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py node_swap/swap_is_not_in_use_while_memory_is_nearly_full --state ok --latest-run ok --message-or-output-matches 'swap_used_percent is (2[5-9]|[3-9][0-9])'", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "run": "systemd-run --unit=memory-held-by-another-program python3 /var/tmp/mmwatchdog-monitoring-setup/step_commands/hold_memory.py --until-memory-used-percent 67"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_swap", "check": "swap_is_not_in_use_while_memory_is_nearly_full", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop memory-held-by-another-program.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_swap", "check": "swap_is_not_in_use_while_memory_is_nearly_full", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop swap-held-by-an-idle-program.service"},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/node_memory.py swap at-most 5", "within_seconds": 30}]},
+
+    {"name": "processors_kept_busy",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemd-run --unit=processors-kept-busy --nice=19 sh /var/tmp/mmwatchdog-monitoring-setup/step_commands/keep_processors_busy.sh"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_processors", "check": "cpu_is_below_90_percent", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 20},
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop processors-kept-busy.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_processors", "check": "cpu_is_below_90_percent", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "programs_wait_for_a_slow_disk",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemd-run --unit=disk-writes-throttled -p 'IOWriteBandwidthMax=/var/tmp 1M' dd if=/dev/zero of=/var/tmp/io-wait-test bs=1M count=600 oflag=direct"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_processors", "check": "io_wait_is_below_20_percent", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 20},
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop disk-writes-throttled.service && rm -f /var/tmp/io-wait-test"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "node_processors", "check": "io_wait_is_below_20_percent", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "uploads_filesystem_fills_up",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "python3 step_commands/fill_filesystem.py /srv/uploads space 93"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_90_percent", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py uploads_filesystem/uploads_filesystem_is_below_90_percent failed team_chat_warn_and_sos", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "run": "python3 step_commands/fill_filesystem.py /srv/uploads space 99"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_98_percent", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py uploads_filesystem/uploads_filesystem_is_below_98_percent failed team_chat_warn_and_sos,on_call_pager", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "run": "python3 step_commands/fill_filesystem.py /srv/uploads empty"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_90_percent", "type": "recovered", "alert_severity": "warn"},
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_98_percent", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py uploads_filesystem/uploads_filesystem_is_below_98_percent recovered team_chat_warn_and_sos,on_call_pager && python3 step_commands/alert_reached_destinations.py uploads_filesystem/uploads_filesystem_is_below_90_percent recovered team_chat_warn_and_sos", "within_seconds": 10}]},
+
+    {"name": "uploads_filesystem_runs_out_of_inodes",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "python3 step_commands/fill_filesystem.py /srv/uploads inodes 93"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_90_percent", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "python3 step_commands/fill_filesystem.py /srv/uploads inodes 99"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_98_percent", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "python3 step_commands/fill_filesystem.py /srv/uploads empty"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_90_percent", "type": "recovered", "alert_severity": "warn"},
+          {"node": "mmwatchdog-dev", "check_group": "uploads_filesystem", "check": "uploads_filesystem_is_below_98_percent", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15}]},
+
+    {"name": "shared_storage_unmounted_and_mounted_again",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "umount /srv/shared"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "shared_storage", "check": "shared_storage_is_mounted", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_events_in_order.py shared_storage recovery_command_started recovery_command_result && mountpoint -q /srv/shared", "within_seconds": 15},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "shared_storage", "check": "shared_storage_is_mounted", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "raid_mirror_loses_a_disk",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "mdadm /dev/md0 --fail \"$(cat /var/lib/raid-mirror/second-device)\""},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "raid_mirror", "check": "mdadm_array", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "device=$(cat /var/lib/raid-mirror/second-device) && mdadm /dev/md0 --remove \"$device\" && mdadm /dev/md0 --add \"$device\""},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "raid_mirror", "check": "mdadm_array", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 60},
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "grep -q '\\[UU\\]' /proc/mdstat", "within_seconds": 5}]},
+
+    {"name": "zfs_pool_loses_a_device",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "zpool offline datapool /var/lib/zfs-pool/disk-b.img"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "zfs_data_pool", "check": "data_pool_is_healthy_and_below_88_percent", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "zpool online datapool /var/lib/zfs-pool/disk-b.img"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "zfs_data_pool", "check": "data_pool_is_healthy_and_below_88_percent", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 30}]},
+
+    {"name": "replica_stops_replicating",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "mariadb --socket=/run/mysqld-replica/mysqld.sock --execute 'STOP SLAVE IO_THREAD'"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_5_seconds_behind", "type": "failed", "alert_severity": "warn"},
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_15_seconds_behind", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "mariadb --socket=/run/mysqld-replica/mysqld.sock --execute 'START SLAVE IO_THREAD'"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_5_seconds_behind", "type": "recovered", "alert_severity": "warn"},
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_15_seconds_behind", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15}]},
+
+    {"name": "replica_falls_further_and_further_behind",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "mariadb --socket=/run/mysqld-replica/mysqld.sock --execute 'STOP SLAVE; CHANGE MASTER TO MASTER_DELAY=30; START SLAVE'"},
+       {"guest": "mmwatchdog-dev", "run": "systemd-run --unit=orders-written-every-half-second sh /var/tmp/mmwatchdog-monitoring-setup/step_commands/write_orders.sh"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_5_seconds_behind", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 30},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_15_seconds_behind", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop orders-written-every-half-second.service && mariadb --socket=/run/mysqld-replica/mysqld.sock --execute 'STOP SLAVE; CHANGE MASTER TO MASTER_DELAY=0; START SLAVE'"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_5_seconds_behind", "type": "recovered", "alert_severity": "warn"},
+          {"node": "mmwatchdog-dev", "check_group": "database_replica", "check": "replica_is_less_than_15_seconds_behind", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 30}]},
+
+    {"name": "database_connections_nearly_used_up",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemd-run --unit=database-connections-held-open sh /var/tmp/mmwatchdog-monitoring-setup/step_commands/hold_database_connections.sh 12"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_primary", "check": "connections_are_below_50_percent", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop database-connections-held-open.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_primary", "check": "connections_are_below_50_percent", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "reporting_query_fails",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "mariadb --execute 'RENAME TABLE reporting.daily_totals TO reporting.daily_totals_renamed_by_mistake'"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_primary", "check": "reporting_database_answers_a_real_query", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "mariadb --execute 'RENAME TABLE reporting.daily_totals_renamed_by_mistake TO reporting.daily_totals'"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "database_primary", "check": "reporting_database_answers_a_real_query", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "job_queue_backs_up",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py job_queue/job_queue_health_command_succeeds --state ok --latest-run ok --message-or-output-matches '^0 jobs wait in the queue'", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "run": "redis-cli -p 6381 RPUSH jobs:waiting $(seq 500) > /dev/null"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "job_queue", "check": "job_queue_health_command_succeeds", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "run": "redis-cli -p 6381 DEL jobs:waiting > /dev/null"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "job_queue", "check": "job_queue_health_command_succeeds", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 30}]},
+
+    {"name": "audio_encoder_loses_its_library",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/audio_encoder_library.sh remove"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "audio_encoder", "check": "audio_encoder_encodes_a_test_tone", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/audio_encoder_library.sh restore"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "audio_encoder", "check": "audio_encoder_encodes_a_test_tone", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 30}]},
+
+    {"name": "deployed_application_version_differs",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "echo 2.5.0 > /opt/web-application/VERSION"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "application_version", "check": "deployed_application_is_version_2_4_1", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 30},
+       {"guest": "mmwatchdog-dev", "run": "echo 2.4.1 > /opt/web-application/VERSION"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "application_version", "check": "deployed_application_is_version_2_4_1", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 30}]},
+
+    {"name": "application_server_ssh_unreachable_from_the_utility_host",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/traffic_from_the_other_guest.sh block ssh utility-host.web-service.internal"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "machine_answers_ssh", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "machine_answers_ssh", "type": "reminder", "destination": "team_chat_warn_and_sos"},
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "machine_answers_ssh", "type": "failure_alert_severity_raised", "alert_severity": "sos"}],
+        "within_seconds": 20},
+       {"guest": "mmwatchdog-peer", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py application_server/machine_answers_ssh failed team_chat_warn_and_sos && python3 step_commands/alert_reached_destinations.py application_server/machine_answers_ssh failure_alert_severity_raised team_chat_warn_and_sos,on_call_pager", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/traffic_from_the_other_guest.sh allow ssh utility-host.web-service.internal"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "machine_answers_ssh", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-peer", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py application_server/machine_answers_ssh recovered team_chat_warn_and_sos,on_call_pager", "within_seconds": 10}]},
+
+    {"name": "application_server_does_not_answer_ping",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/traffic_from_the_other_guest.sh block ping utility-host.web-service.internal"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "machine_answers_ping", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/traffic_from_the_other_guest.sh allow ping utility-host.web-service.internal"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "machine_answers_ping", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "utility_host_ssh_unreachable_from_the_application_server",
+     "steps": [
+       {"guest": "mmwatchdog-peer", "run": "sh step_commands/traffic_from_the_other_guest.sh block ssh application-server.web-service.internal"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "utility_host", "check": "machine_answers_ssh", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-peer", "run": "sh step_commands/traffic_from_the_other_guest.sh allow ssh application-server.web-service.internal"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-dev", "check_group": "utility_host", "check": "machine_answers_ssh", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15}]},
+
+    {"name": "site_certificate_expires_in_10_days_and_then_in_3",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/issue_site_certificate.sh 10"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "site_certificate_is_valid_for_21_more_days", "type": "failed", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-peer", "wait_until_succeeds": "python3 step_commands/mmwatchdog_check_state.py application_server/site_certificate_is_valid_for_7_more_days --state ok --latest-run ok", "within_seconds": 5},
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/issue_site_certificate.sh 3"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "site_certificate_is_valid_for_7_more_days", "type": "failed", "alert_severity": "sos"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-dev", "run": "sh step_commands/issue_site_certificate.sh 90"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "site_certificate_is_valid_for_21_more_days", "type": "recovered", "alert_severity": "warn"},
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "site_certificate_is_valid_for_7_more_days", "type": "recovered", "alert_severity": "sos"}],
+        "within_seconds": 15}]},
+
+    {"name": "mail_server_down",
+     "steps": [
+       {"guest": "mmwatchdog-dev", "run": "systemctl stop postfix.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "mail_server_answers_smtp", "type": "failed", "alert_severity": "warn", "send_alerts_only_to_destinations": ["mail_administrator"]}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-peer", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py application_server/mail_server_answers_smtp failed mail_administrator", "within_seconds": 10},
+       {"guest": "mmwatchdog-dev", "run": "systemctl start postfix.service"},
+       {"wait_for_alerts": [
+          {"node": "mmwatchdog-peer", "check_group": "application_server", "check": "mail_server_answers_smtp", "type": "recovered", "alert_severity": "warn"}],
+        "within_seconds": 15},
+       {"guest": "mmwatchdog-peer", "wait_until_succeeds": "python3 step_commands/alert_reached_destinations.py application_server/mail_server_answers_smtp recovered mail_administrator && python3 step_commands/alert_reached_destinations.py application_server/mail_server_answers_smtp failed mail_administrator", "within_seconds": 10}]}
+  ]
+}

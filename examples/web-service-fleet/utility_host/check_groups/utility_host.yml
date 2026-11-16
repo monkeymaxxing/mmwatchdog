@@ -1,0 +1,19 @@
+# /etc/mmwatchdog/check_groups/utility_host.yml on the utility host: the utility
+# host watches itself too.
+check_groups:
+  utility_host_machine:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      memory_is_below_90_percent:
+        node_resource: memory
+        fail_when_measurement_above:
+          memory_used_percent: 90
+        alert_severity: warn
+      root_filesystem_is_below_90_percent:
+        node_filesystem: /
+        fail_when_measurement_above:
+          space_used_percent: 90
+        alert_severity: warn

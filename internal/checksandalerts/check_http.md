@@ -1,0 +1,345 @@
+# `http`
+
+`http` sends one HTTP or HTTPS request from the node and checks the answer:
+the status code, and, when the check asks, what the response body holds.
+MMWatchdog sends the request itself, so the node needs no program such as `curl`.
+
+Choose `http` for anything that answers HTTP, such as the health page of an
+application. An HTTPS request verifies the server's certificate by default, so
+an `http` check of an HTTPS address also fails for a certificate that is not
+valid. Add a [`tls`](check_tls.md) check only to be warned before a
+certificate expires, or for a port that speaks TLS but not HTTP. For a port
+that only has to accept a connection, use [`tcp`](check_tcp.md).
+
+## Set up
+
+A check without a credential file needs nothing on the node. A check with
+`bearer_token_file` or `basic_auth_file` needs the configured credential
+file on the node before the configuration naming the credential file arrives.
+A token file holds the token alone, on one line; a basic authentication file holds one `user:password`
+line. Make each file readable by root only:
+
+```sh
+sudo install -d -m 0700 /etc/mmwatchdog/secrets
+sudo install -m 0600 /dev/stdin /etc/mmwatchdog/secrets/api-health <<'END'
+the-token-of-the-health-request
+END
+```
+
+A file for `trusted_certificate_authority_file` holds the PEM certificates of the
+certificate authority that signed the server's certificate, at most 1 MiB.
+
+## When the check fails, and when it cannot check
+
+A run is healthy when the answer has one of the status codes in
+`expected_http_status_codes`, `[200]` without the input, and the response
+body keeps every rule about its content. The message of a healthy run names
+the status code that arrived: `HTTP 200 and configured content match`.
+
+The run fails for every answer that the server gives, or fails to give,
+and that is not healthy:
+
+- **The request does not get an answer:** the connection does not open, the
+  server does not answer within the check group's `time_limit_per_run`, or
+  the certificate of an HTTPS server is not valid. The message names the
+  method and the URL, such as `Get "http://127.0.0.1:8080/health": dial tcp
+  127.0.0.1:8080: connect: connection refused`. When the check group's
+  `time_limit_per_run` ends the request, the message says `Get
+  "http://127.0.0.1:8080/health": no answer within 5s (time_limit_per_run)`,
+  or `the HTTP response body did not arrive within 5s (time_limit_per_run)`
+  when the answer began and did not finish. The check has failed, not
+  `unknown`.
+- **The status code is absent from `expected_http_status_codes`.** The
+  message says what the check expected and what arrived:
+  `expected HTTP 200, received 503`,
+  `expected HTTP 200 or 302, received 503`, or `expected HTTP 200, 301, or
+  302, received 503`.
+- **The body breaks a rule about its content:** `HTTP response body does not contain the text in response_body_contains`,
+  `HTTP response body contains the text in response_body_does_not_contain`, or
+  `HTTP response body does not match response_body_matches_regex`.
+  The message names the first rule that the body breaks: first
+  `response_body_contains`, then `response_body_does_not_contain`, then
+  `response_body_matches_regex`.
+- **The body is larger than 1 MiB** while the check has a rule about the
+  content: `HTTP response body exceeds the 1 MiB limit for checking content`.
+
+MMWatchdog cannot check, and the run is unknown, when it cannot read a file that the
+check names: the `bearer_token_file`, the `basic_auth_file`, or the
+`trusted_certificate_authority_file`. The message says why, such as `open
+/etc/mmwatchdog/secrets/api-health: no such file or directory`. MMWatchdog sends no request
+then, because the request would go out without its credential or would
+trust the wrong certificates. An unknown run opens no failure incident.
+An unknown run follows the check's waiting times on a separate cannot-check
+incident
+([unknown results](../../docs/changing-mmwatchdog/design/checks.md#the-failing-time)).
+
+A failed run starts or continues the check's
+[failing time](../../docs/how-to/decide-when-a-check-alerts.md), which decides when the
+alert goes out. `http` reports no measurement, so an HTTP check takes no
+`fail_when_measurement_above` or `fail_when_measurement_below` threshold
+([checks that measure a number](../../docs/reference/configuration-files.md#checks-that-measure)).
+
+## Examples
+
+### An application answers its health request
+
+```yaml
+# /etc/mmwatchdog/check_groups/myapp.yml
+check_groups:
+  myapp:
+    check_every: 30s
+    time_limit_per_run: 5s
+    alert_after_failing_for: 1m
+    recovered_after_healthy_for: 30s
+    checks:
+      myapp_answers_health_request:
+        http:
+          url: http://127.0.0.1:8080/health
+          expected_http_status_codes: [200]
+          response_body_contains: ready
+        alert_severity: sos
+```
+
+Every 30 seconds, MMWatchdog on the node sends `GET http://127.0.0.1:8080/health`
+and gives the request 5 seconds. The run is healthy when the answer has the
+status code 200 and its body contains `ready`. When the runs have been
+failing for 1 minute, MMWatchdog opens an incident and sends the `sos` alert. When
+the runs of `myapp_answers_health_request` have then been healthy for
+30 seconds, MMWatchdog resolves the incident and
+sends the recovery.
+
+### An HTTPS endpoint with a virtual host, a token, and a private certificate authority
+
+A virtual host lets a server select an application by the request's host
+name. A private certificate authority issues certificates for an
+organization's own services.
+
+```yaml
+# /etc/mmwatchdog/check_groups/api.yml
+check_groups:
+  api:
+    check_every: 30s
+    time_limit_per_run: 5s
+    alert_after_failing_for: 1m
+    recovered_after_healthy_for: 30s
+    http:
+      url: https://10.0.0.5:8443/health
+      headers:
+        Host: app.example.com
+      bearer_token_file: /etc/mmwatchdog/secrets/api-health
+      trusted_certificate_authority_file: /etc/mmwatchdog/secrets/internal-ca.pem
+      expected_http_status_codes: [200]
+      response_body_contains: ready
+      response_body_does_not_contain: maintenance
+      response_body_matches_regex: 'ready$'
+    alert_severity: sos
+```
+
+The HTTP check is written directly on the check group, so
+`mmwatchdog status` shows the check as `api/http`. Each run on the node
+follows four steps:
+
+1. MMWatchdog reads the token from `/etc/mmwatchdog/secrets/api-health` and
+   the certificates from `/etc/mmwatchdog/secrets/internal-ca.pem`.
+2. MMWatchdog connects to `10.0.0.5:8443` and verifies the server's
+   certificate. The certificate must be valid for `app.example.com`, the
+   name in the `Host` header. The certificate must be signed by a
+   certificate authority in `/etc/mmwatchdog/secrets/internal-ca.pem`.
+3. MMWatchdog sends `GET /health` with `Host: app.example.com` and
+   `Authorization: Bearer` followed by the token.
+4. The HTTP check is healthy when the status code is 200 and the body
+   passes every content rule. The body must contain `ready`, must not
+   contain `maintenance`, and must end with `ready`.
+
+MMWatchdog reads `/etc/mmwatchdog/secrets/api-health` again for each request.
+A new token in `/etc/mmwatchdog/secrets/api-health` applies at the next run,
+without `mmwatchdog reload`.
+
+### An endpoint that answers with a redirect on purpose
+
+```yaml
+# /etc/mmwatchdog/check_groups/shop.yml
+check_groups:
+  shop:
+    check_every: 1m
+    time_limit_per_run: 10s
+    alert_after_failing_for: 3m
+    recovered_after_healthy_for: 1m
+    checks:
+      shop_front_page_answers:
+        http:
+          url: https://shop.example.com/
+          method: HEAD
+          expected_http_status_codes: [200, 302]
+        alert_severity: warn
+      admin_page_answers_with_basic_authentication:
+        http:
+          url: https://shop.example.com/admin/status
+          basic_auth_file: /etc/mmwatchdog/secrets/shop-admin
+          expected_http_status_codes: [200]
+        alert_severity: warn
+```
+
+The first check sends `HEAD`, so the server sends no body.
+The first check is healthy when the status code is 200 or 302.
+MMWatchdog does not follow a redirect, so a 302
+is the status code that the check compares. The second check reads one
+`user:password` line from `/etc/mmwatchdog/secrets/shop-admin` and sends the
+credentials with HTTP basic authentication.
+
+## How it works
+
+- **One request in each run.** MMWatchdog sends the request from the node
+  monitoring process, which runs as root, and does not follow a redirect.
+  The check group's `time_limit_per_run` limits the whole request, from the
+  connection to the end of the body that the check reads. No separate
+  connect or TLS handshake timeout shortens `time_limit_per_run`.
+- **The method is `GET` or `HEAD`,** `GET` without the input. A `HEAD`
+  answer has no body, so a check with `HEAD` takes no rule about the
+  content.
+- **MMWatchdog reads the body only when it needs it:** for a rule about the content,
+  and only of an answer whose status code is in
+  `expected_http_status_codes`. An answer with
+  another status code fails the check at once, also when its body is slow or
+  has no end. MMWatchdog reads at most 1 MiB of a body.
+- **The rules about the content** compare bytes of the body.
+  Each authored rule must be nonempty; remove a rule that is not needed.
+  `response_body_matches_regex` has the syntax of
+  [RE2](https://github.com/google/re2/wiki/Syntax) and matches anywhere in
+  the body. An anchor restricts where a match can occur: `ready$` requires
+  `ready` at the end of the body.
+- **`headers` are sent as written.** Header names that differ only in
+  letter case are rejected as duplicates. A value is text without control
+  characters, up to 4096 bytes. A `Host` header selects the virtual host.
+  For HTTPS, MMWatchdog also sends the `Host` value as the TLS server name
+  and verifies the certificate against the `Host` value.
+  A port in the header, such as `app.example.com:8443`, is left out of the
+  name sent to the server and verified in the certificate.
+- **HTTPS verifies the certificate and the host name by default.** MMWatchdog trusts the
+  system's certificate authorities, or, with `trusted_certificate_authority_file`,
+  only the PEM certificates of that file. Use
+  `trusted_certificate_authority_file` for a server whose
+  certificate a private certificate authority signed.
+  `dangerously_skip_server_certificate_check: true` explicitly skips
+  checking the certificate and server identity while keeping encryption.
+- **Credentials come from a file, never from the configuration.** A check
+  states at most one of `bearer_token_file` and `basic_auth_file`.
+  MMWatchdog reads the configured bearer-token or basic-authentication file
+  for each request:
+  - The file named by `bearer_token_file` holds one token of 1 to 4096
+    bytes, on one line. MMWatchdog sends the token as
+    `Authorization: Bearer TOKEN`.
+  - The file named by `basic_auth_file` holds one `user:password` line of
+    at most 4096 bytes.
+    The user name cannot be empty. The password is everything after the
+    first colon, so it may hold colons itself.
+
+  MMWatchdog removes leading and trailing spaces and line breaks from the
+  bearer-token file and the basic-authentication file.
+  Bearer-token and basic-authentication files are private to the accounts
+  owning the credential files. MMWatchdog reads bearer-token and
+  basic-authentication files as root.
+
+  `mmwatchdog validate` refuses a credential file readable by the file's
+  group or other accounts without explicit permission ([credential files that other accounts can use](../../docs/reference/configuration-files.md#secret-files)).
+- **The message of a failed request names the URL,** so the URL must hold
+  no secret. A URL with a user name or password is a validation error.
+- **`mmwatchdog validate` on the node reads `bearer_token_file`,
+  `basic_auth_file`, and `trusted_certificate_authority_file`.** Validation
+  refuses an unreadable file or a file with invalid contents
+  ([validation](../../docs/reference/commands.md#mmwatchdog-validate)). Provision the files
+  before deploying the configuration that names the files.
+
+## Errors and what they mean
+
+`mmwatchdog validate` and `mmwatchdog reload` print each error after the file, the line, and
+the column, such as `/etc/mmwatchdog/check_groups/api.yml:7:12:`, which the table
+leaves out.
+The examples are for the check `api/http` above.
+
+| Message | What the message means, and what to do |
+| --- | --- |
+| `check_groups.api.http.url: expected HTTP(S) URL without credentials and with a host, such as https://example.com/health` | The URL does not start with `http://` or `https://`, has no host, or holds a user name or a password. Put a credential in `bearer_token_file` or `basic_auth_file` |
+| `check_groups.api.http.method: must be GET or HEAD` | Write `GET` or `HEAD`, or leave `method` out for `GET` |
+| `check_groups.api.http.method: HEAD cannot check response body content; remove the response body rules or use GET` | A `HEAD` answer has no body. Use `GET`, or remove the `response_body_` inputs |
+| `check_groups.api.http.expected_http_status_codes: cannot be empty: list the HTTP status codes that count as healthy, such as [200]` | The list is `[]`. List the status codes, or leave the input out for `[200]` |
+| `check_groups.api.http.expected_http_status_codes: expected distinct HTTP status codes from 100 to 599, such as [200]` | A code is outside 100 to 599 or written twice |
+| `check_groups.api.http.expected_http_status_codes: expected a list, found the whole number 200` | `expected_http_status_codes` is one number. Write `expected_http_status_codes` as a list: `[200]` |
+| `check_groups.api.fail_when_measurement_above: the module http reports no measurement, so its check takes no limit` | The check states `fail_when_measurement_above` or `fail_when_measurement_below`. `http` reports no measurement, so remove the limit |
+| `check_groups.api.http.response_body_matches_regex: error parsing regexp: missing closing ): ...` | The regular expression is not valid RE2. The text after the colon explains the regular expression error |
+| `check_groups.api.http.headers.Authorization: use bearer_token_file or basic_auth_file, so the secret stays out of configuration` | `headers` cannot set `Authorization`, in any case. Put the token or the user name and password in a file |
+| `check_groups.api.http.headers.X-Check: expected a distinct HTTP header name` | The name has a character that a header name cannot have, or the same name is written twice in another case |
+| `check_groups.api.http.headers.X-Check: expected text without control characters, up to 4096 bytes` | The value has a line break or another control character, or is too long |
+| `check_groups.api.http.basic_auth_file: set only one of bearer_token_file and basic_auth_file` | The check states `bearer_token_file` and `basic_auth_file`. Keep `bearer_token_file` or `basic_auth_file`, and remove the unused setting |
+| `check_groups.api.http.bearer_token_file: must be absolute` | The path of a file does not start with `/`. The error `must be absolute` also applies to `basic_auth_file` and `trusted_certificate_authority_file` |
+| `check_groups.api.http.bearer_token_file: /etc/mmwatchdog/secrets/api-health: expected a single token of 1..4096 bytes` | On the node: the token file holds more than one line, or a token that is too short or too long |
+| `check_groups.api.http.basic_auth_file: /etc/mmwatchdog/secrets/shop-admin: expected one user:password line of at most 4096 bytes` | On the node: the file has no colon, no user name, more than one line, or more than 4096 bytes |
+| `check_groups.api.http.trusted_certificate_authority_file: /etc/mmwatchdog/secrets/internal-ca.pem: contains no PEM certificates` | On the node: the file holds no certificate in PEM form, the text that starts with `-----BEGIN CERTIFICATE-----` |
+| `check_groups.api.http.bearer_token_file: open /etc/mmwatchdog/secrets/api-health: no such file or directory` | On the node: the file is not there, or MMWatchdog cannot read it |
+
+During a run, the file problems in the table make the run unknown. The
+message repeats the text that follows the input name in the table.
+
+## Tested on
+
+- **Go tests** use a stand-in server on the test machine. Tests in
+  `internal/checksandalerts` include:
+
+  - `TestHTTPContentAndStatus`: the three content rules, several accepted
+    status codes, a redirect that is not followed, and messages.
+  - `TestHTTPCheckDoesNotWaitForTheBodyOfAnUnexpectedAnswer`.
+  - `TestHTTPRequestOptions`: a bearer token, basic authentication, `HEAD`,
+    headers, and the `Host` header as the verified TLS name. The test
+    compares system certificate authorities with
+    `trusted_certificate_authority_file` and another certificate authority.
+    The test covers unreadable files, files with invalid contents, and a
+    token that changes without a reload.
+
+  Tests in `internal/daemon` include `TestHTTPRequestSettings`,
+  `TestConfigStrict`, `TestRuntimeCredentialValidation`, and
+  `TestSecretFilePermissions`. The listed Go tests ran on macOS ARM64 and,
+  as the native suite, on the AMD64 guest of
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution).
+- **The acceptance suite** (`tests/integration/acceptance.py`) ran on
+  [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution):
+
+  - The plain HTTP test watches a test service. The check fails, opens an
+    incident, triggers a restart of the test service, and recovers.
+  - The HTTPS test uses `Host: app.internal`, a token file, and a test
+    certificate as the private certificate authority. The HTTPS check is
+    initially healthy, then fails with 401 after the token file changes.
+    The HTTPS check is unknown while the token file is missing.
+    The HTTPS check recovers without a reload.
+
+## Why it works this way
+
+- **Body rules must be nonempty.** Empty text does not state meaningful
+  expected content and can make a rule always pass or always fail.
+- **Only the check group limits the request time.** Separate transport
+  timeouts would cut short a longer `time_limit_per_run` chosen for the service.
+
+- **HTTPS verifies certificates by default.** A private authority can be
+  named with `trusted_certificate_authority_file`.
+  `dangerously_skip_server_certificate_check: true` explicitly permits
+  encryption without server authentication.
+
+- **Permission refusals belong to validation and reload.** Startup warns
+  once per file. A running check continues after a mode change so the
+  permission rule cannot stop monitoring. The
+  [credential permission rule](../../docs/reference/configuration-files.md#secret-files)
+  owns the settings and reasons.
+- **Credentials come from files, never from URLs, headers, or the
+  configuration.** Configuration is shared and printed. Secrets are not.
+- **MMWatchdog reads a credential file for each request,** so a rotated token needs
+  no reload.
+- **Redirects are not followed.** The status code that the endpoint actually
+  returns is the code checked. For an endpoint that redirects on purpose,
+  list the redirect status code.
+- **`expected_http_status_codes` is a list,** so an endpoint with more than
+  one healthy answer needs one check, not two.
+- **A file that MMWatchdog cannot read makes the run unknown, not failed.** MMWatchdog
+  learned nothing about the endpoint, and an unknown run never triggers a
+  restart of a healthy service.
+- **The body is read only for a rule about it, and only up to 1 MiB.** A
+  check that fails on its status code reports at once, and a large or
+  endless body cannot hold up a run or fill MMWatchdog's memory.

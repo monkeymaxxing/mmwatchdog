@@ -1,0 +1,232 @@
+# `reboot_after_updates`
+
+`reboot_after_updates` fails while the node needs a reboot, for example
+because a new kernel was installed and the old one still runs. On Debian
+and Ubuntu, the check reads `/run/reboot-required`. A hook is a program
+that the kernel's package runs after installing a new kernel to write
+`/run/reboot-required`. On SUSE, such as openSUSE Leap, the check reads
+`/run/reboot-needed`, which zypper writes itself. On the Red Hat family,
+such as Rocky Linux, AlmaLinux, and Fedora, the check asks dnf, with `dnf needs-restarting
+--reboothint` (on Fedora, `dnf needs-restarting --json`). Set `fail_when` to
+`the_node_must_reboot_to_use_installed_updates` to state when the check fails.
+
+To learn whether security updates wait to be installed, use
+[`apt_security_updates`](check_apt_security_updates.md) on Debian and Ubuntu
+[`dnf_security_updates`](check_dnf_security_updates.md) on the Red Hat family, and
+[`zypper_security_patches`](check_zypper_security_patches.md) on SUSE. For the end of the
+release's security support, use
+[`distribution_release_security_support`](check_distribution_release_security_support.md). A
+reboot that has happened is announced by the
+[reboot notice](../../docs/how-it-works.md#reboot-notices), which needs no check.
+
+To find known exploited flaws in installed packages, use
+[`known_exploited_vulnerabilities_in_installed_packages`](check_known_exploited_vulnerabilities_in_installed_packages.md).
+CISA, the US cybersecurity agency, publishes a list of flaws that attackers
+are known to use. OSV.dev is a public database of package flaws. The vulnerability check reads CISA's list and OSV.dev.
+
+## Set up
+
+- **Red Hat family:** the node needs the package that has dnf's command
+  `needs-restarting`. Without it, the check is unknown. Rocky Linux 9 and
+  AlmaLinux 10 do not install the package `dnf-plugins-core`. Install it as
+  root:
+
+  ```sh
+  dnf install dnf-plugins-core
+  ```
+
+  Fedora's dnf 5 has the command in the package `dnf5-plugins`, which Fedora
+  installs by default. If the package is missing, install it as root:
+
+  ```sh
+  dnf install dnf5-plugins
+  ```
+
+- **SUSE:** the node needs nothing. zypper creates the empty file
+  `/run/reboot-needed` when a transaction installs a package with a reboot
+  hint, such as a kernel. No hook is needed, because zypper itself writes
+  the file.
+- **Debian and Ubuntu:** the node needs a program that writes
+  `/run/reboot-required` when a new kernel is installed. The program that
+  writes `/run/reboot-required` is a hook, which the kernel's package runs
+  after installing the kernel.
+  Without a hook that writes `/run/reboot-required`, the check is unknown.
+  - Debian 12 and 13 have the hook with the package `unattended-upgrades`.
+    Debian's cloud images have `unattended-upgrades`. A minimal installation
+    of Debian does not have `unattended-upgrades`.
+  - Ubuntu 24.04 has the hook with the package `update-notifier-common` or
+    `unattended-upgrades`. Ubuntu's cloud images and server installation
+    have `update-notifier-common` and `unattended-upgrades`.
+  - Ubuntu 26.04 always has the hook, with the package `linux-base`, which
+    every kernel package needs.
+
+  `unattended-upgrades` also turns on automatic updates when it is
+  installed. To install `unattended-upgrades` with automatic updates turned
+  off, run on the node, as root:
+
+  ```sh
+  # Answer "no" to the package's question about automatic updates.
+  echo 'unattended-upgrades unattended-upgrades/enable_auto_updates boolean false' | debconf-set-selections
+  apt-get install unattended-upgrades
+  ```
+
+  The `unattended-upgrades` hook writes `/run/reboot-required` whether
+  automatic updates are turned on or off.
+
+## When the check fails, and when it cannot check
+
+- **The check fails** while the node needs a reboot. The message says how
+  MMWatchdog knows:
+  - Debian and Ubuntu: `this node needs a reboot for 2 packages:
+    libc6, linux-image-6.1.0-26-amd64`, with the packages from
+    `/run/reboot-required.pkgs`, or `this node needs a reboot
+    (/run/reboot-required exists)` when `/run/reboot-required.pkgs` names none.
+  - Red Hat family: `this node needs a reboot (dnf needs-restarting
+    --reboothint)`, with dnf's reasons as the details, such as `* glibc`.
+    On Fedora: `this node needs a reboot (dnf needs-restarting)`, with the
+    detail `Core libraries or services have been updated since boot-up:
+    glibc`, and the packages that dnf 5 names.
+  - SUSE: `this node needs a reboot (/run/reboot-needed exists)`. The file
+    names no packages, so the message names none. The file exists after zypper
+    installs a package that needs a reboot, even the same kernel version again.
+    `zypper needs-rebooting` reads the same flag.
+- **The check is healthy** with `this node needs no reboot`. On SUSE, this
+  means that `/run/reboot-needed` does not exist. On the Red Hat family, it
+  means that `dnf needs-restarting --reboothint` ended with exit code 0 (on Fedora, with exit code 0 and `"reboot_required":false`).
+- **MMWatchdog cannot check, and the check is unknown,** when MMWatchdog cannot read what
+  the distribution says, when no hook on a Debian or Ubuntu node writes
+  `/run/reboot-required` for a new kernel and `/run/reboot-required` is missing, or when
+  the node runs a distribution that MMWatchdog does not know.
+
+An unknown result opens a cannot-check incident after lasting for the
+check's `alert_after_failing_for`, as for every check
+([the failing time](../../docs/how-to/decide-when-a-check-alerts.md)).
+
+## Examples
+
+```yaml
+# /etc/mmwatchdog/check_groups/node_software.yml
+check_groups:
+  node_software:
+    check_every: 1h
+    time_limit_per_run: 2m
+    alert_after_failing_for: 0s
+    recovered_after_healthy_for: 0s
+    checks:
+      node_needs_no_reboot:
+        reboot_after_updates:
+          fail_when: the_node_must_reboot_to_use_installed_updates
+        alert_severity: info
+```
+
+Once an hour, MMWatchdog on the node asks whether the node needs a reboot.
+`alert_after_failing_for: 0s` sends the `info` alert after the first run
+that finds that the node needs a reboot. The check keeps failing until
+someone reboots the node. After the reboot, the first run is healthy, and
+`recovered_after_healthy_for: 0s` sends the recovery at once.
+
+## How it works
+
+MMWatchdog reads `/etc/os-release` on the node to recognize Debian and
+Ubuntu, the Red Hat family, and SUSE, as [`apt_security_updates`](check_apt_security_updates.md#how-it-works)
+and [`zypper_security_patches`](check_zypper_security_patches.md#how-it-works)
+do.
+
+| Distribution | What MMWatchdog reads |
+| --- | --- |
+| Debian and Ubuntu | A kernel hook or a package that needs a reboot leaves `/run/reboot-required`. Package names come from `/run/reboot-required.pkgs`, alongside `/run/reboot-required`. When `/run/reboot-required` is missing, MMWatchdog looks for an executable kernel hook that writes `/run/reboot-required` for a new kernel. The recognized hook paths are `/etc/kernel/postinst.d/unattended-upgrades`, `/etc/kernel/postinst.d/update-notifier`, `/etc/kernel/postinst.d/reboot-notifier`, or `/usr/share/kernel/postinst.d/touch-reboot-required`. If any recognized hook is executable, the check is healthy. If no recognized hook is executable, the check is unknown. |
+| Red Hat family | MMWatchdog runs `dnf --quiet --disablerepo=* needs-restarting --reboothint` with `LC_ALL=C`, as the unprivileged account `mmwatchdog`, in `/`. The command only reads the list of installed packages, so dnf gets no repository and downloads nothing. Exit code 0 means that the node needs no reboot. Exit code 1 with reasons on the standard output means that a core package, such as the kernel or the C library, was installed after the boot: the check fails, and the reasons are the details. The message `No such command` means that `dnf-plugins-core` is missing. Any other result is unknown. |
+| Fedora (dnf 5) | MMWatchdog runs `dnf --quiet --disablerepo=* needs-restarting --json` with `LC_ALL=C`, as the unprivileged account `mmwatchdog`, in `/`. It does not pass `--reboothint`, which dnf 5 ignores. dnf 5 answers with a JSON array of one object, with `"type":"reboot"`, `reboot_required`, and `packages`. The exit code and `reboot_required` must agree: exit code 0 and `false` means that the node needs no reboot, and exit code 1 and `true` means that it does, and the check fails with the packages as details. Exit code 2 with the text `Unknown argument "needs-restarting"` means that `dnf5-plugins` is missing. Any other result, such as an exit code and an answer that disagree, is unknown. The account needs a home that it can write to, which `/var/lib/mmwatchdog-checks` is, because dnf 5 creates its state directory there. |
+| SUSE | zypper creates the empty file `/run/reboot-needed` when a transaction installs a package with a reboot hint. A reboot clears the file, because `/run` is a tmpfs. If the file exists, the check fails. If the file does not exist, the check is healthy. |
+
+## Errors and what they mean
+
+| Message | What the message means, and what to do |
+| --- | --- |
+| `reboot_after_updates.fail_when: is required: The check fails while the node must reboot to use installed updates; write the_node_must_reboot_to_use_installed_updates, the only value.` | Write `fail_when: the_node_must_reboot_to_use_installed_updates` below `reboot_after_updates`. |
+| `reboot_after_updates.fail_when: expected one of the_node_must_reboot_to_use_installed_updates` | Use `the_node_must_reboot_to_use_installed_updates`, the only allowed value. |
+| `no program on this node writes /run/reboot-required when a new kernel is installed, so MMWatchdog cannot know whether the node needs a reboot: install the package unattended-upgrades` | The Debian or Ubuntu node has no hook that writes `/run/reboot-required`. Install `unattended-upgrades`, as [Set up](#set-up) shows. |
+| `MMWatchdog cannot look at /run/reboot-required: ...` or `MMWatchdog cannot look at /run/reboot-needed: ...` | MMWatchdog cannot inspect the file, for example because permissions prevent MMWatchdog from inspecting the file. |
+| `MMWatchdog cannot find the program dnf, which says on this distribution whether the node needs a reboot` | The node of the Red Hat family has no `dnf` in the standard path. |
+| `the dnf of this node has no command needs-restarting, which says whether the node needs a reboot: install the package of dnf's plugins, with dnf install dnf-plugins-core` | Install `dnf-plugins-core`, as [Set up](#set-up) shows. On Fedora, the message says `dnf install dnf5-plugins`. |
+| `dnf needs-restarting ended with exit code N and no reason for a reboot: ...` | dnf failed. The message gives dnf's error text. |
+| `dnf needs-restarting ended with exit code N and an answer that MMWatchdog does not understand: ...` | Fedora's dnf 5 gave an answer that is not the JSON of a reboot question, or an exit code that disagrees with it. The message gives the start of what dnf wrote. |
+| `MMWatchdog does not know how NAME says that a node needs a reboot: it knows only Debian, Ubuntu, the Red Hat family, and SUSE` | The distribution is not one of MMWatchdog's targets. |
+
+## Tested on
+
+[Limits on each distribution](../../docs/reference/limits-on-each-distribution.md) says what MMWatchdog cannot do on each distribution, or did not test there, and why.
+
+- **Go tests** in `server_checks_test.go`: `TestNodeDistributionFamily`
+  checks `ID` and `ID_LIKE`. `TestUpdateChecksOnUnknownDistributions`
+  checks the unknown result and its distribution name.
+  `TestRebootAfterUpdatesCheck` covers `/run/reboot-required` and the package
+  names in `/run/reboot-required.pkgs`. The test also covers each of the four
+  hooks, a hook that is not executable, and a node without a hook.
+  `TestRebootAfterUpdatesCheckOnSUSE` in `suse_checks_test.go` covers
+  `/run/reboot-needed` present and absent. `TestRebootAfterUpdatesCheckOnTheRedHatFamily`
+  in `red_hat_checks_test.go` covers dnf's exit codes 0 and 1 with reasons, the
+  missing plugin, a failed dnf, no `dnf` at all, and the account and arguments.
+  `TestRebootAfterUpdatesCheckOnFedora` in `fedora_checks_test.go` covers dnf 5's
+  JSON with and without a reboot, the packages as details, the missing plugin,
+  and ten answers that are not understood, such as an exit code and a
+  `reboot_required` that disagree.
+- **The node suite** (`node_scenarios.py`) runs on the Debian, Ubuntu, and
+  openSUSE Leap releases, and on Rocky Linux 9, AlmaLinux 10, and Fedora 45, of [every target distribution](../../docs/changing-mmwatchdog/testing.md#every-target-distribution).
+  On Arch Linux, the suite checks only that the check is
+  unknown and that its message names the distribution. On openSUSE Leap,
+  the suite reinstalls the guest's kernel package with zypper, checks that
+  the check fails, removes `/run/reboot-needed`, and checks that the check
+  is healthy.
+  On Rocky Linux and AlmaLinux, the suite checks first that `dnf` has no
+  `needs-restarting` and that the check is unknown, then installs
+  `dnf-plugins-core`, installs the C library again so that `needs-restarting`
+  ends with exit code 1, checks that the check fails with `glibc` in its details,
+  and checks that the check is healthy after the guest started again. On
+  Fedora, the suite removes `dnf5-plugins` to see the unknown result and the
+  message, installs it again, and does the rest in the same way.
+  On a guest without a hook, the suite checks that the check is unknown,
+  then installs `unattended-upgrades` with automatic updates turned off.
+  The suite runs the guest's hook as the kernel's package does. The node
+  suite checks that the check fails with the package that the hook names,
+  then removes `/run/reboot-required`.
+- The latest run passed on every target distribution
+  ([validation record](../../docs/changing-mmwatchdog/validation.md)).
+
+## Why it works this way
+
+- **The check reads what the distribution says.** On Debian and Ubuntu,
+  a kernel hook or a package that needs a reboot leaves `/run/reboot-required`.
+  The check reads `/run/reboot-required` and makes no rule of the check's own.
+- **A missing `/run/reboot-required` is unknown on a node without a kernel
+  hook that writes `/run/reboot-required`.** On Debian and Ubuntu, only a
+  hook writes `/run/reboot-required` for a new kernel. Packages such as
+  `dbus` write `/run/reboot-required` only for a new version of the package.
+  On a node without a hook, the check would stay
+  healthy after every new kernel, and nobody would notice that the node
+  still runs the old one.
+- **MMWatchdog knows the hooks by their paths.** The four recognized hooks
+  come from Debian 12 and 13 and Ubuntu 24.04 and 26.04 packages that write
+  `/run/reboot-required`. A hook counts only when the hook is executable,
+  because the kernel's package runs only executable hooks.
+- **The message names `unattended-upgrades`.** Debian and Ubuntu have
+  `unattended-upgrades`, and Debian's cloud images install
+  `unattended-upgrades`. `reboot-notifier` also has a hook, but `reboot-notifier` needs a
+  mail server on the node.
+- **On the Red Hat family, dnf answers.** Rocky Linux, AlmaLinux, and Fedora
+  write no flag file. dnf's `needs-restarting --reboothint` compares the
+  install times of the core packages with the boot time. On Rocky Linux and
+  AlmaLinux, the command comes with a package that the distributions do not
+  install by default, so the check says which package to install. The command
+  needs no repository, so dnf gets none.
+- **On Fedora, the check reads dnf 5's JSON and compares it with the exit
+  code.** dnf 5 ignores `--reboothint` and gives the same exit codes as dnf 4,
+  and its JSON says the same thing in words a program reads: `reboot_required`
+  and the packages. Requiring both to agree means that an exit code 1 of a
+  program that failed, or an answer that dnf 5 changes later, is `unknown` and
+  never "this node needs no reboot".
+- **On SUSE, the flag means that a package that needs a reboot was
+  installed.** The flag is set even when the same kernel version is installed
+  again, and it names no packages, because zypper writes an empty file.
+  Where Debian's hook files need a rule of their own, zypper always writes
+  the file, so a missing file is healthy on SUSE.

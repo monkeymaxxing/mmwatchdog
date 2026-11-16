@@ -1,0 +1,19 @@
+summary: Counts the jobs that the application finished since the last run of the check.
+used_as: check
+inputs:
+  finished_jobs_counter_file_path:
+    type: string
+    required: true
+    description: The absolute path of the file that holds the number of jobs that the application has finished since it started.
+measurements:
+  jobs_finished_since_last_run:
+    unit: count
+    description: The number of jobs that the application finished between the last run of the check and this one.
+examples:
+  - description: Fail when no job finished between two runs.
+    config: |
+      finished_jobs:
+        finished_jobs_counter_file_path: /var/lib/myapp/finished
+      fail_when_measurement_below:
+        jobs_finished_since_last_run: 1
+      alert_severity: warn

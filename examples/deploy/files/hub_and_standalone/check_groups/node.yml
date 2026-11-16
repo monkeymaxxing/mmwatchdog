@@ -1,0 +1,28 @@
+check_groups:
+  machine:
+    check_every: 30s                    # run each check every 30 seconds
+    time_limit_per_run: 5s              # one run of a check may take 5 seconds
+    alert_after_failing_for: 1m         # send the alert after 1 minute of failing
+    recovered_after_healthy_for: 30s    # the failure is over after 30 healthy seconds
+    checks:
+      cpu_use_is_recorded:
+        only_record_readings: true
+        node_resource: cpu              # no limit: records only, never alerts
+
+      memory_is_below_90_percent:
+        node_resource: memory
+        fail_when_measurement_above:
+          memory_used_percent: 90
+        alert_severity: warn
+
+      root_filesystem_is_below_85_percent:
+        node_filesystem: /
+        fail_when_measurement_above:
+          space_used_percent: 85
+        alert_severity: warn
+
+      root_filesystem_is_below_95_percent:
+        node_filesystem: /
+        fail_when_measurement_above:
+          space_used_percent: 95
+        alert_severity: sos

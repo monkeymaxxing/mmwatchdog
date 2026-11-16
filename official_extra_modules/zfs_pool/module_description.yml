@@ -1,0 +1,32 @@
+summary: Checks one ZFS pool through the zpool program. The check fails while the pool is not healthy, and measures how full and how fragmented the pool is and how long ago it was last scrubbed.
+used_as: check
+inputs:
+  pool_name:
+    type: string
+    required: true
+    description: The name of the ZFS pool, as zpool list prints it, such as tank.
+measurements:
+  space_used_percent:
+    unit: percent
+    description: The share of the pool's space that is in use.
+  free_space_fragmentation_percent:
+    unit: percent
+    description: How fragmented the free space of the pool is, as zpool list prints it.
+  days_since_last_scrub:
+    unit: days
+    description: The time since the last completed scrub observed by MMWatchdog. A running, paused, or canceled scrub and a resilver keep that completed date. Without a known completed scrub, the reading counts from pool creation.
+examples:
+  - description: Fail while the pool tank is not healthy, and when it is more than 80 percent full.
+    config: |
+      zfs_pool:
+        pool_name: tank
+      fail_when_measurement_above:
+        space_used_percent: 80
+      alert_severity: sos
+  - description: Fail when the pool tank has gone more than 35 days without a scrub.
+    config: |
+      zfs_pool:
+        pool_name: tank
+      fail_when_measurement_above:
+        days_since_last_scrub: 35
+      alert_severity: warn

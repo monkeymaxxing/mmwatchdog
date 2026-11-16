@@ -1,0 +1,32 @@
+# /etc/mmwatchdog/alert_destinations.yml on the utility host. The same three places
+# as on the application server, and the mail administrator, who gets only
+# the alerts of the checks that name this destination. In the example's
+# test, each one is a webhook receiver on this machine, at a path of its
+# own.
+destinations:
+  team_chat_info:
+    remind_every: never
+    webhook:
+      url: http://127.0.0.1:18080/events/team_chat_info
+    time_limit_per_delivery_attempt: 1s
+    alert_severities: [info]
+  # While an incident stays open, the team's chat hears of it again every
+  # 4 seconds, with the latest result.
+  team_chat_warn_and_sos:
+    webhook:
+      url: http://127.0.0.1:18080/events/team_chat_warn_and_sos
+    time_limit_per_delivery_attempt: 1s
+    remind_every: 4s
+    alert_severities: [warn, sos]
+  on_call_pager:
+    remind_every: never
+    webhook:
+      url: http://127.0.0.1:18080/events/on_call_pager
+    time_limit_per_delivery_attempt: 1s
+    alert_severities: [sos]
+  mail_administrator:
+    remind_every: never
+    webhook:
+      url: http://127.0.0.1:18080/events/mail_administrator
+    time_limit_per_delivery_attempt: 1s
+    alert_severities: []                # only checks that name this destination reach it

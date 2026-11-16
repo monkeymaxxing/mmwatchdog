@@ -1,0 +1,36 @@
+#!/bin/bash
+# A check module of a team's own that is an executable, written in Bash. It
+# measures how old a file is. A program that must run on time, such as a
+# backup, writes the file only after it succeeded, so an old file means that
+# the program did not succeed lately.
+#
+# The module only measures the file's age: the check that uses it states the
+# limit, such as fail_when_measurement_above: {age_minutes: 1560} for 26 hours.
+#
+# MMWatchdog supplies MMWATCHDOG_MODULE_HELPER, which reads the request and writes the result.
+# No jq or Python is needed. The module needs stat and date of GNU coreutils.
+set -o pipefail
+request=$("$MMWATCHDOG_MODULE_HELPER" module-json request --inputs file_path) || exit 1
+file_path=$(printf '%s' "$request" | "$MMWATCHDOG_MODULE_HELPER" module-json get --type string /inputs/file_path) || exit 1
+if [[ $file_path != /* ]]; then
+  "$MMWATCHDOG_MODULE_HELPER" module-json result --status unknown \
+    --message 'file_path must be an absolute path'
+  exit $?
+fi
+if [[ ! -f $file_path ]]; then
+  "$MMWATCHDOG_MODULE_HELPER" module-json result --status failed \
+    --message 'the file does not exist or is not a regular file'
+  exit $?
+fi
+modified=$(stat -L -c %Y -- "$file_path") || exit 1
+now=$(date +%s) || exit 1
+age_seconds=$((now - modified))
+if (( age_seconds < 0 )); then
+  "$MMWATCHDOG_MODULE_HELPER" module-json result --status unknown \
+    --message 'the file has a time in the future: check the clock of the program that writes it'
+  exit $?
+fi
+age_minutes=$((age_seconds / 60))
+"$MMWATCHDOG_MODULE_HELPER" module-json result --status ok \
+  --message "the file is $age_minutes minutes old" \
+  --measurement age_minutes "$age_minutes"

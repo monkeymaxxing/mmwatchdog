@@ -1,0 +1,71 @@
+name: Publish release archives
+
+# Pushing a tag v<version>, such as v0.1.0, builds MMWatchdog's two release
+# archives and SHA256SUMS with scripts/release.py and attaches them to a
+# GitHub release of that tag. The README's install downloads them from
+# https://github.com/monkeymaxxing/mmwatchdog/releases/download/v<version>/.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions: {}
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - name: Validate the release tag
+        id: version
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if [ "$version" = "$GITHUB_REF_NAME" ]; then
+            echo "Release tag must start with v, such as v0.1.0." >&2; exit 1
+          fi
+          # The version in the repository names a build that is no release.
+          if [ "$version" = "$(cat official_extra_modules/shipped_with_mmwatchdog_version)" ]; then
+            echo "The development version $version cannot be published as a release." >&2; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@4dc6199c7b1a012772edbd06daecab0f50c9053c # v6.1.0
+        env:
+          GOTOOLCHAIN: auto # Read the toolchain directive, even if the runner sets local.
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Confirm the pinned Go toolchain
+        shell: bash
+        run: test "$(go env GOVERSION)" = "$(awk '$1 == "toolchain" {print $2}' go.mod)"
+      - name: Build the release archives
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: python3 scripts/release.py "$RELEASE_VERSION" --output-dir "$RUNNER_TEMP/mmwatchdog-release"
+      - name: Check the archives against SHA256SUMS
+        working-directory: ${{ runner.temp }}/mmwatchdog-release
+        run: sha256sum --check SHA256SUMS
+      - name: Attest every release archive
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: ${{ runner.temp }}/mmwatchdog-release/*.tar.gz
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        shell: bash
+        run: |
+          prerelease=()
+          if [[ "$RELEASE_VERSION" == *-* ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$GITHUB_REF_NAME" "$RUNNER_TEMP/mmwatchdog-release/"*.tar.gz \
+            "$RUNNER_TEMP/mmwatchdog-release/SHA256SUMS" \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --title "MMWatchdog $RELEASE_VERSION" \
+            --generate-notes "${prerelease[@]}"

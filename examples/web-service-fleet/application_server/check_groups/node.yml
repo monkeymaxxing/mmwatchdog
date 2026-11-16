@@ -1,0 +1,92 @@
+# /etc/mmwatchdog/check_groups/node.yml on the application server: the machine
+# itself.
+check_groups:
+  # When the application leaks memory until the machine is nearly out, MMWatchdog
+  # restarts the application before the kernel starts to end processes.
+  node_memory:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      memory_is_below_75_percent:
+        node_resource: memory
+        fail_when_measurement_above:
+          memory_used_percent: 75
+        alert_severity: warn
+    restart_systemd_unit:
+      systemd_unit: web-application.service
+      triggered_by_checks: [memory_is_below_75_percent]
+      restart_after_failing_for: 3s     # after the alert, which goes out at 2 seconds
+      max_attempts: 3
+      min_time_between_attempts: 2s
+      reset_attempts_after_healthy_for: 5s
+
+  # Swap that stays in use after a past spike is harmless; swap in use while
+  # memory is nearly full means that the machine is about to struggle. MMWatchdog
+  # has no rule that combines two measurements, so a shell check reads both.
+  node_swap:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      swap_is_not_in_use_while_memory_is_nearly_full:
+        shell: |
+          meminfo() { awk -v field="$1:" '$1 == field {print $2}' /proc/meminfo; }
+          memory_used_percent=$(( 100 - 100 * $(meminfo MemAvailable) / $(meminfo MemTotal) ))
+          swap_total=$(meminfo SwapTotal)
+          swap_used_percent=0
+          if [ "$swap_total" -gt 0 ]; then
+            swap_used_percent=$(( 100 - 100 * $(meminfo SwapFree) / swap_total ))
+          fi
+          echo "memory_used_percent is $memory_used_percent and swap_used_percent is $swap_used_percent; swap above 20 percent fails while memory is above 60 percent"
+          [ "$memory_used_percent" -le 60 ] || [ "$swap_used_percent" -le 20 ]
+        alert_severity: warn
+
+  node_processors:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      cpu_is_below_90_percent:
+        node_resource: cpu
+        fail_when_measurement_above:
+          cpu_used_percent: 90
+        alert_severity: warn
+      io_wait_is_below_20_percent:
+        node_resource: io_wait
+        fail_when_measurement_above:
+          io_wait_percent: 20
+        alert_severity: warn
+
+  # Every unit that systemd reports as failed, except the units that have
+  # their own systemd_unit_state check.
+  failed_systemd_units:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    alert_after_failing_for: 2s
+    recovered_after_healthy_for: 2s
+    checks:
+      machine_has_no_failed_systemd_unit:
+        every_systemd_unit:
+          fail_when: a_systemd_unit_has_failed
+          systemd_units_to_ignore:
+            - nginx.service
+            - web-application.service
+            - redis-server@sessions.service
+            - redis-server@job-queue.service
+            - memcached.service
+            - dnsmasq.service
+        alert_severity: warn
+
+  # The kernel ended a process for lack of memory. One kill is enough to
+  # alert, so the check alerts at its first failed run.
+  out_of_memory_kills:
+    check_every: 1s
+    time_limit_per_run: 500ms
+    recovered_after_healthy_for: 2s
+    out_of_memory_kills:
+      fail_when: the_kernel_kills_a_process_for_lack_of_memory
+    alert_severity: warn
