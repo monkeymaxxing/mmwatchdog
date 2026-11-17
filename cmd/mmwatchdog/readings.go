@@ -221,7 +221,7 @@ func showReadings(options readingsOptions) error {
 			for _, definition := range config.CheckDefinitions(configuration) {
 				if definition.CheckGroup == options.checkGroup && (options.check == "" || definition.Name == options.check) {
 					checkExists = true
-					recordsMeasurements = recordsMeasurements || len(definition.Check.MeasurementNames()) > 0
+					recordsMeasurements = recordsMeasurements || definition.Check.KeepsReadings()
 				}
 			}
 		} else if node.Report != nil {

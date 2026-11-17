@@ -318,8 +318,10 @@ alert comes first.
   cannot-check alert goes out.
 - **The check reports events, such as `out_of_memory_kills`, or
   `log_lines` with `fail_when_a_new_line_contains`.** Such an event check
-  alerts at the first new event. It ignores the check group's
-  `alert_after_failing_for` and refuses its own:
+  alerts at the first new event. It uses the check group's
+  `alert_after_failing_for` only for the cannot-check alert, which goes out
+  once the check has been unable to read its events for that long, and it
+  refuses its own:
 
   ```text
   check_groups.myapp.checks.no_oom_kills.alert_after_failing_for: an event check opens its incident at the first new event; remove alert_after_failing_for from this check. Set recovered_after_healthy_for to keep the incident open after the last event

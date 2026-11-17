@@ -265,9 +265,10 @@ from [Record a number](#record-a-number).
      terminal, or 80 characters when the output goes to a file or a pipe.
    - **The value runs up,** from the lowest to the highest reading or
      limit, which the labels on the left name.
-   - **No spike disappears.** When a column holds several readings, it
-     shows the one closest to the limit or farthest beyond it; for a check
-     that only records, the highest.
+   - **No spike or dip disappears.** When a column holds several
+     readings, a vertical stroke reaches from the lowest to the highest of
+     them, and the line goes on from the one closest to the limit or
+     farthest beyond it; for a check that only records, the highest.
    - **A gap stays visible.** Where the readings stop for more than twice
      the usual time between them, such as while the node was down, the
      line breaks off.

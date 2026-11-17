@@ -762,8 +762,11 @@ Validation records where `alert_after_failing_for` and
 `recovered_after_healthy_for` are stated for `mmwatchdog config`.
 A direct check has no waiting times of the check's own: the check group's
 waiting times are the check's waiting times.
-Event checks use zero alert delay and reject an explicitly written
-`alert_after_failing_for` on the check.
+Event checks use zero alert delay for the failure track and reject an
+explicitly written `alert_after_failing_for` on the check. Their
+cannot-check track waits the check group's `alert_after_failing_for`
+(`Timing.AlertAfterCannotCheckFor`, which `config.CheckDefinitions` fills
+in).
 
 A diagnostic execution waits for the check's gate like a scheduled execution.
 

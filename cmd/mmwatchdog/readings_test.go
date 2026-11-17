@@ -74,7 +74,7 @@ func readingsFixture(t *testing.T, onHub bool) (string, string) {
 	writeFiles(t, directory, map[string]string{
 		"mmwatchdog_node_settings.yml": settings,
 		"alert_destinations.yml":       "destinations: {}\n",
-		"check_groups/machine.yml":     "check_groups:\n  machine:\n    " + strings.ReplaceAll(timingsOfACheckGroup, ", ", "\n    ") + "\n    checks:\n      memory: {only_record_readings: true, node_resource: memory}\n      web: {http: {url: 'http://localhost/'}, alert_severity: warn}\n",
+		"check_groups/machine.yml":     "check_groups:\n  machine:\n    " + strings.ReplaceAll(timingsOfACheckGroup, ", ", "\n    ") + "\n    checks:\n      memory: {only_record_readings: true, node_resource: memory}\n      web: {http: {url: 'http://localhost/'}, alert_severity: warn}\n      filesystems: {every_disk_and_network_filesystem: {filesystems_to_ignore: []}, fail_when_measurement_above: {space_used_percent: 90}, alert_severity: warn}\n      certificate: {tls: {address: 'localhost:443', fail_when_certificate_expires_within: 14d}, alert_severity: warn}\n",
 	})
 	return directory, stateDirectory
 }
@@ -124,11 +124,16 @@ func TestReadingsCommandWithoutDaemon(t *testing.T) {
 		t.Fatal(output)
 	}
 	options.asJSON = false
-	for _, test := range []struct{ group, check, want string }{{"missing", "", "unknown check group"}, {"machine", "missing", "unknown check"}, {"machine", "web", "records no measurements"}} {
+	for _, test := range []struct{ group, check, want string }{{"missing", "", "unknown check group"}, {"machine", "missing", "unknown check"}, {"machine", "web", "records no measurements"}, {"machine", "filesystems", "records no measurements"}} {
 		options.checkGroup, options.check = test.group, test.check
 		if err = showReadings(options); err == nil || !strings.Contains(err.Error(), test.want) {
 			t.Fatal(test, err)
 		}
+	}
+	// A tls check keeps its readings although it takes no limits.
+	options.checkGroup, options.check = "machine", "certificate"
+	if output, err = capture(t, func() error { return showReadings(options) }); err != nil || !strings.Contains(output, "no readings in this time span") {
+		t.Fatal(output, err)
 	}
 	options.checkGroup, options.check = "machine", "memory"
 	options.since, options.until = now.Add(time.Hour), now.Add(2*time.Hour)

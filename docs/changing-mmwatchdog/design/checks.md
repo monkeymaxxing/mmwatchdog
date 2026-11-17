@@ -269,9 +269,13 @@ the first event applies to `out_of_memory_kills` and to `log_lines` with
 either new-line condition.
 A `log_lines` check with a new-line condition and an `out_of_memory_kills`
 check each refuse `alert_after_failing_for` on the check.
-The event checks ignore the check group's `alert_after_failing_for` because
-the event has already happened and must not disappear between runs without
-an alert.
+The event checks open their failure incident without the check group's
+`alert_after_failing_for` because the event has already happened and must
+not disappear between runs without an alert. A run that cannot read the
+events is no event, so a named event check's cannot-check incident waits
+the check group's `alert_after_failing_for`, as any other check's does: a
+log file that is being rotated for a moment sends nothing, and a check that
+stays unable to read its events alerts once the wait has passed.
 
 `recovered_after_healthy_for` starts at the first run that finds no new
 event. With runs on schedule, the `recovered_after_healthy_for` wait can

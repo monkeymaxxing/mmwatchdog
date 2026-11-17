@@ -48,12 +48,22 @@ func readingBeyondLimit(reading readingPoint) bool {
 	return distance > 0
 }
 
-// chartColumns preserves the closest reading of a slice, but holds its latest
-// reading into later empty slices only while the median interval permits it.
-func chartColumns(readings []readingPoint, since, until time.Time, columns int) []*readingPoint {
+// chartColumn is what one column of the chart shows of one series: the
+// reading closest to or farthest beyond its limit, which marks the column
+// and joins the line, and the lowest and highest readings of the column,
+// between which the column draws a stroke, so that no dip and no spike is
+// lost when several readings share a column.
+type chartColumn struct {
+	closest, lowest, highest *readingPoint
+}
+
+// chartColumns preserves the closest, lowest, and highest reading of a
+// slice, but holds its latest reading into later empty slices only while the
+// median interval permits it. A column without a reading is nil.
+func chartColumns(readings []readingPoint, since, until time.Time, columns int) []*chartColumn {
 	within := readingsWithin(readings, since, until)
 	median := medianInterval(within)
-	shown := make([]*readingPoint, columns)
+	shown := make([]*chartColumn, columns)
 	span := until.Sub(since)
 	next := 0
 	var latest *readingPoint
@@ -68,14 +78,25 @@ func chartColumns(readings []readingPoint, since, until time.Time, columns int) 
 				break
 			}
 			reading := &within[next]
-			if shown[column] == nil || limitMargin(*reading) < limitMargin(*shown[column]) {
-				shown[column] = reading
+			switch kept := shown[column]; {
+			case kept == nil:
+				shown[column] = &chartColumn{reading, reading, reading}
+			default:
+				if limitMargin(*reading) < limitMargin(*kept.closest) {
+					kept.closest = reading
+				}
+				if reading.Value < kept.lowest.Value {
+					kept.lowest = reading
+				}
+				if reading.Value > kept.highest.Value {
+					kept.highest = reading
+				}
 			}
 			latest = reading
 			next++
 		}
 		if shown[column] == nil && latest != nil && median > 0 && start.Sub(latest.At) <= 2*median {
-			shown[column] = latest
+			shown[column] = &chartColumn{latest, latest, latest}
 		}
 	}
 	return shown
@@ -168,7 +189,7 @@ func drawReadingsChart(series []chartSeries, since, until time.Time, width int, 
 		labelWidth = max(labelWidth, len(label))
 	}
 	columns := max(10, width-(2+labelWidth+1)-1)
-	shown := make([][]*readingPoint, len(series))
+	shown := make([][]*chartColumn, len(series))
 	for index, item := range series {
 		shown[index] = chartColumns(item.readings, chartStart, until, columns)
 	}
@@ -190,13 +211,12 @@ func drawReadingsChart(series []chartSeries, since, until time.Time, width int, 
 	for column := 0; column < columns; column++ {
 		bottom, top := 12, -1
 		for _, points := range shown {
-			reading := points[column]
-			if reading == nil {
+			at := points[column]
+			if at == nil {
 				continue
 			}
-			row := chartRow(reading.Value, lowest, highest)
-			bottom, top = min(bottom, row), max(top, row)
-			marks[column] = marks[column] || readingBeyondLimit(*reading)
+			bottom, top = min(bottom, chartRow(at.lowest.Value, lowest, highest)), max(top, chartRow(at.highest.Value, lowest, highest))
+			marks[column] = marks[column] || readingBeyondLimit(*at.closest)
 		}
 		if nodeGroup {
 			for row := bottom; row <= top; row++ {
@@ -204,8 +224,8 @@ func drawReadingsChart(series []chartSeries, since, until time.Time, width int, 
 			}
 		}
 		for _, points := range shown {
-			if reading := points[column]; reading != nil {
-				for _, limit := range readingLimits(*reading) {
+			if at := points[column]; at != nil {
+				for _, limit := range readingLimits(*at.closest) {
 					hasLimits = true
 					row := chartRow(limit, lowest, highest)
 					cells[row][column] = "╌"
@@ -214,11 +234,21 @@ func drawReadingsChart(series []chartSeries, since, until time.Time, width int, 
 		}
 	}
 	previousRow := -1
-	for column, reading := range shown[lineNode] {
-		if reading == nil {
+	for column, at := range shown[lineNode] {
+		if at == nil {
 			previousRow = -1
 			continue
 		}
+		// The stroke from the column's lowest to its highest reading comes
+		// first, and leaves a limit's row showing the limit; the line's own
+		// turns are drawn over it.
+		low, high := chartRow(at.lowest.Value, lowest, highest), chartRow(at.highest.Value, lowest, highest)
+		for between := low; between <= high && low < high; between++ {
+			if cells[between][column] != "╌" {
+				cells[between][column] = red("│", readingBeyondLimit(*at.lowest) || readingBeyondLimit(*at.highest))
+			}
+		}
+		reading := at.closest
 		row := chartRow(reading.Value, lowest, highest)
 		beyond := readingBeyondLimit(*reading)
 		if previousRow < 0 || previousRow == row {

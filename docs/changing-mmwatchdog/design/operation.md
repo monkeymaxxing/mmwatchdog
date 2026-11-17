@@ -793,18 +793,21 @@ and a program has no use for a drawing. The
 - **The limit is a dashed line** (`╌`), with its value on the value axis. A
   measurement with a limit above and a limit below gets two lines; a
   measurement that only records gets none. Each column draws the limit
-  recorded with the reading that it shows, so a limit that changed within
-  the span shows as a step.
-- **No spike toward or beyond a limit disappears.** When a slice holds
-  several readings, the column shows the reading farthest beyond a recorded
-  limit, or, without a breach, closest to a recorded limit.
+  recorded with the reading that the line takes, so a limit that changed
+  within the span shows as a step.
+- **No spike and no dip disappears.** When a slice holds several readings,
+  the column draws a vertical stroke (`│`) from the lowest to the highest
+  of them, which leaves a limit's dashed line showing. The line goes on
+  from the reading farthest beyond a recorded limit, or, without a breach,
+  closest to a recorded limit.
   Each reading is compared with the limits recorded with the reading.
   With `fail_when_measurement_above`, the signed distance is the recorded
   upper limit minus the value. With `fail_when_measurement_below`, the
   signed distance is the value minus the recorded lower limit.
   With two limits, the comparison uses the smaller signed distance.
-  A measurement that only records shows the highest reading of the slice,
-  so downward spikes can disappear. A spike of one column shows as a peak, `╭╮`.
+  For a measurement that only records, the line takes the highest reading
+  of the slice, and the stroke still reaches down to the slice's lowest. A
+  spike of one column shows as a peak, `╭╮`.
 - **A gap stays visible.** A slice without a reading of its own repeats the
   latest earlier reading while that reading is no older than twice the usual
   interval between the measurement's readings, the median interval within
@@ -812,15 +815,15 @@ and a program has no use for a drawing. The
   interval, the line breaks off: the node recorded nothing then,
   for example because it was down.
 - **Readings beyond the limit are marked and listed.** A `▲` under the
-  drawing marks each column that shows a reading beyond its limit. In the
+  drawing marks each column whose line reading is beyond its limit. In the
   summary, each sequence of consecutive readings beyond the limit gets one
   line: the sequence's first and last time, the number of readings in the
   sequence, and the reading farthest beyond the limit. The sequence summaries
   replace the list of readings, so
   every reading beyond the limit is still accounted for in a sequence summary.
 - **A node group shares one chart for each measurement.** A shaded band
-  (`░`) reaches, in each column, from the node with the lowest reading to
-  the node with the highest. One node is the line in front of the band:
+  (`░`) reaches, in each column, from the lowest reading of any node in the
+  column's slice to the highest. One node is the line in front of the band:
   the node whose reading has the smallest signed distance to a recorded
   limit in the span, using the column selection rule above.
   For a measurement that only records, the line shows the node with the
@@ -1296,7 +1299,7 @@ decision only with a concrete workflow the decision fails to support.
 | Every reading is kept as measured; old readings are never thinned into averages | A short spike that explains an outage disappears in an average, and a chart must mean the same thing whatever the age of its data. |
 | The text of the readings commands shows times to the second and numbers to four significant digits, with the unit in each block's title; JSON keeps every value whole | A person scans the text for the shape and the breaches, which nanoseconds and fifteen decimals hide; a program reads JSON. |
 | `--chart` prints its charts as text into the terminal's scroll; MMWatchdog has no full-screen terminal program | A chart can be pasted into a ticket or a chat, and the program that runs as root on every node needs no terminal interface library; `watch -n 30 mmwatchdog fleet` refreshes a view of the fleet. |
-| A chart column shows the reading of its slice that is closest to the limit, or farthest beyond it | An average or the latest reading of the slice hides a short spike, and the spike is the reading that someone looks for. |
+| A chart column strokes from the lowest to the highest reading of its slice, and its line takes the reading closest to the limit, or farthest beyond it | An average or the latest reading of the slice hides a short spike or dip, and the spike or dip is the reading that someone looks for. |
 | A chart draws the readings as a line, and its value axis spans the readings and the limit, not zero | A line needs no zero baseline, and an axis from zero leaves most rows empty when the values sit far from zero, such as temperatures; the labels name both ends of the axis. |
 | A chart starts at its first reading when that reading comes more than twice the usual interval after the start of the span | Columns from before any reading only take width, and the legend says where the readings start; a first reading within the usual interval is an ordinary start. |
 | A node group's chart draws as its line the node that came closest to the limit or went farthest beyond it | A chart shows values against the limit. The summaries under the chart count readings beyond the limit, with the worst node first. |

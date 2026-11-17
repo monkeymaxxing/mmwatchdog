@@ -31,8 +31,10 @@ A check states exactly one source, `log_file_path` or
   /var/log/myapp/application.log contains "FATAL"`. The next run without a
   matching line is healthy. The first matching run opens the incident.
 
-  The check refuses `alert_after_failing_for` and ignores the check group's
-  value. The `recovered_after_healthy_for` timer starts at the first run
+  The check refuses `alert_after_failing_for`. The check group's value
+  applies only to the cannot-check alert: a check that cannot read its
+  log, such as for a moment while the log is rotated, alerts once it has
+  been unable to read it for that long. The `recovered_after_healthy_for` timer starts at the first run
   that finds no new matching line. The recovery timer can start up to one
   `check_every` after the last run that reports a matching event
   ([the failing time](../../how-to/decide-when-a-check-alerts.md)).

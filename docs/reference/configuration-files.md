@@ -505,8 +505,10 @@ Two kinds of check alert at the first new event, so they have no use for
   `fail_when_a_new_line_contains` or `fail_when_a_new_line_matches_regex`.
 
 A direct event check's check group takes no `alert_after_failing_for`. A
-named event check under `checks` ignores the check group's value, and
-`alert_after_failing_for` on the check itself is a validation error. An
+named event check under `checks` uses the check group's value only for its
+cannot-check alert, so a short moment in which the check cannot read its
+events sends nothing, and `alert_after_failing_for` on the check itself is
+a validation error. An
 event check takes `recovered_after_healthy_for`, which counts from the
 first run that finds no new event. A `log_lines` check with
 `fail_when_no_new_line_for` is not an event check and uses all four

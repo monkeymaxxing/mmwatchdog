@@ -67,6 +67,31 @@ func TestChartPreservesSpikesAndRecordOnlyMaximum(t *testing.T) {
 	}
 }
 
+// A dip in a column that other readings share is drawn: a day of readings
+// every 30 seconds at 100, with one 0, reaches the bottom row, for one
+// node's line and for the band of a node group.
+func TestChartKeepsADipThatSharesItsColumn(t *testing.T) {
+	readings := []readingPoint{}
+	for seconds := 0; seconds <= 24*3600; seconds += 30 {
+		value := 100.0
+		if seconds == 12*3600 {
+			value = 0
+		}
+		readings = append(readings, chartPoint(seconds, value, nil, nil))
+	}
+	for _, nodeGroup := range []bool{false, true} {
+		series := []chartSeries{{node: "web-1", readings: readings}}
+		if nodeGroup {
+			series = append(series, chartSeries{node: "web-2", readings: readings[:len(readings)/4]})
+		}
+		output := drawReadingsChart(series, chartStart, chartStart.Add(24*time.Hour), 100, false, nodeGroup)
+		bottom := strings.Split(output, "\n")[11]
+		if _, drawing, _ := cutAtChartAxis(bottom); !strings.ContainsRune(drawing, '│') {
+			t.Fatalf("node group %v: the dip to 0 is not drawn\n%s", nodeGroup, output)
+		}
+	}
+}
+
 func TestChartGapsAndIntervalHolding(t *testing.T) {
 	readings := []readingPoint{}
 	for _, seconds := range []int{0, 30, 60, 3660, 3690, 3720} {
@@ -248,10 +273,11 @@ func TestChartBothLimitsAndNegativeRange(t *testing.T) {
 
 func TestChartEarliestReadingWinsEqualMargins(t *testing.T) {
 	above, below := 90.0, 10.0
-	// Both are five beyond a limit. The earliest, 5, wins and leaves the
-	// top row empty; the upper limit is in row 10, below the unselected 95.
+	// Both are five beyond a limit. The earliest, 5, wins the line; the
+	// column's stroke still reaches the unselected 95 in the top row, and
+	// the upper limit in row 10 stays shown.
 	output := drawReadingsChart([]chartSeries{{readings: []readingPoint{chartPoint(0, 5, &above, &below), chartPoint(1, 95, &above, &below)}}}, chartStart, chartStart.Add(time.Minute), 10, false, false)
-	if chartCell(t, output, 10, 0) != '╌' || chartCell(t, output, 11, 0) != ' ' || chartCell(t, output, 0, 0) != '─' {
+	if chartCell(t, output, 10, 0) != '╌' || chartCell(t, output, 11, 0) != '│' || chartCell(t, output, 0, 0) != '─' {
 		t.Fatal(output)
 	}
 }

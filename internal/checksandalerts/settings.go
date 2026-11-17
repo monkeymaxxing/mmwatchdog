@@ -65,6 +65,22 @@ type Timing struct {
 	TimeLimitPerRun          Duration `yaml:"time_limit_per_run" json:"time_limit_per_run,omitempty"`
 	AlertAfterFailingFor     Duration `yaml:"alert_after_failing_for" json:"alert_after_failing_for,omitempty"`
 	RecoveredAfterHealthyFor Duration `yaml:"recovered_after_healthy_for" json:"recovered_after_healthy_for,omitempty"`
+	// AlertAfterCannotCheckFor is, for an event check, whose
+	// AlertAfterFailingFor is 0s, the check group's alert_after_failing_for:
+	// a run that cannot read the events is no event, so a short moment of
+	// it, such as a log file that is being rotated, alerts no more than any
+	// other check's. Config fills it in for each definition; it is no
+	// setting of its own.
+	AlertAfterCannotCheckFor Duration `yaml:"-" json:"-"`
+}
+
+// CannotCheckAlertAfter is how long a check has been unknown when its
+// cannot-check incident opens.
+func (t Timing) CannotCheckAlertAfter() time.Duration {
+	if t.AlertAfterCannotCheckFor != "" {
+		return t.AlertAfterCannotCheckFor.Value()
+	}
+	return t.AlertAfterFailingFor.Value()
 }
 
 // Destination is one named alert destination: the inputs of its one module,
@@ -384,6 +400,19 @@ func (c Check) MeasurementNames() []string {
 		return module.Description.MeasurementNames()
 	}
 	return nil
+}
+
+// KeepsReadings reports a check whose runs report measurements, which the
+// measurement history keeps: its module's description lists measurements.
+// A core module that reports findings, such as
+// every_disk_and_network_filesystem, measures each finding against the
+// limits and reports no measurements of the run, so its check keeps none.
+func (c Check) KeepsReadings() bool {
+	module := c.Module()
+	if module.Description == nil || len(module.Description.Measurements) == 0 {
+		return false
+	}
+	return !(module.OneIncidentForEachFinding && c.ModuleKind() == ModuleKindCore)
 }
 
 // HasLimit reports that the check states a limit on a measurement.

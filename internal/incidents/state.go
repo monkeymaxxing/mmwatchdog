@@ -670,7 +670,7 @@ func (s *CheckState) Observe(o checksandalerts.Observation, t checksandalerts.Ti
 		if raiseAfter > 0 && unknownFor >= raiseAfter {
 			severity = "sos"
 		}
-		return s.advance(&s.CannotCheckIncident, checksandalerts.CannotCheckIncidentEvents, o, true, unknownFor >= t.AlertAfterFailingFor.Value(), suppressed, "", t, severity)
+		return s.advance(&s.CannotCheckIncident, checksandalerts.CannotCheckIncidentEvents, o, true, unknownFor >= t.CannotCheckAlertAfter(), suppressed, "", t, severity)
 	case "failed":
 		s.UnknownSince, s.HealthySince = time.Time{}, time.Time{}
 		if s.FailingSince.IsZero() {

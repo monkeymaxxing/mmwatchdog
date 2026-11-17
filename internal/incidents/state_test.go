@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -825,5 +826,62 @@ func TestEventRecordedDuringMaintenanceSaysItSentNoAlert(t *testing.T) {
 		if len(events) != 1 || !events[0].Notify || events[0].Message != "boom" {
 			t.Fatal(status, events)
 		}
+	}
+}
+
+// An event check opens its failure incident at the first event, but its
+// cannot-check incident waits the check group's alert_after_failing_for, as
+// any other check's does: a short moment in which the check cannot read its
+// events, such as a log file that is being rotated, sends nothing, and a
+// check that stays unknown alerts once the wait has passed.
+func TestAnEventCheckWaitsBeforeItCannotCheck(t *testing.T) {
+	t.Parallel()
+	c := &config.Config{CheckGroups: map[string]checksandalerts.CheckGroup{"myapp": {
+		Timing: checksandalerts.Timing{CheckEvery: "1m", TimeLimitPerRun: "10s", AlertAfterFailingFor: "2m", RecoveredAfterHealthyFor: "0s"},
+		Checks: map[string]checksandalerts.NamedCheck{
+			"log": {Check: checksandalerts.Check{Inputs: &checksandalerts.LogLines{LogFilePath: "/var/log/myapp.log", FailWhenANewLineContains: "FATAL"}}},
+			"web": {Check: checksandalerts.Check{Inputs: &checksandalerts.Shell{Script: "true"}}},
+		},
+	}}}
+	definitions := config.CheckDefinitions(c)
+	timing := definitions["myapp/log"].Timing
+	if timing.AlertAfterFailingFor != "0s" || timing.CannotCheckAlertAfter() != 2*time.Minute {
+		t.Fatalf("an event check's timing: %+v", timing)
+	}
+	if other := definitions["myapp/web"].Timing; other.CannotCheckAlertAfter() != 2*time.Minute || other.AlertAfterCannotCheckFor != "" {
+		t.Fatalf("another check's timing: %+v", other)
+	}
+	s := incidents.CheckState{AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"}}
+	start := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	observe := func(minutes float64, status string) []string {
+		t.Helper()
+		types := []string{}
+		for _, event := range s.Observe(checksandalerts.Observation{Status: status, At: start.Add(time.Duration(minutes * float64(time.Minute))), Message: status}, timing, false) {
+			types = append(types, event.Type)
+		}
+		return types
+	}
+	// A short moment: unknown for a minute, then readable again.
+	for _, step := range []struct {
+		minutes float64
+		status  string
+	}{{0, "unknown"}, {1, "unknown"}, {1.5, "ok"}} {
+		if got := observe(step.minutes, step.status); len(got) != 0 {
+			t.Fatalf("at %v minutes, %s sent %v", step.minutes, step.status, got)
+		}
+	}
+	// A lasting one: the cannot-check incident opens once the check has
+	// been unknown for two minutes, and not before.
+	for _, minutes := range []float64{2, 3} {
+		if got := observe(minutes, "unknown"); len(got) != 0 {
+			t.Fatalf("at %v minutes the cannot-check incident opened early: %v", minutes, got)
+		}
+	}
+	if got := observe(4, "unknown"); !reflect.DeepEqual(got, []string{"cannot_check"}) {
+		t.Fatalf("a check that stays unknown for the wait sent %v", got)
+	}
+	// An event still opens the failure incident at once.
+	if got := observe(5, "failed"); !slices.Contains(got, "failed") {
+		t.Fatalf("the first event sent %v", got)
 	}
 }

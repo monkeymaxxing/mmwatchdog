@@ -47,8 +47,10 @@ A run fails only when it sees a kill, and the next run without one is
 healthy. `recovered_after_healthy_for` counts from that first run without a
 new kill. The wait can begin up to one `check_every` after the last run that
 reports a kill. The first run that sees a kill opens the incident.
-The check refuses `alert_after_failing_for` and ignores the check group's
-value ([the failing time](../../how-to/decide-when-a-check-alerts.md)).
+The check refuses `alert_after_failing_for`. The check group's value
+applies only to the cannot-check alert, which goes out once the check has
+been unable to read the kernel's count for that long
+([the failing time](../../how-to/decide-when-a-check-alerts.md)).
 
 ## Examples
 

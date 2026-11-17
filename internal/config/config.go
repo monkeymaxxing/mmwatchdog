@@ -1502,6 +1502,9 @@ func CheckDefinitions(c *Config) map[string]Definition {
 			// The check's own waiting times, or those of its check group.
 			timing := ch.Timing
 			timing.AlertAfterFailingFor, timing.RecoveredAfterHealthyFor = co.WaitingTimes(ch.Timing)
+			if co.OpensIncidentAtFirstEvent() {
+				timing.AlertAfterCannotCheckFor = ch.Timing.AlertAfterFailingFor
+			}
 			// A module can leave the written form of an input out of the
 			// identity, such as the order of a list.
 			if module, ok := check.Inputs.(checksandalerts.NormalizedForIdentity); ok {
