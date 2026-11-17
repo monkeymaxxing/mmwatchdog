@@ -789,10 +789,11 @@ hub in planned maintenance. Keep MMHotline's alert intake address on a
 private network that only your servers reach.
 
 Root on the hub can read the destination credentials too, and can change
-the settings that the nodes receive, including the account, the folder,
-and the environment variables with which a joined node runs the hub's
-destination modules. The hub cannot run a node's checks or recovery
-commands.
+the settings that the nodes receive. A joined node runs the hub's
+destination modules as the account `mmwatchdog`, from `/`, with no added
+environment variables, whatever the hub's settings say, so the hub cannot
+choose how programs run on a node. The hub cannot run a node's checks or
+recovery commands.
 
 **Data from outside is bounded.** Module results, node status reports, and
 alerts from nodes must match a strict format and a size limit. Text that a

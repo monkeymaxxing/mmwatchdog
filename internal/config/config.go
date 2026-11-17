@@ -232,6 +232,10 @@ func MaxAttemptsOf(n int) checksandalerts.MaxAttempts {
 // validation warning does not make the configuration invalid.
 type ValidationWarnings struct {
 	MMHotlineLoopbackWarnings []string `json:"mmhotline_loopback_warnings"`
+	// DestinationRunSettingsThatJoinedNodesIgnore names each destination of
+	// a hub that states run_as_user_account, run_from_directory, or env:
+	// joined nodes run the destination without them.
+	DestinationRunSettingsThatJoinedNodesIgnore []string `json:"destination_run_settings_that_joined_nodes_ignore"`
 	// MMHotlineWithoutAnotherDestination names each mmhotline destination
 	// of a node that has no other destination to pass an alert on to when
 	// MMHotline permanently refuses it.
@@ -252,6 +256,7 @@ type ValidationWarnings struct {
 func (c *Config) ValidationWarnings(node string, checkNodeFiles bool) ValidationWarnings {
 	warnings := ValidationWarnings{
 		MMHotlineLoopbackWarnings:                   c.mmhotlineLoopbackWarnings(),
+		DestinationRunSettingsThatJoinedNodesIgnore: c.destinationRunSettingsThatJoinedNodesIgnore(),
 		MMHotlineWithoutAnotherDestination:          c.mmhotlineWithoutAnotherDestinationWarnings(),
 		AlertTitlesThatWillBeShortened:              c.AlertTitlesThatWillBeShortened(node),
 		SystemdUnitsMissingFromSystemdUnitsToIgnore: c.SystemdUnitsMissingFromUnitsToIgnore(),

@@ -52,3 +52,20 @@ func TestMMHotlineWithoutAnotherDestinationWarning(t *testing.T) {
 		t.Fatal("warned on a joined node", warnings)
 	}
 }
+
+// A hub warns about a destination that states how its module runs: joined
+// nodes run it as the account mmwatchdog, from /, with no added environment.
+func TestHubWarnsThatJoinedNodesIgnoreDestinationRunSettings(t *testing.T) {
+	t.Parallel()
+	stated := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", StatedRunSettings: true}}
+	plain := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager"}}
+	settings := &config.Config{Alerts: config.Alerts{Destinations: map[string]checksandalerts.Destination{"pager": stated, "chat": plain}}}
+	if warnings := settings.ValidationWarnings("web-3", false).DestinationRunSettingsThatJoinedNodesIgnore; len(warnings) != 0 {
+		t.Fatal("standalone warning", warnings)
+	}
+	settings.FleetHubRole = &config.FleetHubRole{}
+	warnings := settings.ValidationWarnings("hub", false).DestinationRunSettingsThatJoinedNodesIgnore
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "destinations.pager: joined nodes run this destination's module as the account mmwatchdog, from /") {
+		t.Fatal(warnings)
+	}
+}

@@ -74,7 +74,11 @@ func decodeHubSettings(body []byte, modules *checksandalerts.ModuleCatalog) (*fl
 	if e := checksandalerts.DecodeJSONUpToAllowingUnknownFields(body, &s, 1024*1024); e != nil {
 		return nil, e
 	}
-	return &s, s.Validate(modules)
+	if e := s.Validate(modules); e != nil {
+		return &s, e
+	}
+	s.RunDestinationModulesAsAJoinedNode()
+	return &s, nil
 }
 
 // applyFleetSettings is the settings activation entry point on a joined node. As

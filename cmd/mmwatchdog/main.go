@@ -665,6 +665,9 @@ func validationWarningsText(node string, warnings config.ValidationWarnings) str
 	for _, warning := range warnings.MMHotlineLoopbackWarnings {
 		text += warning + "\n"
 	}
+	for _, warning := range warnings.DestinationRunSettingsThatJoinedNodesIgnore {
+		text += warning + "\n"
+	}
 	for _, warning := range warnings.MMHotlineWithoutAnotherDestination {
 		text += warning + "\n"
 	}

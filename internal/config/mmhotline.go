@@ -8,6 +8,24 @@ import (
 	"mmwatchdog/internal/checksandalerts"
 )
 
+// destinationRunSettingsThatJoinedNodesIgnore names each destination of a
+// hub whose module runs with a stated account, folder, or environment,
+// which joined nodes leave out.
+func (c *Config) destinationRunSettingsThatJoinedNodesIgnore() []string {
+	warnings := []string{}
+	if c.FleetHubRole == nil {
+		return warnings
+	}
+	for _, name := range checksandalerts.Names(c.Alerts.Destinations) {
+		call, notCore := c.Alerts.Destinations[name].Inputs.(*checksandalerts.ModuleCall)
+		if !notCore || !call.StatedRunSettings {
+			continue
+		}
+		warnings = append(warnings, c.ErrorAt("destinations."+name, "joined nodes run this destination's module as the account mmwatchdog, from /, with no added environment variables; only this hub uses its run_as_user_account, run_from_directory, and env. Reason: the hub must not choose how programs run on joined nodes").Error())
+	}
+	return warnings
+}
+
 // mmhotlineLoopbackWarnings names hub addresses that joined nodes would
 // reach on themselves when they send alerts without the hub.
 func (c *Config) mmhotlineLoopbackWarnings() []string {

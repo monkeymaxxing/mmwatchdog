@@ -815,6 +815,14 @@ a check or a destination writes beside the module's inputs, say how:
 | `run_from_directory` | The absolute directory that the module starts in. | `/` |
 | `env` | More environment variables, as a mapping of texts. | None |
 
+A joined node uses its fleet hub's destinations, but not their run
+settings: it runs every destination module as `mmwatchdog`, from `/`, with
+no added environment variables. Only the hub uses a destination's run
+settings, and `mmwatchdog validate` on the hub warns about each destination
+that states them. Reason: the hub must not choose the account or the
+environment of programs on the nodes. A destination module that needs a
+value on every node reads the value from an input or a file.
+
 ```yaml
 # files/hub_and_standalone/check_groups/myapp_jobs.yml
 check_groups:

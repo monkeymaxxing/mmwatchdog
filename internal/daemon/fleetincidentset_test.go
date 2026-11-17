@@ -63,6 +63,18 @@ func installRecordingModules(t *testing.T, externalModuleDir string) {
 	testhelpers.InstallModule(t, externalModuleDir, "own_chat", ownChatDescription, recordingModule)
 }
 
+// installRecordingModulesOnANode writes own_pager and own_chat for a joined
+// node. The node runs a hub destination module from /, whatever the hub
+// stated, so each script writes into its destination's directory by name.
+func installRecordingModulesOnANode(t *testing.T, externalModuleDir string, pager, chat checksandalerts.Destination) {
+	t.Helper()
+	into := func(d checksandalerts.Destination) string {
+		return "cd " + d.Inputs.(*checksandalerts.ModuleCall).RunFromDirectory + "\n" + recordingModule
+	}
+	testhelpers.InstallModule(t, externalModuleDir, "own_pager", ownPagerDescription, into(pager))
+	testhelpers.InstallModule(t, externalModuleDir, "own_chat", ownChatDescription, into(chat))
+}
+
 // recordingDestination delivers through the module, own_pager or own_chat,
 // and takes these severities.
 func recordingDestination(t *testing.T, module string, severities []string) checksandalerts.Destination {
@@ -343,7 +355,7 @@ func TestAJoinedNodeLeavesTheClosingAlertToTheHub(t *testing.T) {
 	hub, code, srv := startHubWithModules(t, map[string]checksandalerts.Destination{"on_call_pager": pager, "team_chat": chat}, func(dir string) { installRecordingModules(t, dir) })
 	node := joinedNode(t, code, "app-1")
 	node.report(context.Background())
-	installRecordingModules(t, node.config.ExternalModuleDir)
+	installRecordingModulesOnANode(t, node.config.ExternalModuleDir, pager, chat)
 	if _, e := node.reload(); e != nil {
 		t.Fatal(e)
 	}
@@ -793,7 +805,7 @@ func TestTheSeveritiesSentWithoutTheHubReachTheClosingAlert(t *testing.T) {
 	pager, chat := recordingDestination(t, "own_pager", []string{"warn", "sos"}), recordingDestination(t, "own_chat", testhelpers.AllSeverities)
 	hub, code, srv := startHubWithModules(t, map[string]checksandalerts.Destination{"on_call_pager": pager, "team_chat": chat}, func(dir string) { installRecordingModules(t, dir) })
 	node := joinedNode(t, code, "app-1")
-	installRecordingModules(t, node.config.ExternalModuleDir)
+	installRecordingModulesOnANode(t, node.config.ExternalModuleDir, pager, chat)
 	if _, e := node.reload(); e != nil {
 		t.Fatal(e)
 	}

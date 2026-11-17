@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/user"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -20,6 +21,8 @@ import (
 
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
+	"mmwatchdog/internal/fleet"
+	"mmwatchdog/internal/primitives"
 	"mmwatchdog/internal/testhelpers"
 )
 
@@ -33,6 +36,15 @@ func TestMain(m *testing.M) {
 		// The notifications worker reads its queue every 200 ms; tests
 		// deliver alerts one after another and wait for each.
 		readNotificationQueueEvery = 25 * time.Millisecond
+		// A joined node runs hub destination modules as the account that
+		// runs the tests, which have no account mmwatchdog.
+		own, e := user.Current()
+		if e != nil {
+			return e
+		}
+		fleet.JoinedNodeDestinationRunSettings = func() primitives.ExecOptions {
+			return primitives.ExecOptions{RunAsUserAccount: own.Username, RunFromDirectory: "/"}
+		}
 		return trustMailServerCertificate()
 	})
 }

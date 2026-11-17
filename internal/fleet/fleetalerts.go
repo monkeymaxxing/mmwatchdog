@@ -11,6 +11,7 @@ import (
 
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
+	"mmwatchdog/internal/primitives"
 	"mmwatchdog/internal/store"
 )
 
@@ -183,7 +184,30 @@ func ReadFleetSettings(path string, modules *checksandalerts.ModuleCatalog) *Fle
 	if json.Unmarshal(b, &s) != nil || s.Validate(modules) != nil {
 		return nil
 	}
+	s.RunDestinationModulesAsAJoinedNode()
 	return &s
+}
+
+// RunDestinationModulesAsAJoinedNode makes a joined node run the hub's
+// destination modules as MMWatchdog's own unprivileged account, from /,
+// with no added environment variables: the hub's run_as_user_account,
+// run_from_directory, and env stay on the hub. Reason: otherwise root on
+// the hub could choose the account and the environment of programs that
+// run on every joined node. Call it after Validate: the settings' version
+// covers what the hub sent.
+func (s *FleetSettings) RunDestinationModulesAsAJoinedNode() {
+	for _, d := range s.Destinations {
+		if call, notCore := d.Inputs.(*checksandalerts.ModuleCall); notCore {
+			call.ExecOptions = JoinedNodeDestinationRunSettings()
+		}
+	}
+}
+
+// JoinedNodeDestinationRunSettings are the run settings of every hub
+// destination module on a joined node. Tests, which have no account
+// mmwatchdog, replace it.
+var JoinedNodeDestinationRunSettings = func() primitives.ExecOptions {
+	return primitives.ExecOptions{RunAsUserAccount: primitives.UnprivilegedAccount, RunFromDirectory: "/"}
 }
 
 // HubSender delivers a joined node's alert to the hub with the credential

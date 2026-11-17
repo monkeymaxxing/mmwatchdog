@@ -74,6 +74,9 @@ type ModuleCall struct {
 	// for a module that the node does not have, which a joined node can
 	// meet in the hub's destinations.
 	Module *InstalledModule `json:"-" yaml:"-"`
+	// StatedRunSettings is true when the mapping writes run_as_user_account,
+	// run_from_directory, or env, rather than leaving them to the defaults.
+	StatedRunSettings bool `json:"-" yaml:"-"`
 }
 
 // UnmarshalYAML reads the mapping below the module's name: the run settings
@@ -100,6 +103,10 @@ func (m *ModuleCall) fromEntries(entries map[string]any, decode func(value, into
 	m.Inputs = map[string]any{}
 	for name, value := range entries {
 		var e error
+		switch name {
+		case "run_as_user_account", "run_from_directory", "env":
+			m.StatedRunSettings = true
+		}
 		switch name {
 		case "run_as_user_account":
 			e = decode(value, &m.RunAsUserAccount)
