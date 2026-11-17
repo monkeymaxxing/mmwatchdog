@@ -530,7 +530,16 @@ user's decision. Resolve each open decision in the design document and
 acceptance contract that own the decision. Then remove the resolved decision
 from the Open decisions section of the release plan.
 
-None is open.
+- **Which alert secrets stay on the hub** (2026-11-17, waiting for the
+  owner). Every joined node, and anyone with only the join code, gets every
+  destination credential, including the MMHotline signing secret, with
+  which check-ins can be faked. The options: keep the MMHotline and `sos`
+  destination secrets on the hub only, or make direct delivery from the
+  nodes an opt-in for each destination. If secrets stay on the hub, the hub
+  must also stop passing a node's own alert title and body through
+  unchanged, and check the node's check names: today a node with one
+  credential can write alerts that read as another node's, which matters
+  only once that node no longer holds the destination secrets itself.
 
 ## Implementation notes
 

@@ -846,7 +846,10 @@ check_groups:
 
 - The module has the rights of its account and no more. It cannot read
   MMWatchdog's own state, the alert queue, or a credential file that only
-  root reads.
+  root reads. The account `mmwatchdog` is shared: a module that runs as it
+  can read what that account's other checks use, including the password of
+  a `postgresql` or `mysql` check that logs in. Give a database check its
+  own low-rights monitoring login.
 - The module gets a small, fixed environment: a standard `PATH`, the
   account's `HOME` and `USER`, `LANG=C.UTF-8`, and the variables of `env`.
   It gets nothing from MMWatchdog's own environment.

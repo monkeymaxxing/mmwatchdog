@@ -116,6 +116,11 @@ does not alert. Any other exit code fails the check.
   `mmwatchdog`. With `run_from_directory`, the script starts in the named
   directory. Without `run_from_directory`, the script starts in `/`.
 
+  The account `mmwatchdog` is shared: a script that runs as it can read
+  what that account's other checks use, including the password of a
+  `postgresql` or `mysql` check that logs in. Give a database check its own
+  low-rights monitoring login.
+
   `run_as_user_account: root` gives the script all the access of root.
   The account is the only boundary, and MMWatchdog gives the script no
   sandbox. The settings `run_as_user_account`, `run_from_directory`, and
