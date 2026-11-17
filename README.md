@@ -433,8 +433,9 @@ the agent to follow this README, check each step before the next, and ask
 you before it changes anything on a server.
 
 Paste this into your agent. Put your own servers in place of the two example
-servers, your own login account in place of `root`, and your own application
-in place of `myapp`:
+servers, your own login account in place of `root`, your own application
+in place of `myapp`, and where you want alerts in place of the Slack
+channel, such as your email address and your mail provider's SMTP server:
 
 ```text
 Set up MMWatchdog to watch my servers. Follow the README at
@@ -447,10 +448,10 @@ My servers:
 
 I log in to them as root with my current SSH setup. My application runs as
 the systemd unit myapp.service and answers at http://127.0.0.1:8080/health.
-Send alerts to my Slack channel. When you need the webhook address, have me
-type it at the hidden prompt of `mmx secrets set mmwatchdog_secret_files
-slack-webhook-team` myself, and keep it out of the project's plain files and
-out of our chat. Tell me what the vault passphrase is, and have me run
+Send alerts to my Slack channel. When you need a secret, such as the
+webhook address or a mail password, have me type it at the hidden prompt of
+`mmx secrets set mmwatchdog_secret_files NAME` myself, and keep it out of
+the project's plain files and out of our chat. Tell me what the vault passphrase is, and have me run
 `mmx secrets write-passphrase-file` myself, in my own terminal. Then run
 `mmx dryrun` and `mmx run` yourself.
 
@@ -622,10 +623,18 @@ check before moving on. Use one server first, then the rest.
   `mmx run` yourself, with the line that command prints. Never read the
   file or ask for the passphrase in the chat. The person still types each
   secret's value at the hidden prompt of `mmx secrets set`.
-- Before the first `mmx run`, tell the person that MMX starts its own
-  service `mmx-https-api.service` on the node, on TCP port 7443 on every
-  network address, and that `connection: ssh_only` on the node in the
-  inventory avoids the service. Let them choose before the run.
+- Before the first `mmx run`, tell the person in plain words that MMX
+  starts its own service `mmx-https-api.service` on the node, on TCP port
+  7443 on every network address. The service makes later runs faster, and
+  only SSH keys that can already log in to the node can use it. With
+  `connection: ssh_only` on the node in the inventory, MMX opens no port
+  and works over SSH, a little slower. Let them choose before the run.
+- Before the alert test, tell the person that each `mmx run` that restarts
+  MMWatchdog sends two notices, `NODE: maintenance on for the whole node`
+  and `NODE: maintenance off for the whole node`: the run pauses alerts
+  while MMWatchdog restarts. Adding `--without-maintenance-on-and-off-alerts`
+  to the `maintenance on` command of the `start_maintenance` task in the
+  playbooks turns the two notices off.
 - Do not set `alert_after_failing_for: 0s` to make alerts faster without
   asking the person. A short failure then sends an alert.
 
