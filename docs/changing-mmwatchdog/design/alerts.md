@@ -150,11 +150,11 @@ The memory alert's body:
 memory_used_percent is 97 (fails above 95)
 failing since 14:02 UTC
 the commands that use the most memory:
-  3051 MiB: /usr/sbin/mysqld (process 812)
-  1840 MiB: ruby /srv/app/bin/sidekiq (process 1934)
-  212 MiB: /usr/lib/systemd/systemd-journald (process 301)
-  96 MiB: nginx: worker process (process 955)
-  95 MiB: nginx: worker process (process 956)
+  3051 MiB: mysqld (process 812)
+  1840 MiB: ruby (process 1934)
+  212 MiB: systemd-journald (process 301)
+  96 MiB: nginx (process 955)
+  95 MiB: nginx (process 956)
 ```
 
 Because MMWatchdog writes the title and the body, every channel uses

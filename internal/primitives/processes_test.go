@@ -45,9 +45,10 @@ func TestTheStatFileOfAProcessIsReadFromItsLastParenthesis(t *testing.T) {
 }
 
 // The alert of a node_resource check names the five commands that use the
-// most of its resource, the highest first. A process without a command line
-// has its name in brackets, a process that uses nothing is left out, and a
-// control character in a command line is replaced.
+// most of its resource, the highest first, by program name and process ID
+// only: the arguments of another account's program, such as a password, never
+// reach an alert. A process without a command line has its name in brackets,
+// and a process that uses nothing is left out.
 func TestTheCommandsThatUseTheMostOfAResource(t *testing.T) {
 	megabyte := uint64(1024 * 1024 / os.Getpagesize())
 	files := map[string]string{"proc/uptime": "1 1\n", "proc/not-a-process/stat": "x"}
@@ -56,23 +57,25 @@ func TestTheCommandsThatUseTheMostOfAResource(t *testing.T) {
 		files[fmt.Sprintf("proc/%d/cmdline", id)] = fmt.Sprintf("/usr/bin/program-%d\x00--flag\x00", id)
 		files[fmt.Sprintf("proc/%d/status", id)] = fmt.Sprintf("Name:\tprogram\nVmSwap:\t%8d kB\n", uint64(id)*1024)
 	}
-	// Process 2 has a control character in its command line, and process 4
-	// has no command line, as a thread of the kernel.
-	files["proc/2/cmdline"] = "/usr/bin/evil\x00\x1b[2J\x00"
+	// Process 2 has a password among its arguments, and process 4 has no
+	// command line, as a thread of the kernel.
+	files["proc/2/cmdline"] = "/usr/bin/mysql\x00-pS3cretPassw0rd\x00"
 	files["proc/4/cmdline"] = ""
+	// Process 5 rewrote its first argument to a whole line, as nginx does.
+	files["proc/5/cmdline"] = "nginx: worker process\x00"
 	files["proc/4/comm"] = "kworker/0:1\n"
 	testhelpers.KernelFiles(t, files)
 	if got, want := primitives.CommandsThatUseTheMostMemory(), []string{
 		"the commands that use the most memory:",
-		"  300 MiB: /usr/bin/evil  [2J (process 2)",
+		"  300 MiB: mysql (process 2)",
 		"  200 MiB: [kworker/0:1] (process 4)",
-		"  100 MiB: /usr/bin/program-6 --flag (process 6)",
-		"  50 MiB: /usr/bin/program-3 --flag (process 3)",
-		"  40 MiB: /usr/bin/program-5 --flag (process 5)",
+		"  100 MiB: program-6 (process 6)",
+		"  50 MiB: program-3 (process 3)",
+		"  40 MiB: nginx (process 5)",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q", got)
 	}
-	if got := primitives.CommandsThatUseTheMostSwap(); len(got) != 6 || got[0] != "the commands that use the most swap space:" || got[1] != "  7 MiB: /usr/bin/program-7 --flag (process 7)" || got[5] != "  3 MiB: /usr/bin/program-3 --flag (process 3)" {
+	if got := primitives.CommandsThatUseTheMostSwap(); len(got) != 6 || got[0] != "the commands that use the most swap space:" || got[1] != "  7 MiB: program-7 (process 7)" || got[5] != "  3 MiB: program-3 (process 3)" {
 		t.Fatalf("%q", got)
 	}
 	// Threads that run or wait for a disk count for the load. Process 3 has
@@ -88,8 +91,8 @@ func TestTheCommandsThatUseTheMostOfAResource(t *testing.T) {
 	}
 	if got, want := primitives.CommandsThatAddTheMostToTheLoad(), []string{
 		"the commands with the most threads that run or wait for a disk now:",
-		"  2 threads: /usr/bin/program-3 --flag (process 3)",
-		"  1 thread: /usr/bin/program-5 --flag (process 5)",
+		"  2 threads: program-3 (process 3)",
+		"  1 thread: nginx (process 5)",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q", got)
 	}
@@ -112,9 +115,9 @@ func TestTheCommandsThatUsedTheMostCPU(t *testing.T) {
 	current := primitives.CPUReading{Ticks: [8]uint64{300, 0, 200, 900}, Processes: map[primitives.ProcessKey]uint64{{ID: 10, StartTicks: 5}: 150, {ID: 11, StartTicks: 5}: 22, {ID: 12, StartTicks: 9}: 40, {ID: 13, StartTicks: 5}: 7}}
 	if got, want := primitives.CommandsThatUsedTheMostCPU(previous, current), []string{
 		"the commands that used the most CPU between the two CPU readings:",
-		"  25 percent: ffmpeg -i in.mp4 (process 10)",
+		"  25 percent: ffmpeg (process 10)",
 		"  10 percent: new-process (process 12)",
-		"  0.5 percent: sleep 1 (process 11)",
+		"  0.5 percent: sleep (process 11)",
 	}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("%q", got)
 	}
@@ -138,9 +141,9 @@ func TestAFailedNodeResourceCheckNamesTheCommands(t *testing.T) {
 		"proc/1/task/1/stat": "1 (mysqld) R 1 1 1\n",
 	})
 	for resource, want := range map[string][]string{
-		"memory": {"the commands that use the most memory:", "  64 MiB: /usr/sbin/mysqld (process 1)"},
-		"swap":   {"the commands that use the most swap space:", "  2 MiB: /usr/sbin/mysqld (process 1)"},
-		"load":   {"the commands with the most threads that run or wait for a disk now:", "  1 thread: /usr/sbin/mysqld (process 1)"},
+		"memory": {"the commands that use the most memory:", "  64 MiB: mysqld (process 1)"},
+		"swap":   {"the commands that use the most swap space:", "  2 MiB: mysqld (process 1)"},
+		"load":   {"the commands with the most threads that run or wait for a disk now:", "  1 thread: mysqld (process 1)"},
 	} {
 		measurement := checksandalerts.NodeResourceMeasurements[resource][0]
 		check := checksandalerts.Check{Inputs: new(checksandalerts.NodeResource(resource)), FailWhenMeasurementAbove: map[string]float64{measurement: 1}}

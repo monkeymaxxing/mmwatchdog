@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -110,6 +111,29 @@ func commandOfProcess(id int) string {
 	return ""
 }
 
+// programOfProcess returns the name of the program that a process runs,
+// without its arguments: the base name of its first argument, or the
+// kernel's name of the process in brackets. A process that ended has "".
+// Reason: the arguments of another account's program can hold a password
+// or a token, and the alert of a resource check goes to every destination.
+func programOfProcess(id int) string {
+	if data, e := ReadFile(fmt.Sprintf("%s/%d/cmdline", ProcDirectory, id), ProcFileLimit); e == nil {
+		first, _, _ := strings.Cut(string(data), "\x00")
+		if first = strings.TrimSpace(first); first != "" {
+			// A program may rewrite its first argument to a whole line, such
+			// as "postgres: checkpointer": the name ends at the first space.
+			first, _, _ = strings.Cut(first, " ")
+			return filepath.Base(strings.TrimSuffix(first, ":"))
+		}
+	}
+	if data, e := ReadFile(fmt.Sprintf("%s/%d/comm", ProcDirectory, id), ProcFileLimit); e == nil {
+		if name := strings.TrimSpace(string(data)); name != "" {
+			return "[" + name + "]"
+		}
+	}
+	return ""
+}
+
 // commandsShown is how many commands the alert of a node_resource check
 // names.
 const commandsShown = 5
@@ -135,8 +159,8 @@ func commandLines(heading string, uses []processUse, amount func(float64) string
 		if len(lines) == commandsShown || use.amount <= 0 {
 			break
 		}
-		if command := commandOfProcess(use.id); command != "" {
-			lines = append(lines, "  "+DetailLine(fmt.Sprintf("%s: %s (process %d)", amount(use.amount), Clip(command, 120), use.id)))
+		if program := programOfProcess(use.id); program != "" {
+			lines = append(lines, "  "+DetailLine(fmt.Sprintf("%s: %s (process %d)", amount(use.amount), Clip(program, 120), use.id)))
 		}
 	}
 	if len(lines) == 0 {

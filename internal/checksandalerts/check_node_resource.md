@@ -48,17 +48,18 @@ the CPU, the memory, or the processes of one systemd unit.
 ### The commands that use the most of a resource
 
 When a check of `cpu`, `memory`, `swap`, or `load` fails, the body of its
-alert names the five commands that use the most of that resource:
+alert names the five programs that use the most of that resource, by name
+and process ID:
 
 ```text
 memory_used_percent is 94.2 (fails above 90)
 failing since 14:02 UTC
 the commands that use the most memory:
-  3051 MiB: /usr/sbin/mysqld (process 812)
-  640 MiB: /usr/bin/python3 /srv/myapp/worker.py (process 2210)
-  212 MiB: /usr/lib/systemd/systemd-journald (process 301)
-  96 MiB: nginx: worker process (process 955)
-  95 MiB: nginx: worker process (process 956)
+  3051 MiB: mysqld (process 812)
+  640 MiB: python3 (process 2210)
+  212 MiB: systemd-journald (process 301)
+  96 MiB: nginx (process 955)
+  95 MiB: nginx (process 956)
 ```
 
 | Resource | The first line of the list | What each line gives |
@@ -68,9 +69,12 @@ the commands that use the most memory:
 | `cpu` | `the commands that used the most CPU between the two CPU readings:` | The processor time that the process used in the time of the reading, as a percent of the whole node, like `cpu_used_percent` itself, such as `41.5 percent` |
 | `load` | `the commands with the most threads that run or wait for a disk now:` | The process's count of threads that run or wait for a disk now, such as `3 threads`. The load average counts threads that run or wait for a disk, over a longer time |
 
-- Each line is one process, with its command line as `systemctl status`
-  shows it, cut after 120 characters, and its process ID. A process without
-  a command line, such as a thread of the kernel, shows its name in
+- Each line is one process: the name of its program, without the
+  arguments, and its process ID. The arguments are left out because they
+  can hold a password or a token, and the alert goes to every destination
+  that takes it. To see a whole command line, run
+  `ps -o args= -p PROCESS_ID` on the node while the process runs. A process
+  without a command line, such as a thread of the kernel, shows its name in
   brackets, such as `[kswapd0]`. The highest amount comes first.
   MMWatchdog leaves out processes that use none of the resource or end
   in the meantime.
