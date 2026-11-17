@@ -1184,14 +1184,14 @@ func TestANodeReadsTheSettingsOfANewerHub(t *testing.T) {
 // states for a destination stay on the hub.
 func TestANodeIgnoresTheRunSettingsOfTheHubsDestinations(t *testing.T) {
 	t.Parallel()
-	call := &checksandalerts.ModuleCall{Name: "own_alarm", ExecOptions: primitives.ExecOptions{RunAsUserAccount: "root", RunFromDirectory: "/tmp", Env: map[string]string{"PYTHONWARNINGS": "ignore"}}}
+	call := &checksandalerts.ModuleCall{Name: "own_alarm", ExecOptions: primitives.ExecOptions{RunAsUserAccount: "alerts", RunFromDirectory: "/tmp", Env: map[string]string{"PYTHONWARNINGS": "ignore"}}}
 	served := &fleet.FleetSettings{Destinations: map[string]checksandalerts.Destination{"own_alarm": {RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, TimeLimitPerDeliveryAttempt: "5s", Inputs: call}}, FileContentsByDestination: map[string]map[string]string{"own_alarm": {}}, Fleet: config.DefaultFleetTimings, AlertSeverityWhenTheHubGoesSilent: "sos"}
 	served.Version = served.ComputeVersion()
 	written, err := json.Marshal(served)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(written), `"run_as_user_account":"root"`) {
+	if !strings.Contains(string(written), `"run_as_user_account":"alerts"`) {
 		t.Fatal("the hub's settings do not carry the run settings:", string(written))
 	}
 	received, err := decodeHubSettings(written, nil)
@@ -1199,7 +1199,7 @@ func TestANodeIgnoresTheRunSettingsOfTheHubsDestinations(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, notCore := received.Destinations["own_alarm"].Inputs.(*checksandalerts.ModuleCall)
-	if !notCore || !reflect.DeepEqual(got.ExecOptions, fleet.JoinedNodeDestinationRunSettings()) || got.RunAsUserAccount == "root" || len(got.Env) != 0 {
+	if !notCore || !reflect.DeepEqual(got.ExecOptions, fleet.JoinedNodeDestinationRunSettings()) || got.RunAsUserAccount == "alerts" || len(got.Env) != 0 {
 		t.Fatalf("%+v", received.Destinations["own_alarm"].Inputs)
 	}
 }
