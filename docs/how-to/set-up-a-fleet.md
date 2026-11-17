@@ -273,15 +273,16 @@ the node's host name, which `hostname` prints on the node.
 
     The code holds the hub's address, the fingerprint of the hub's
     certificate, and the join secret. It is a secret: a node that joins
-    with it gets the fleet settings, with your Slack address. Open the
-    vault with `mmx secrets edit` and add one line with the whole code. A
-    coding agent asks the person to print the code and type it into
-    `mmx secrets edit` themselves, so the code never passes through the
-    chat:
+    with it gets the fleet settings, with your Slack address. Put the code
+    in the vault straight from the hub, so that it never shows on a screen
+    or passes through a chat:
 
-    ```yaml
-    mmwatchdog_join_code: "mmwatchdog-join 203.0.113.10:8445 ebba574e...168ee 6e86939f...4a3b7"   # the whole line that join-code printed
+    ```sh
+    ssh deploy@203.0.113.10 sudo mmwatchdog fleet join-code | mmx secrets set mmwatchdog_join_code
     ```
+
+    `mmx secrets set` asks for the vault passphrase and prints nothing when
+    it has saved the code.
 
     **Check:** `mmx secrets list-keys` prints `mmwatchdog_join_code` and
     `mmwatchdog_secret_files`.

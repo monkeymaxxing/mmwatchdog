@@ -24,7 +24,7 @@ MMWatchdog runs on each server that it watches. Such a server is called a
 restarts services, and sends the node's alerts, so a node needs no other
 machine.
 
-When you have several nodes, one node can also be the **fleet hub**. The
+If you have several servers, one node can also be the **fleet hub**. The
 other nodes report to the fleet hub, and `mmwatchdog fleet` on the fleet hub
 shows every node in one place.
 
@@ -454,7 +454,8 @@ plain files and out of our chat.
 Start with one server, and run each step's check before the next step. Show
 me the MMX dryrun output and wait for my yes before every mmx run. Then
 prove the alert path: make one check fail and recover, and ask me whether
-both messages arrived.
+both messages arrived. Answer each of my questions before you go on. At the
+end, show me the command that lets me see for myself that MMWatchdog runs.
 ```
 
 The sections below show the steps, if you want to follow along or do them
@@ -501,7 +502,9 @@ has the commands, from GitHub or from the GitLab mirror.
 In the unpacked MMX project:
 
 1. Put your node's address and SSH account in
-   `inventories/hub_and_standalone.yml`.
+   `inventories/hub_and_standalone.yml`. The playbook
+   `hub_and_standalone` sets up a node that watches itself and sends its
+   own alerts: your one server, or the fleet hub of several.
 2. Say what to watch in `files/hub_and_standalone/check_groups/`. The
    starter check group, `machine`, records CPU use and alerts on memory use
    and disk use.
@@ -509,7 +512,9 @@ In the unpacked MMX project:
    The starter configuration has no alert destination until you add one.
 4. Put the secret of the alert destination, such as the Slack address, in
    MMX's encrypted vault. `mmx secrets edit` opens the vault in your
-   editor; add:
+   editor. The first time, it asks you to choose a vault passphrase: keep
+   the passphrase in your password manager, because each install asks for
+   it. Add:
 
    ```yaml
    mmwatchdog_secret_files:
@@ -562,7 +567,9 @@ check before moving on. Use one server first, then the rest.
 | 4 | The person approved the changes. | You showed the person the output of `mmx dryrun hub_and_standalone`, and they said yes. |
 | 5 | MMWatchdog runs on the node. | `mmx run hub_and_standalone` ends with no failed node, and `sudo mmwatchdog status` on the node lists every check. |
 | 6 | The alert path works. | The person saw the failure message and the recovery message at the destination. |
+| 7 | The person can see for themselves that MMWatchdog runs. | The person ran `ssh NODE sudo mmwatchdog status` and saw every check. |
 
+- Answer each question the person asks before you go on to the next step.
 - Look up each module with `mmwatchdog describe-module NAME` before using
   it. Use a core module when one fits. Use `shell` for a short script.
 - Give each check a name that says what is healthy, such as

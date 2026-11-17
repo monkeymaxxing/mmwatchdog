@@ -268,16 +268,15 @@ code gets the fleet settings, with the secrets of your alert destinations.
 
    **Check:** `sudo mmwatchdog fleet join-code` prints the same new code.
 
-2. **Put the new code in the vault.** Open the vault with
-   `mmx secrets edit`, and replace the value of `mmwatchdog_join_code` with
-   the new code:
+2. **Put the new code in the vault,** straight from the hub, in place of
+   the old code:
 
-   ```yaml
-   mmwatchdog_join_code: "mmwatchdog-join 203.0.113.10:8445 ebba574e...168ee 2f543d90...8a34f"   # the whole line that rotate-join-code printed
+   ```sh
+   ssh deploy@203.0.113.10 sudo mmwatchdog fleet join-code | mmx secrets set --replace mmwatchdog_join_code
    ```
 
-   **Check:** `mmx secrets edit` ends with `Saved encrypted vault:
-   secrets_vault.age`.
+   **Check:** `mmx secrets set` prints nothing, and `mmx secrets diff-keys`
+   lists `mmwatchdog_join_code` as changed.
 
 3. **Give every node the new code:**
 
@@ -449,11 +448,14 @@ during the move; they keep their checks, and send alerts themselves.
    ```
 
    Only the address is new: the certificate's fingerprint and the join
-   secret came with the state. Replace the value of `mmwatchdog_join_code`
-   with this code, with `mmx secrets edit`.
+   secret came with the state. Put the code in the vault in place of the
+   old one, straight from the new hub:
 
-   **Check:** `mmx secrets edit` ends with `Saved encrypted vault:
-   secrets_vault.age`.
+   ```sh
+   ssh deploy@203.0.113.13 sudo mmwatchdog fleet join-code | mmx secrets set --replace mmwatchdog_join_code
+   ```
+
+   **Check:** `mmx secrets set` prints nothing.
 
 9. **Give every node the new address:**
 
