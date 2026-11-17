@@ -142,7 +142,9 @@ func (m *MySQL) Run(ctx context.Context, r *CheckRun) Observation {
 	// --no-defaults does not suppress MySQL's .mylogin.cnf. MariaDB
 	// ignores this variable, so both clients can use the same environment.
 	account, environment := primitives.MySQLAdministratorAccount, map[string]string{"MYSQL_TEST_LOGIN_FILE": "/dev/null"}
-	arguments := []string{program, "--no-defaults", "--batch", "--vertical", "--force", "--connect-timeout=10"}
+	// --local-infile=0: the client, which can run as root, never sends a
+	// file of this node to whatever answers on the socket or the port.
+	arguments := []string{program, "--no-defaults", "--local-infile=0", "--batch", "--vertical", "--force", "--connect-timeout=10"}
 	if m.LoginUser != "" {
 		account = primitives.UnprivilegedAccount
 	}

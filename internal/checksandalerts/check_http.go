@@ -179,12 +179,12 @@ func (h *HTTP) Run(ctx context.Context, r *CheckRun) Observation {
 	// say "context deadline exceeded".
 	timedOut := err != nil && errors.Is(ctx.Err(), context.DeadlineExceeded)
 	if timedOut && response.StatusCode == 0 {
-		return Result("failed", fmt.Sprintf("%s%s %q: no answer within %s", method[:1], strings.ToLower(method[1:]), h.URL, timeLimitWords(r)))
+		return Result("failed", fmt.Sprintf("%s%s %q: no answer within %s", method[:1], strings.ToLower(method[1:]), addressWithoutQuery(h.URL), timeLimitWords(r)))
 	}
 	if err != nil && response.StatusCode == 0 {
-		// The address of an http check is no secret, so the message names
-		// it, in the form that Go gives an error of a request.
-		return Result("failed", fmt.Sprintf("%s%s %q: %s", method[:1], strings.ToLower(method[1:]), h.URL, err))
+		// The message names the address in the form that Go gives an error
+		// of a request, without its query, which can hold a token.
+		return Result("failed", fmt.Sprintf("%s%s %q: %s", method[:1], strings.ToLower(method[1:]), addressWithoutQuery(h.URL), err))
 	}
 	if !slices.Contains(h.ExpectedHTTPStatusCodes, response.StatusCode) {
 		return Result("failed", fmt.Sprintf("expected HTTP %s, received %d", httpStatusCodeList(h.ExpectedHTTPStatusCodes), response.StatusCode))
@@ -244,4 +244,14 @@ var HTTPDescription = ModuleDescription{
 		Description:   "An application answers its health request with 200 and the word ready.",
 		Configuration: "http:\n  url: http://127.0.0.1:8080/health\n  expected_http_status_codes: [200]\n  response_body_contains: ready\nalert_severity: sos\n",
 	}},
+}
+
+// addressWithoutQuery is the address of an http check for a message: the
+// query and the fragment become "?...", because a query can hold a token
+// and the message goes to every alert destination.
+func addressWithoutQuery(address string) string {
+	if i := strings.IndexAny(address, "?#"); i >= 0 {
+		return address[:i] + "?..."
+	}
+	return address
 }

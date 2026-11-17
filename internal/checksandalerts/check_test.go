@@ -721,8 +721,10 @@ func TestHTTPAndTCPChecksSayPlainlyThatNoAnswerCameInTime(t *testing.T) {
 		limit.End()
 		return limit
 	}
-	o := checksandalerts.RunCheck(ended(), checksandalerts.NewCheckRun(checksandalerts.Check{Inputs: &checksandalerts.HTTP{URL: node.URL, Method: "GET", ExpectedHTTPStatusCodes: []int{200}}}, timing))
-	if want := "Get " + strconv.Quote(node.URL) + ": no answer within 5s (time_limit_per_run)"; o.Status != "failed" || o.Message != want {
+	// A token in the query stays out of the message, which goes to every
+	// alert destination.
+	o := checksandalerts.RunCheck(ended(), checksandalerts.NewCheckRun(checksandalerts.Check{Inputs: &checksandalerts.HTTP{URL: node.URL + "/health?token=s3cret", Method: "GET", ExpectedHTTPStatusCodes: []int{200}}}, timing))
+	if want := "Get " + strconv.Quote(node.URL+"/health?...") + ": no answer within 5s (time_limit_per_run)"; o.Status != "failed" || o.Message != want {
 		t.Errorf("http: status %q, message %q; want failed, %q", o.Status, o.Message, want)
 	}
 	address := strings.TrimPrefix(node.URL, "http://")

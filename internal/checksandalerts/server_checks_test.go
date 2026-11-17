@@ -486,7 +486,7 @@ func TestMySQLCheck(t *testing.T) {
 	if o.Status != "ok" || o.Message != "the MySQL server answers; it is no replica" || !reflect.DeepEqual(o.Measurements, map[string]checksandalerts.Measurement{"connections_used_percent": {Value: 15, Unit: "percent"}, "replication_lag_seconds": {Value: 0, Unit: "seconds"}}) {
 		t.Fatal(o)
 	}
-	if got := arguments(); got != "--no-defaults\n--batch\n--vertical\n--force\n--connect-timeout=10\n--protocol=SOCKET\nstandard input: "+checksandalerts.MySQLQuestion+"SHOW ALL REPLICAS STATUS\nMYSQL_TEST_LOGIN_FILE=/dev/null\nMYSQL_PWD=\n" {
+	if got := arguments(); got != "--no-defaults\n--local-infile=0\n--batch\n--vertical\n--force\n--connect-timeout=10\n--protocol=SOCKET\nstandard input: "+checksandalerts.MySQLQuestion+"SHOW ALL REPLICAS STATUS\nMYSQL_TEST_LOGIN_FILE=/dev/null\nMYSQL_PWD=\n" {
 		t.Fatalf("%q", got)
 	}
 	// Without a login, the client runs as root, which the server takes for
@@ -936,7 +936,7 @@ func TestADatabaseCheckProtectsItsConnectionAsItStates(t *testing.T) {
 	// server's certificate. The check tells it not to: a local socket
 	// needs no encryption.
 	os.Remove(asked)
-	if o := withinTimeLimit(t, 5*time.Second, checksandalerts.Check{Inputs: &checksandalerts.MySQL{}}); o.Status != "ok" || said(asked) != "--no-defaults\n--batch\n--vertical\n--force\n--connect-timeout=10\n--protocol=SOCKET\n--skip-ssl\nstandard input: "+checksandalerts.MySQLQuestion+"SHOW ALL REPLICAS STATUS\n" {
+	if o := withinTimeLimit(t, 5*time.Second, checksandalerts.Check{Inputs: &checksandalerts.MySQL{}}); o.Status != "ok" || said(asked) != "--no-defaults\n--local-infile=0\n--batch\n--vertical\n--force\n--connect-timeout=10\n--protocol=SOCKET\n--skip-ssl\nstandard input: "+checksandalerts.MySQLQuestion+"SHOW ALL REPLICAS STATUS\n" {
 		t.Fatal(o, said(asked))
 	}
 	if got := ranAs(); !reflect.DeepEqual(got, []string{"root"}) {

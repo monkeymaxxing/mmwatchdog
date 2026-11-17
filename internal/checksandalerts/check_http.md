@@ -42,7 +42,8 @@ and that is not healthy:
 - **The request does not get an answer:** the connection does not open, the
   server does not answer within the check group's `time_limit_per_run`, or
   the certificate of an HTTPS server is not valid. The message names the
-  method and the URL, such as `Get "http://127.0.0.1:8080/health": dial tcp
+  method and the URL, with any query shown as `?...`, because a query can
+  hold a token, such as `Get "http://127.0.0.1:8080/health": dial tcp
   127.0.0.1:8080: connect: connection refused`. When the check group's
   `time_limit_per_run` ends the request, the message says `Get
   "http://127.0.0.1:8080/health": no answer within 5s (time_limit_per_run)`,

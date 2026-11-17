@@ -251,6 +251,8 @@ option files. MMWatchdog also sets `MYSQL_TEST_LOGIN_FILE=/dev/null`, because
 MySQL still reads its login-path file, `.mylogin.cnf`, with `--no-defaults`.
 The variable makes MySQL read the empty `/dev/null` instead; MariaDB ignores
 the variable. No option file can change the server, login, or connection security.
+`--local-infile=0` keeps the client from sending a file of the node to the
+server, which matters because the client can run as root.
 
 ### Which client program
 
