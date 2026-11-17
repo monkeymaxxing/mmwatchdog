@@ -479,7 +479,10 @@ tar -xzf "mmwatchdog-$version-$platform.tar.gz"
 cd "mmwatchdog-$version-$platform"
 ```
 
-The checksum finds a damaged download. The directory that you unpack is the
+The checksum finds a damaged download. To check also that GitHub built the
+archive from this repository, run
+`gh attestation verify "mmwatchdog-$version-$platform.tar.gz" --repo monkeymaxxing/mmwatchdog`
+with the [GitHub CLI](https://cli.github.com/). The directory that you unpack is the
 MMX project. One project serves nodes of one kind: for x86-64 nodes and
 ARM64 nodes together, unpack both archives and use two projects.
 

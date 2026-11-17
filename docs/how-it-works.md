@@ -776,10 +776,23 @@ from a name in the report.
 A joined node must reach the destinations while the hub is down, so the hub
 copies each destination's tokens and passwords into every joined node's
 `fleet-settings-from-the-hub.json`. Root on any joined node can therefore
-read the destination credentials. Root on the hub can read the
-destination credentials too, and can change
-the settings that the nodes receive. The hub still has no way to run a
-node's checks or recovery commands.
+read the destination credentials. So can anyone with the join code alone:
+the code lets them join as a new node, and the hub then sends them the
+same settings. Guard the join code like the destination credentials
+themselves.
+
+With the signing secret of the `mmhotline` destination, a person can send
+check-ins and alerts that MMHotline accepts as the hub's, if they can
+reach MMHotline's alert intake address. Such check-ins can keep MMHotline
+from warning that the hub's check-ins stopped, and a check-in can put the
+hub in planned maintenance. Keep MMHotline's alert intake address on a
+private network that only your servers reach.
+
+Root on the hub can read the destination credentials too, and can change
+the settings that the nodes receive, including the account, the folder,
+and the environment variables with which a joined node runs the hub's
+destination modules. The hub cannot run a node's checks or recovery
+commands.
 
 **Data from outside is bounded.** Module results, node status reports, and
 alerts from nodes must match a strict format and a size limit. Text that a
