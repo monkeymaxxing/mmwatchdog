@@ -459,7 +459,8 @@ Start with one server, and run each step's check before the next step. Show
 me the MMX dryrun output and wait for my yes before every mmx run. Then
 prove the alert path: make one check fail and recover, and ask me whether
 both messages arrived. Answer each of my questions before you go on. At the
-end, show me the command that lets me see for myself that MMWatchdog runs.
+end, show me how to run `sudo mmwatchdog status` on the server myself, to see
+every check.
 ```
 
 The sections below show the steps, if you want to follow along or do them
