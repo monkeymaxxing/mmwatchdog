@@ -75,7 +75,7 @@ func usage() {
   mmwatchdog daemon [--config-dir DIR]
   mmwatchdog status [CHECK_GROUP] [--json]
   mmwatchdog config
-  mmwatchdog events [CHECK_GROUP] [--last DURATION | --since TIME [--until TIME]] [--json]
+  mmwatchdog events [CHECK_GROUP[/CHECK]] [--last DURATION | --since TIME [--until TIME]] [--json]
   mmwatchdog readings CHECK_GROUP [CHECK] [--last DURATION | --since TIME [--until TIME]] [--config-dir DIR] [--json | --chart]
   mmwatchdog check-now CHECK_GROUP [--count-as-scheduled-run] [--json]
   mmwatchdog check-now CHECK_GROUP --without-daemon [--config-dir DIR] [--json]
@@ -553,6 +553,14 @@ func run(args []string) (result error) {
 			}
 			path += "/" + neturl.PathEscape(name)
 		}
+		// events also takes CHECK_GROUP/CHECK: the node returns the check
+		// group's events, and the command keeps the events of that check.
+		eventsOfCheck := ""
+		if command == "events" {
+			if group, check, found := strings.Cut(name, "/"); found {
+				name, eventsOfCheck = group, check
+			}
+		}
 		if (command == "events" || command == "status") && name != "" {
 			path += "?check_group=" + neturl.QueryEscape(name)
 		}
@@ -621,6 +629,21 @@ func run(args []string) (result error) {
 			fmt.Printf("The recovery attempts of check group %s are reset. MMWatchdog can attempt recovery actions again.\n", name)
 			return nil
 		}
+		if command == "events" && eventsOfCheck != "" {
+			var events []checksandalerts.Event
+			if e = json.Unmarshal(b, &events); e != nil {
+				return e
+			}
+			kept := []checksandalerts.Event{}
+			for _, ev := range events {
+				if ev.Check == eventsOfCheck {
+					kept = append(kept, ev)
+				}
+			}
+			if b, e = json.Marshal(kept); e != nil {
+				return e
+			}
+		}
 		if asJSON || command == "config" {
 			var v any
 			if e = json.Unmarshal(b, &v); e != nil {
@@ -632,6 +655,9 @@ func run(args []string) (result error) {
 			var events []checksandalerts.Event
 			if e = json.Unmarshal(b, &events); e != nil {
 				return e
+			}
+			if len(events) == 0 {
+				fmt.Println(noEventsText(name, eventsOfCheck))
 			}
 			for _, ev := range events {
 				fmt.Printf("%s %-20s %s %s\n", ev.At.Format(time.RFC3339), ev.Type, subjectOfEvent(ev), ev.Message)
@@ -1349,4 +1375,18 @@ func nameColumnWidth(names []string, minimum int) int {
 		}
 	}
 	return width
+}
+
+// noEventsText says that the node keeps no event of what events asked for,
+// so that an empty answer is not mistaken for a failed command, and names
+// the check group when the check group itself may be misspelled.
+func noEventsText(checkGroup, check string) string {
+	switch {
+	case check != "":
+		return fmt.Sprintf("No events of the check %s/%s in the node's event history. mmwatchdog status lists the check groups and checks of this node.", checkGroup, check)
+	case checkGroup != "":
+		return fmt.Sprintf("No events of the check group %s in the node's event history. mmwatchdog status lists the check groups of this node.", checkGroup)
+	default:
+		return "No events in the node's event history."
+	}
 }

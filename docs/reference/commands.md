@@ -21,7 +21,7 @@ the service is stopped.
 | Command | What the command does | Needs `sudo` | Asks the service |
 |---|---|---|---|
 | [`mmwatchdog status [CHECK_GROUP]`](#mmwatchdog-status) | Shows the state of each check, and whether alerts reach their destinations. | Yes | Yes |
-| [`mmwatchdog events [CHECK_GROUP]`](#mmwatchdog-events) | Shows what happened and when: failures, recoveries, restarts, maintenance, notices. | Yes | Yes |
+| [`mmwatchdog events [CHECK_GROUP[/CHECK]]`](#mmwatchdog-events) | Shows what happened and when: failures, recoveries, restarts, maintenance, notices. | Yes | Yes |
 | [`mmwatchdog check-now CHECK_GROUP`](#mmwatchdog-check-now) | Runs the checks of one check group now and shows the results. | Yes | Yes, except with `--without-daemon` |
 | [`mmwatchdog readings CHECK_GROUP [CHECK]`](#mmwatchdog-readings) | Shows the measurement history of a check group or of one check. | Yes | No |
 | [`mmwatchdog validate`](#mmwatchdog-validate) | Checks the configuration, and on the node the files and accounts that it names. | Yes, on the node | No |
@@ -249,6 +249,12 @@ $ sudo mmwatchdog events commands_page_example
   and the evidence below it: the output of a recovery command, or the run
   that opened an incident. Evidence stays in the history after recovery,
   and after the check group is removed from the configuration.
+- With `CHECK_GROUP/CHECK`, such as `notes_app/notes_service_is_running`,
+  the command shows only the events of that check, from the events of its
+  check group.
+- When the history holds no matching event, the command says so, such as
+  `No events of the check group notes in the node's event history.`: check
+  the name with `mmwatchdog status`.
 - Without a time flag, the command shows the latest 100 events. With
   `--last`, or `--since` and `--until`, it shows every kept event in the
   span: see [Time spans](#time-spans). How long events are kept is in

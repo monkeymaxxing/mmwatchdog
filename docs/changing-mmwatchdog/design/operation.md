@@ -376,7 +376,7 @@ command on the machine where MMX runs.
 | `mmwatchdog daemon [--config-dir DIR]` | Run the daemon; systemd starts it |
 | `mmwatchdog status [CHECK_GROUP] [--json]` | Health summary and every check's state, or one check group in detail |
 | `mmwatchdog config` | Effective configuration with sources and timings, always as JSON |
-| `mmwatchdog events [CHECK_GROUP] [--last DURATION or --since TIME [--until TIME]] [--json]` | Recent events, or one check group's events with retained evidence |
+| `mmwatchdog events [CHECK_GROUP[/CHECK]] [--last DURATION or --since TIME [--until TIME]] [--json]` | Recent events, or one check group's or one check's events with retained evidence; an empty answer says that no event matched |
 | `mmwatchdog readings CHECK_GROUP [CHECK] [--last DURATION or --since TIME [--until TIME]] [--json or --chart]` | This node's readings and summaries, even while the daemon is stopped |
 | `mmwatchdog check-now CHECK_GROUP [--json]` | Ask the daemon to observe a check group now without recording incidents, alerting, restarting, or running recovery commands |
 | `mmwatchdog check-now CHECK_GROUP --count-as-scheduled-run [--json]` | Ask the daemon to start the check group's scheduled runs now. The requested runs count as every scheduled run does. Each check's next run comes `check_every` later |
