@@ -2284,6 +2284,30 @@ func TestMaintenanceEndReconcilesHeartbeat(t *testing.T) {
 	}
 }
 
+// A heartbeat that became overdue early in a window longer than
+// keep_undelivered_alerts_for is announced when the window ends: the alert
+// takes the time of the window's end, so the outbox keeps it.
+func TestMaintenanceLongerThanTheOutboxKeepsAlertsAnnouncesAnOverdueHeartbeat(t *testing.T) {
+	t.Parallel()
+	p, c := heartbeatConfig(t)
+	c.KeepUndeliveredAlertsFor = "24h"
+	writeConfig(t, p, c)
+	d, err := NewDaemon(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	setMaintenance(t, d, "backup", "72h")
+	overdueAt := time.Now().UTC().Add(-48 * time.Hour)
+	d.snapshot.Checks["backup/heartbeat"].Deadline = overdueAt.Add(-time.Second)
+	d.schedule(context.Background(), overdueAt)
+	setMaintenance(t, d, "backup", "off")
+	st := d.snapshot.Checks["backup/heartbeat"]
+	if got := queued(t, d); !reflect.DeepEqual(got, []string{"maintenance_on", "maintenance_off", "failed"}) || st.FailureIncident.Announced != st.FailureIncident.Incident {
+		t.Fatalf("the end of a long window did not announce the overdue heartbeat: queued %v, health %+v", got, st.FailureIncident)
+	}
+}
+
 // A reload that removes a check in maintenance ends its window with an alert,
 // since its start was announced.
 func TestRemovedCheckEndsItsWindow(t *testing.T) {

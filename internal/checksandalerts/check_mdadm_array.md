@@ -82,7 +82,10 @@ minute, MMWatchdog sends the recovery alert.
   counts devices marked `in_sync` against the number of devices that the
   array should have (`raid_disks`), and names each device that the kernel
   reports as `faulty`. The array misses a device while the kernel's count
-  of missing devices (`degraded`) is above 0.
+  of missing devices (`degraded`) is above 0. A `raid0` or `linear` array
+  has no spare copy of its data, so the kernel keeps no `degraded` count for
+  it: such an array that loses a device has the state `broken`, which fails
+  the check.
 - **The progress** of a rebuild or of a kernel check comes from
   `sync_completed`. The kernel reports the sectors processed and the total
   sectors to process for the current rebuild or kernel check.

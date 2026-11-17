@@ -9,7 +9,7 @@ destination.
 
 The module posts the alert to a Slack **incoming webhook**: a web address
 that Slack makes for one channel. Whatever is posted to the address appears
-as a message in the webhook's channel. The module works for every service that takes Slack's incoming webhook format.
+as a message in the webhook's channel. The module works for every service that takes Slack's incoming webhook format and answers an accepted message with the text `ok`, as Slack does.
 
 Choose `slack` for a team that reads its alerts in Slack. For a receiver of
 your own that reads MMWatchdog's alert event as JSON, use the core module

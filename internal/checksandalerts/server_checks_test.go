@@ -2401,6 +2401,20 @@ func TestMdadmArrayCheck(t *testing.T) {
 	if o := observe("/dev/md0"); o.Status != "unknown" || !strings.Contains(o.Message, "degraded device count") {
 		t.Fatal(o)
 	}
+	// An array without redundancy has no degraded count; a lost device
+	// makes the kernel report the array as broken.
+	root = testhelpers.KernelFiles(t, map[string]string{md + "array_state": "clean\n", md + "raid_disks": "2\n", md + "level": "raid1\n", md + "dev-sda1/state": "in_sync\n", md + "dev-sdb1/state": "in_sync\n"})
+	if o := observe("/dev/md0"); o.Status != "unknown" || !strings.Contains(o.Message, "degraded device count") {
+		t.Fatal("a raid1 array without a degraded count looks healthy:", o)
+	}
+	set("level", "raid0")
+	if o := observe("/dev/md0"); o.Status != "ok" || o.Message != "/dev/md0 (raid0) has all expected devices: 2 of 2 devices work" {
+		t.Fatal(o)
+	}
+	set("array_state", "broken")
+	if o := observe("/dev/md0"); o.Status != "failed" || o.Message != "/dev/md0 does not work: the kernel reports the array as broken" {
+		t.Fatal(o)
+	}
 	loadChecks(t, map[string]string{
 		"{mdadm_array: /dev/md0, alert_severity: sos}":     "",
 		"{mdadm_array: /dev/md/data, alert_severity: sos}": "",

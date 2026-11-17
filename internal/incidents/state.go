@@ -565,7 +565,13 @@ func (s *Snapshot) EndMaintenance(windows []string, now time.Time, message strin
 		// window can also suppress.
 		//nolint:nilaway // EndMaintenance visits existing checks; ReconcileOne and Store.Load allocate every entry, and daemon locking prevents removal during iteration.
 		if !st.Deadline.IsZero() && st.CheckGroup != checksandalerts.NodeReportsCheckGroup && st.Last.Status != "unknown" && !s.InMaintenance(st.CheckGroup) {
-			events = append(events, st.Observe(st.Last, st.Timing, false)...) //nolint:nilaway // EndMaintenance visits existing checks; ReconcileOne and Store.Load allocate every entry, and daemon locking prevents removal during iteration.
+			// The heartbeat's evidence still holds at the window's end, and
+			// the alert says so at that time: an alert dated at the start of a
+			// long window would be older than keep_undelivered_alerts_for, and
+			// the commit that queues it would remove it.
+			latest := st.Last //nolint:nilaway // EndMaintenance visits existing checks; ReconcileOne and Store.Load allocate every entry, and daemon locking prevents removal during iteration.
+			latest.At = now
+			events = append(events, st.Observe(latest, st.Timing, false)...) //nolint:nilaway // EndMaintenance visits existing checks; ReconcileOne and Store.Load allocate every entry, and daemon locking prevents removal during iteration.
 		}
 		if !s.InMaintenance(st.CheckGroup) {
 			st.ResumeReminders(now)

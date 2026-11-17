@@ -95,6 +95,12 @@ func (m *MdadmArray) Run(context.Context, *CheckRun) Observation {
 	}
 	action := read("sync_action")
 	data, err = primitives.ReadFile(directory+"/degraded", primitives.ProcFileLimit)
+	// An array without redundancy, raid0 or linear, has no degraded count:
+	// it has no spare copy to miss, and the kernel reports a lost device as
+	// the array state broken, which fails above.
+	if errors.Is(err, fs.ErrNotExist) && slices.Contains([]string{"raid0", "linear"}, read("level")) {
+		data, err = []byte("0"), nil
+	}
 	if err != nil {
 		return Result("unknown", fmt.Sprintf("MMWatchdog cannot read the degraded device count of %s: %s", path, err))
 	}

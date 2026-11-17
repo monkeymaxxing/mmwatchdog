@@ -37,7 +37,11 @@ func (s *Store) PreparedEvent(event checksandalerts.Event, route AlertRoute) che
 // send_only_the_alert_title gets the title only. An mmhotline destination
 // gets a failure, a raise, or a notice, but no resolution and no reminder:
 // its resolutions come from its fleet incident set, which only a commit
-// keeps (QueueMMHotline), and the commit after the failure queues them.
+// keeps (QueueMMHotline), and the commit after the failure queues them. A
+// destination whose service keeps incidents of its own gets no alert that
+// closes an incident from a hub or a joined node's fallback, for the same
+// reason (queueWithIncidentSet): another node's incident may hold the key
+// open.
 func (s *Store) DeliveriesFromMemory(message checksandalerts.Event, destinations map[string]checksandalerts.Destination, from QueuedBy) []Delivery {
 	var deliveries []Delivery
 	for _, name := range checksandalerts.Names(destinations) {
@@ -47,6 +51,8 @@ func (s *Store) DeliveriesFromMemory(message checksandalerts.Event, destinations
 		}
 		alert := message
 		switch {
+		case dest.MMHotline() == nil && checksandalerts.Closes(message.Type) && from.Role != StandaloneSender && from.keepsIncidents(name, dest):
+			continue
 		case dest.MMHotline() == nil:
 			if dest.SendOnlyTheAlertTitle {
 				alert = alert.OnlyTheTitle()

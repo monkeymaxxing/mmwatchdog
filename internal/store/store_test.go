@@ -1083,3 +1083,46 @@ func TestTheStoreRefusesAMachineWithoutAHostName(t *testing.T) {
 		t.Fatal(e)
 	}
 }
+
+// While state.db cannot be written, a hub or a joined node's fallback sends
+// no alert that closes an incident from memory to a destination whose
+// service keeps incidents: another node's incident of the same key may still
+// be open, and the closing alert would end the service's incident, such as
+// the repeats of an sos page. The commit that succeeds later decides through
+// the fleet incident set. A standalone node's own recovery closes its own
+// incident and goes out.
+func TestAlertsFromMemoryKeepAServicesIncidentOpenForTheFleet(t *testing.T) {
+	t.Parallel()
+	s, err := store.OpenStore(filepath.Join(t.TempDir(), "state"), config.DefaultStorageLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities}
+	destinations := map[string]checksandalerts.Destination{"pager": pager}
+	at := time.Now()
+	failed := checksandalerts.Event{ID: "failed", Incident: "i1", CheckGroup: "web", Check: "http", Type: "failed", AlertSeverity: "sos", At: at, Notify: true}
+	recovered := checksandalerts.Event{ID: "recovered", Incident: "i1", CheckGroup: "web", Check: "http", Type: "recovered", AlertSeverity: "sos", At: at, Notify: true}
+	// The failure was committed before state.db stopped taking writes.
+	if err := s.Save(incidents.FreshSnapshot(), []checksandalerts.Event{failed}, store.AlertRoute{Destinations: destinations}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		role store.QueuedBy
+		want []string
+	}{
+		{store.QueuedBy{Role: store.StandaloneSender}, []string{"failed", "recovered"}},
+		{store.QueuedBy{Role: store.FleetHubSender}, []string{"failed"}},
+		{store.QueuedBy{Role: store.FallbackSender, DestinationsWhoseServiceKeepsIncidents: []string{"pager"}}, []string{"failed"}},
+	} {
+		got := []string{}
+		for _, event := range []checksandalerts.Event{failed, recovered} {
+			for _, delivery := range s.DeliveriesFromMemory(event, destinations, c.role) {
+				got = append(got, delivery.Event.Type)
+			}
+		}
+		if !reflect.DeepEqual(got, c.want) {
+			t.Errorf("sender %d sent %v from memory, want %v", c.role.Role, got, c.want)
+		}
+	}
+}

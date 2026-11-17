@@ -1149,7 +1149,9 @@ destination.
   `send_alert_without_hub_after_waiting_for`; a hub sends its own straight
   to its destinations, without fleet alert grouping. An `mmhotline`
   destination gets the failures and notices from memory, and their
-  resolutions only from the outbox. The commit that succeeds later puts the
+  resolutions only from the outbox. So does a destination whose service
+  keeps incidents of its own, on a hub and in a joined node's direct
+  delivery: another node's incident may hold the key open. The commit that succeeds later puts the
   same alerts in the outbox, and each destination gets them a second time,
   with the same event ID.
 

@@ -161,7 +161,8 @@ func emailAddress(s string) bool {
 }
 
 // sameEmail compares the identity of two email destinations: the mail
-// server, the recipients in any order, and the path of the password file.
+// server and the recipients in any order. The password proves who sends,
+// so a new password keeps the identity (CaptureCredentialContent).
 func sameEmail(a, b *Email) bool {
 	if a == nil || b == nil {
 		return a == b
