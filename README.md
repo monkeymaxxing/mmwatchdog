@@ -469,28 +469,46 @@ project that installs both. First install
 [MMX](https://github.com/monkeymaxxing/mmx#install) on your controller
 machine.
 
-Download the release archive for your **nodes**, not for your controller
-machine, and its checksum file. Check the download and unpack it:
+The block below asks your node for its processor kind, downloads the
+matching archive and its checksum file into the current folder, checks the
+download, and unpacks it. Put your node's SSH login in the first line:
 
 ```sh
-version=0.1.0
-platform=linux-amd64      # for x86-64 nodes; linux-arm64 for ARM64 nodes
+(
+set -eu
+node=root@203.0.113.11
+version=0.1.1
+case "$(ssh "$node" uname -m)" in
+  x86_64)  platform=linux-amd64 ;;
+  aarch64) platform=linux-arm64 ;;
+  *) echo "MMWatchdog has no release for $(ssh "$node" uname -m) nodes."; exit 1 ;;
+esac
 release=https://github.com/monkeymaxxing/mmwatchdog/releases/download/v$version
-
-curl -fLO "$release/mmwatchdog-$version-$platform.tar.gz"
-curl -fLO "$release/SHA256SUMS"
-shasum -a 256 --check --ignore-missing SHA256SUMS    # on Linux: sha256sum --check --ignore-missing SHA256SUMS
-
+curl -fsSLO "$release/mmwatchdog-$version-$platform.tar.gz"
+curl -fsSLO "$release/SHA256SUMS"
+if command -v sha256sum >/dev/null; then sha256sum --check --ignore-missing SHA256SUMS
+else shasum -a 256 --check --ignore-missing SHA256SUMS; fi
 tar -xzf "mmwatchdog-$version-$platform.tar.gz"
-cd "mmwatchdog-$version-$platform"
+echo "Unpacked the MMX project: cd mmwatchdog-$version-$platform"
+)
 ```
+
+Then go into the folder that the last line names. That folder is the MMX
+project, and [First run](#first-run) works in it.
 
 The checksum finds a damaged download. To check also that GitHub built the
 archive from this repository, run
-`gh attestation verify "mmwatchdog-$version-$platform.tar.gz" --repo monkeymaxxing/mmwatchdog`
-with the [GitHub CLI](https://cli.github.com/). The directory that you unpack is the
-MMX project. One project serves nodes of one kind: for x86-64 nodes and
-ARM64 nodes together, unpack both archives and use two projects.
+`gh attestation verify mmwatchdog-0.1.1-linux-amd64.tar.gz --repo monkeymaxxing/mmwatchdog`
+(with your archive's name) with the [GitHub CLI](https://cli.github.com/).
+
+**By hand.** `uname -m` on the node prints `x86_64` for the archive
+`linux-amd64`, and `aarch64` for `linux-arm64`. One project serves nodes of
+one kind: for x86-64 nodes and ARM64 nodes together, unpack both archives
+and use two projects.
+
+**Upgrade.** Run the block again with the new version, and copy your
+own files from the old project into the new one;
+[Update MMWatchdog](docs/how-to/update-mmwatchdog.md) has the steps.
 
 **Build from source.** To make the archives yourself, you need Git, Python
 3, and Go 1.21 or newer; by default, Go then downloads the exact Go version
