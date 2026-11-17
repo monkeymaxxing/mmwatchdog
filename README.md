@@ -584,7 +584,7 @@ check before moving on. Use one server first, then the rest.
 | 1 | MMX is installed on the controller machine. | `mmx version` prints a version. |
 | 2 | The release archive for the node's architecture is unpacked. | The directory holds `mmx_project_settings.yml` and the `mmwatchdog` program. |
 | 3 | The inventory names the node, the check groups say what to watch, and an alert destination exists. | `mmx validate` prints `Valid:` and the project name. |
-| 4 | The person approved the changes. | You showed the person the output of `mmx dryrun hub_and_standalone`, and they said yes. |
+| 4 | The person approved the changes. | You showed the person the alert destination in `alert_destinations.yml` and the output of `mmx dryrun hub_and_standalone`, and they said yes. |
 | 5 | MMWatchdog runs on the node. | `mmx run hub_and_standalone` ends with no failed node, and `sudo mmwatchdog status` on the node lists every check. |
 | 6 | The alert path works. | The person saw the failure message and the recovery message at the destination. |
 | 7 | The person can see for themselves that MMWatchdog runs. | The person ran `ssh NODE sudo mmwatchdog status` and saw every check. |
@@ -599,6 +599,14 @@ check before moving on. Use one server first, then the rest.
   the value at the hidden prompt. Each install
   writes it to a file under `/etc/mmwatchdog/secrets` that only root can
   read, and the configuration names the file.
+- Tell the person at the start that MMX keeps secrets in a vault with a
+  passphrase they choose. Each `mmx` command that opens the vault asks for
+  the passphrase, so the person runs those commands in their own terminal:
+  `mmx secrets set`, `mmx dryrun`, and `mmx run`.
+- Before the first `mmx run`, tell the person that MMX starts its own
+  service `mmx-https-api.service` on the node, on TCP port 7443 on every
+  network address, and that `connection: ssh_only` on the node in the
+  inventory avoids the service. Let them choose before the run.
 - Do not set `alert_after_failing_for: 0s` to make alerts faster without
   asking the person. A short failure then sends an alert.
 
