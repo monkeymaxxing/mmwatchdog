@@ -9,7 +9,9 @@ one fleet hub, install the first node with this page, then follow
 **controller machine**: the machine where you run `mmx`, such as your
 laptop. Steps 10 and 11 also run commands on the node. Show the person the
 output of step 8 and wait for their yes before step 9, because step 9
-changes the node.
+changes the node. The person runs `mmx secrets write-passphrase-file` once,
+in their own terminal, in step 6. The agent then runs `mmx dryrun` and
+`mmx run` itself, with `MMX_VAULT_PASSWORD_FILE` set.
 
 **What this page does:** [MMX](https://github.com/monkeymaxxing/mmx), the
 Monkeymaxxing tool that sets up servers, copies the `mmwatchdog` program,
@@ -160,19 +162,29 @@ you.
    node during the install. Store the address under the file name
    `slack-webhook-team`:
 
+   **Choose the vault passphrase.** Run this yourself, in your own terminal, not through a coding agent:
+
+   ```sh
+   mmx secrets write-passphrase-file
+   ```
+
+   MMX asks `New vault passphrase:` and `Confirm new vault passphrase:`. The passphrase is the one key to the encrypted secrets file. Make it new, and save it in your password manager. MMX creates the vault, saves the passphrase in a file that only you can read, and prints:
+
+   ```text
+   Created the vault secrets_vault.age with this passphrase. The vault holds no secrets yet.
+   Your coding agent can now run mmx with MMX_VAULT_PASSWORD_FILE=~/.config/mmx/vault-passphrase-mmx_example.
+   When you are done, delete the file: rm ~/.config/mmx/vault-passphrase-mmx_example
+   ```
+
+   A coding agent runs each later `mmx dryrun` and `mmx run` with that `MMX_VAULT_PASSWORD_FILE=...` line in front, and never reads the file. If you do the steps by hand, run `export MMX_VAULT_PASSWORD_FILE="$HOME/.config/mmx/vault-passphrase-mmx_example"` once, or delete the file and type the passphrase at each prompt. [MMX's guide to secrets](https://github.com/monkeymaxxing/mmx/blob/main/docs/how-to/keep-secrets.md) says more.
+
+   Then store the address:
+
    ```sh
    mmx secrets set mmwatchdog_secret_files slack-webhook-team
    ```
 
-   The first time, MMX asks for a new vault passphrase twice. Keep the
-   passphrase in your password manager, because each install asks for it:
-
-   ```text
-   New vault passphrase:
-   Confirm new vault passphrase:
-   ```
-
-   Then MMX asks for the value. Type your webhook's address at the hidden
+   MMX asks for the value. Type your webhook's address at the hidden
    prompt. A coding agent asks the person to run this command and type the
    address themselves, so the address never passes through the chat.
    The vault then holds:

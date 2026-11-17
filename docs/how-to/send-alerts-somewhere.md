@@ -8,7 +8,9 @@ the person on call; or you want a place to get only some of the alerts.
 machine, the machine where you run `mmx`, except where the step says "on
 the node". A coding agent shows the person the output of `mmx dryrun` and
 waits for their yes before `mmx run`, and asks the person to type each
-password or token into the vault themselves.
+password or token into the vault themselves. The agent runs `mmx dryrun`
+and `mmx run` with `MMX_VAULT_PASSWORD_FILE` set, as the
+[install page](install-on-one-node.md) shows.
 
 **What this page does:** you add an **alert destination** to the MMX
 project that installed MMWatchdog, put its password or token in MMX's
@@ -90,8 +92,11 @@ same.
    mmx secrets set mmwatchdog_secret_files webhook-token-on-call
    ```
 
-   MMX asks for the vault's passphrase, then for the value. Type the token
-   at the hidden prompt. A coding agent asks the person to run this command
+   MMX asks for the value. Type the token at the hidden prompt. The vault's
+   passphrase comes from the file that `MMX_VAULT_PASSWORD_FILE` names, or
+   from a prompt if you chose to type it, as
+   [Install MMWatchdog on one node](install-on-one-node.md)
+   shows. A coding agent asks the person to run this command
    and type the token themselves, so the token never passes through the
    chat. The vault then holds:
 

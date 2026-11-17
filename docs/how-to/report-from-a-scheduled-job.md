@@ -8,6 +8,8 @@ also when it stops running at all, such as after someone removed its timer.
 machine, the machine where you run `mmx`, except where the step says "on the
 node". A coding agent can do every step: `openssl` on the controller
 machine makes the values that go into the vault, so nobody types a secret.
+The agent runs each `mmx` command with `MMX_VAULT_PASSWORD_FILE` set, as
+[Install MMWatchdog on one node](install-on-one-node.md) shows.
 
 **What this page does:** you add a heartbeat check group to the MMX project
 that installed MMWatchdog. After each success, the job sends MMWatchdog a

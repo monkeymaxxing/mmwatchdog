@@ -12,7 +12,9 @@ machine, the machine where you run `mmx`, except where the step runs a
 command on the node over `ssh`. A coding agent asks the person to run
 `mmx secrets set mmwatchdog_secret_files alarm-system-token` in step 12 and
 to type the token themselves, so the token
-never passes through the chat.
+never passes through the chat. The agent runs `mmx dryrun` and `mmx run`
+with `MMX_VAULT_PASSWORD_FILE` set, as
+[Install MMWatchdog on one node](install-on-one-node.md) shows.
 
 **What this page does:** you write `queued_jobs`, a check module that reads
 how many jobs wait in your application's queue. You try the module on the

@@ -450,7 +450,9 @@ the systemd unit myapp.service and answers at http://127.0.0.1:8080/health.
 Send alerts to my Slack channel. When you need the webhook address, have me
 type it at the hidden prompt of `mmx secrets set mmwatchdog_secret_files
 slack-webhook-team` myself, and keep it out of the project's plain files and
-out of our chat.
+out of our chat. Tell me what the vault passphrase is, and have me run
+`mmx secrets write-passphrase-file` myself, in my own terminal. Then run
+`mmx dryrun` and `mmx run` yourself.
 
 Start with one server, and run each step's check before the next step. Show
 me the MMX dryrun output and wait for my yes before every mmx run. Then
@@ -532,14 +534,26 @@ In the unpacked MMX project:
 4. Put the secret of the alert destination, such as the Slack address, in
    MMX's encrypted vault:
 
+   The first time, choose the vault passphrase, in your own terminal:
+
+   ```sh
+   mmx secrets write-passphrase-file
+   ```
+
+   MMX asks for a new passphrase twice. The passphrase is the one key to
+   the encrypted secrets file: make it new, and save it in your password
+   manager. MMX creates the vault, saves the passphrase in a file that only
+   you can read, and prints the line to use, such as
+   `MMX_VAULT_PASSWORD_FILE=~/.config/mmx/vault-passphrase-mmx_example`. Run
+   `export` with that line, or delete the file and type the passphrase at
+   each prompt. Then store the address:
+
    ```sh
    mmx secrets set mmwatchdog_secret_files slack-webhook-team
    ```
 
-   Type the address at the hidden prompt. The first time, MMX asks you to
-   choose a new vault passphrase and to type it twice: keep the passphrase
-   in your password manager, because each install asks for it. To change
-   the address later, add `--replace` to the command.
+   Type the address at the hidden prompt. To change the address later, add
+   `--replace` to the command.
 
    Then list the file in `inventories/hub_and_standalone.yml`, under
    `vars`: `mmwatchdog_secret_files: [slack-webhook-team]`. Each install
@@ -599,10 +613,15 @@ check before moving on. Use one server first, then the rest.
   the value at the hidden prompt. Each install
   writes it to a file under `/etc/mmwatchdog/secrets` that only root can
   read, and the configuration names the file.
-- Tell the person at the start that MMX keeps secrets in a vault with a
-  passphrase they choose. Each `mmx` command that opens the vault asks for
-  the passphrase, so the person runs those commands in their own terminal:
-  `mmx secrets set`, `mmx dryrun`, and `mmx run`.
+- To unlock the vault, follow the bullet "To unlock the vault" in the
+  ["For coding agents" section of MMX's README](https://github.com/monkeymaxxing/mmx#for-coding-agents).
+  In short: tell the person what the vault passphrase is ("the one key to
+  the encrypted secrets file; make it new, and save it in your password
+  manager"), and have them run `mmx secrets write-passphrase-file` once, in
+  their own terminal. Then run `MMX_VAULT_PASSWORD_FILE=... mmx dryrun` and
+  `mmx run` yourself, with the line that command prints. Never read the
+  file or ask for the passphrase in the chat. The person still types each
+  secret's value at the hidden prompt of `mmx secrets set`.
 - Before the first `mmx run`, tell the person that MMX starts its own
   service `mmx-https-api.service` on the node, on TCP port 7443 on every
   network address, and that `connection: ssh_only` on the node in the

@@ -10,7 +10,9 @@ that set up the fleet. Some steps run a command on the hub or on a node
 through `ssh`, as the step shows. A coding agent shows the person the
 output of each `mmx dryrun` and waits for their yes before the `mmx run`
 that follows it, and asks the person to put each secret into the vault
-themselves.
+themselves. The agent runs `mmx dryrun` and `mmx run` with
+`MMX_VAULT_PASSWORD_FILE` set, as
+[Install MMWatchdog on one node](install-on-one-node.md) shows.
 
 **What this page does:** each section makes one change to the fleet with
 MMX or with a `mmwatchdog fleet` command on the hub, and checks the result
