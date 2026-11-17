@@ -464,27 +464,32 @@ KillMode=control-group
         seen = len(reports())
         reload()
         wait(lambda: all(state('commands/' + check)['failure_incident'].get('incident_id') for check in ['memory', 'cpu']), timeout=40)
+        # The alert names each program and its process ID, never its arguments,
+        # which can hold a password: the scenario finds its programs by their IDs.
+        holder = vm.console('systemctl show --value -p MainPID mmwatchdog-holds-memory').stdout.strip()
+        busy = vm.console('systemctl show --value -p MainPID mmwatchdog-uses-cpu').stdout.strip()
         memory = state('commands/memory')['failure_incident']['evidence']['observation']['details']
         assert memory[0] == 'the commands that use the most memory:' and len(memory) == 6, memory
         amounts = [int(line.split()[0]) for line in memory[1:]]
         assert amounts == sorted(amounts, reverse=True) and all(' MiB: ' in line and ' (process ' in line for line in memory[1:]), memory
-        assert any('python3 ' + FIXTURE + '/holds_memory.py' in line and int(line.split()[0]) >= 96 for line in memory[1:]), memory
+        assert any(line.endswith(': python3 (process ' + holder + ')') and int(line.split()[0]) >= 96 for line in memory[1:]), (holder, memory)
+        assert not any(FIXTURE in line for line in memory), memory
         # A later run of the CPU check covers the whole time since the run
         # before, in which the program was busy all the time.
         def cpu_details():
             details = last('commands/cpu').get('details') or ['', '']
-            return details if 'python3 ' + FIXTURE + '/uses_cpu.py' in details[1] else None
+            return details if details[1].endswith(': python3 (process ' + busy + ')') else None
         cpu = wait(cpu_details)
         assert cpu[0] == 'the commands that used the most CPU between the two CPU readings:' and cpu[1].split()[1] == 'percent:' and float(cpu[1].split()[0]) > 10, cpu
         body = wait(lambda: [e for e in reports()[seen:] if e.get('check_group') == 'commands' and e.get('check') == 'memory' and e['type'] == 'failed'])[0]['body']
-        assert '\nthe commands that use the most memory:\n  ' in body and 'holds_memory.py (process ' in body, body
+        assert '\nthe commands that use the most memory:\n  ' in body and 'python3 (process ' + holder + ')' in body and FIXTURE not in body, body
         load = now('commands')['load']
         if load['status'] == 'failed':
-            assert load['details'][0] == 'the commands with the most threads that run or wait for a disk now:' and any('uses_cpu.py' in line for line in load['details'][1:]), load
+            assert load['details'][0] == 'the commands with the most threads that run or wait for a disk now:' and any(line.endswith('(process ' + busy + ')') for line in load['details'][1:]), load
         assert not last('commands/memory_within_its_limit').get('details'), last('commands/memory_within_its_limit')
         shown = cli('status commands').stdout
         assert '  the commands that use the most memory:\n' in shown, shown
-        mark('the alert of a failed check of the node\'s memory or CPU names in its body the commands that use the most of that resource, the highest first, with a program that holds 96 MiB and one that keeps a processor busy among them; a check within its limit names none')
+        mark('the alert of a failed check of the node\'s memory or CPU names in its body the programs that use the most of that resource, by name and process ID without their arguments, the highest first, with a program that holds 96 MiB and one that keeps a processor busy among them; a check within its limit names none')
         vm.console('systemctl stop mmwatchdog-holds-memory mmwatchdog-uses-cpu')
         del groups['commands']
 
