@@ -741,7 +741,14 @@ func TestLogLinesCheckOfAFileThatIsReplaced(t *testing.T) {
 	if err := os.Symlink(target, link); err != nil {
 		t.Fatal(err)
 	}
-	if o := checksandalerts.ObserveCheck(context.Background(), checksandalerts.Check{Inputs: &checksandalerts.LogLines{LogFilePath: link, FailWhenANewLineContains: "x"}}); o.Status != "unknown" || !strings.HasPrefix(o.Message, link+" is a symbolic link; ") || strings.Contains(fmt.Sprint(o), "marks the secret") {
+	// Run as root, as on the test servers, the link goes to the account
+	// nobody: MMWatchdog follows a link that root owns.
+	if os.Geteuid() == 0 {
+		if err := os.Lchown(link, 65534, 65534); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if o := checksandalerts.ObserveCheck(context.Background(), checksandalerts.Check{Inputs: &checksandalerts.LogLines{LogFilePath: link, FailWhenANewLineContains: "x"}}); o.Status != "unknown" || !strings.HasPrefix(o.Message, "MMWatchdog does not read "+link+": "+link+" is a symbolic link that root does not own. ") || strings.Contains(fmt.Sprint(o), "marks the secret") {
 		t.Fatal(o)
 	}
 

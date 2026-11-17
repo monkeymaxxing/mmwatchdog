@@ -329,8 +329,10 @@ func (l *LogLines) readFile(ctx context.Context, r *CheckRun, read *LogLinesRead
 			return ""
 		}
 		return l.LogFilePath + " does not exist"
-	case errors.Is(err, primitives.ErrSymbolicLink):
-		return l.LogFilePath + " is a symbolic link; MMWatchdog reads a log file only at its own path, so that a link cannot make it send lines of another file: set log_file_path to the file that the link names"
+	case errors.As(err, new(primitives.LinkNotOwnedByRoot)):
+		var link primitives.LinkNotOwnedByRoot
+		errors.As(err, &link)
+		return "MMWatchdog does not read " + l.LogFilePath + ": " + link.Error() + ". MMWatchdog reads a log as root and follows only links that root owns, so that another account cannot make it send lines of another file: set log_file_path to the real path of the log"
 	case errors.Is(err, primitives.ErrNotARegularFile):
 		return l.LogFilePath + " is " + about.Kind + ", not a regular file"
 	case err != nil:

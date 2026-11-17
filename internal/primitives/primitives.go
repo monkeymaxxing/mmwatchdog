@@ -987,20 +987,22 @@ func OpenRegularFile(path string) (*os.File, FileInformation, error) {
 	return openRegularFile(path, 0)
 }
 
-// ErrSymbolicLink reports a path that is a symbolic link where the caller
-// reads only the file at the path itself.
-var ErrSymbolicLink = errors.New("a symbolic link")
+// LinkNotOwnedByRoot reports a symbolic link that another account than root
+// owns, on the path of a file that MMWatchdog reads as root and sends in
+// alerts. Link is the path of the link.
+type LinkNotOwnedByRoot struct{ Link string }
+
+func (e LinkNotOwnedByRoot) Error() string {
+	return e.Link + " is a symbolic link that root does not own"
+}
 
 // OpenRegularFileNotALink is OpenRegularFile for a file whose content goes
-// into alerts, read as root: a symbolic link at path is ErrSymbolicLink.
-// Reason: an account that can write the file's directory could otherwise
-// put a link there to a file that only root may read.
+// into alerts, read as root. It follows a symbolic link on the path only
+// when root owns the link, such as /var/run, and reports any other link as
+// LinkNotOwnedByRoot. Reason: an account that can write a directory on the
+// path could otherwise put a link there to a file that only root may read.
 func OpenRegularFileNotALink(path string) (*os.File, FileInformation, error) {
-	f, about, e := openRegularFile(path, syscall.O_NOFOLLOW)
-	if errors.Is(e, syscall.ELOOP) {
-		return nil, FileInformation{Kind: "a symbolic link"}, ErrSymbolicLink
-	}
-	return f, about, e
+	return openRegularFileThroughRootLinks(path)
 }
 
 func openRegularFile(path string, extraFlags int) (*os.File, FileInformation, error) {
@@ -1008,6 +1010,12 @@ func openRegularFile(path string, extraFlags int) (*os.File, FileInformation, er
 	if e != nil {
 		return nil, FileInformation{}, e
 	}
+	return regularFileFrom(f)
+}
+
+// regularFileFrom returns the open file f with what the node says about it,
+// or closes f and reports ErrNotARegularFile for another kind of file.
+func regularFileFrom(f *os.File) (*os.File, FileInformation, error) {
 	info, e := f.Stat()
 	if e != nil {
 		_ = f.Close() // Closing this read-only handle has no pending writes to commit.
