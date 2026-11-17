@@ -236,6 +236,7 @@ Messages of a run:
 | --- | --- |
 | `/var/log/myapp/application.log does not exist` | No file exists at `/var/log/myapp/application.log`. Runs remain unknown while the configured path is missing. |
 | `/var/log/myapp is a directory, not a regular file` | The path names something else than a file. |
+| `/var/log/myapp/application.log is a symbolic link; MMWatchdog reads a log file only at its own path, so that a link cannot make it send lines of another file: set log_file_path to the file that the link names` | MMWatchdog reads the log as root and sends matching lines in alerts. A link could let an account that writes the log's directory point MMWatchdog at a file that only root may read. Name the real file in `log_file_path`. |
 | `MMWatchdog cannot look at /var/log/myapp/application.log: ...` | The kernel refused to open the file, and the message gives its error. |
 | `systemd unit myapp-worker.service not found` | systemd does not know `myapp-worker.service`. Check the configured unit's name with `systemctl status`. Every check of an unknown systemd unit reports a unit-not-found message ([checks of a systemd unit](systemd_unit_state.md)). |
 | `MMWatchdog cannot read the journal of myapp-worker.service: ...` | `journalctl` failed, and the message gives what it wrote. |

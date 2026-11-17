@@ -731,6 +731,20 @@ func TestLogLinesCheckOfAFileThatIsReplaced(t *testing.T) {
 		t.Fatal(o.Status, o.Message, len(o.Details))
 	}
 
+	// A symbolic link at the path is refused: the run reads as root and
+	// sends lines, so a link must not lead it to a file of another owner.
+	target := filepath.Join(t.TempDir(), "secret")
+	if err := os.WriteFile(target, []byte("x marks the secret\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "linked.log")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if o := checksandalerts.ObserveCheck(context.Background(), checksandalerts.Check{Inputs: &checksandalerts.LogLines{LogFilePath: link, FailWhenANewLineContains: "x"}}); o.Status != "unknown" || !strings.HasPrefix(o.Message, link+" is a symbolic link; ") || strings.Contains(fmt.Sprint(o), "marks the secret") {
+		t.Fatal(o)
+	}
+
 	// A named pipe under the name holds no run up: nobody writes to it,
 	// and the check says what it found.
 	pipe := filepath.Join(t.TempDir(), "pipe.log")

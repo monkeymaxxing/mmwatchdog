@@ -984,7 +984,27 @@ var ErrNotARegularFile = errors.New("not a regular file")
 // something else than a regular file is ErrNotARegularFile, with what it
 // holds; a named pipe there does not hold the caller up.
 func OpenRegularFile(path string) (*os.File, FileInformation, error) {
-	f, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	return openRegularFile(path, 0)
+}
+
+// ErrSymbolicLink reports a path that is a symbolic link where the caller
+// reads only the file at the path itself.
+var ErrSymbolicLink = errors.New("a symbolic link")
+
+// OpenRegularFileNotALink is OpenRegularFile for a file whose content goes
+// into alerts, read as root: a symbolic link at path is ErrSymbolicLink.
+// Reason: an account that can write the file's directory could otherwise
+// put a link there to a file that only root may read.
+func OpenRegularFileNotALink(path string) (*os.File, FileInformation, error) {
+	f, about, e := openRegularFile(path, syscall.O_NOFOLLOW)
+	if errors.Is(e, syscall.ELOOP) {
+		return nil, FileInformation{Kind: "a symbolic link"}, ErrSymbolicLink
+	}
+	return f, about, e
+}
+
+func openRegularFile(path string, extraFlags int) (*os.File, FileInformation, error) {
+	f, e := os.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK|extraFlags, 0)
 	if e != nil {
 		return nil, FileInformation{}, e
 	}

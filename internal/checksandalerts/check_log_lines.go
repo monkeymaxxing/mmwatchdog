@@ -260,7 +260,7 @@ func (l *LogLines) readFile(ctx context.Context, r *CheckRun, read *LogLinesRead
 		// file: MMWatchdog did not accept that run.
 		forget()
 	}
-	current, about, err := primitives.OpenRegularFile(l.LogFilePath)
+	current, about, err := primitives.OpenRegularFileNotALink(l.LogFilePath)
 	remaining := logLinesReadLimit
 	problem := ""
 	continues := err == nil && about.Inode == read.Inode && about.SizeBytes >= read.Offset && startsAsBefore(current, read)
@@ -329,6 +329,8 @@ func (l *LogLines) readFile(ctx context.Context, r *CheckRun, read *LogLinesRead
 			return ""
 		}
 		return l.LogFilePath + " does not exist"
+	case errors.Is(err, primitives.ErrSymbolicLink):
+		return l.LogFilePath + " is a symbolic link; MMWatchdog reads a log file only at its own path, so that a link cannot make it send lines of another file: set log_file_path to the file that the link names"
 	case errors.Is(err, primitives.ErrNotARegularFile):
 		return l.LogFilePath + " is " + about.Kind + ", not a regular file"
 	case err != nil:
