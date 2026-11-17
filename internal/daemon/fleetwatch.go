@@ -104,14 +104,25 @@ func (d *Daemon) applyMember(name string, now time.Time) {
 // joined applies a join the fleet store has committed, with the settings
 // that the node sent for the fleet. Concurrent joins apply in any order, so
 // an older membership never replaces a newer one.
-func (d *Daemon) joined(name string, at time.Time, settings config.NodeFleetSettings) {
+func (d *Daemon) joined(name, address string, at time.Time, settings config.NodeFleetSettings) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if current, ok := d.members[name]; ok && !at.After(current.Joined) {
+	current, replaced := d.members[name]
+	if replaced && !at.After(current.Joined) {
 		return
 	}
 	d.members[name] = fleet.FleetMember{Joined: at, NodeFleetSettings: settings}
 	d.applyMember(name, at)
+	// Anyone with the join code can join, so each join is told. Reason: a
+	// node that nobody added could take a hub-outage alerter place or a
+	// node group, and receives the destination credentials.
+	title := "node " + name + " joined the fleet from " + address
+	if replaced {
+		title = "a new node from " + address + " took the name " + name + " of a silent node"
+	}
+	body := "If you did not add this node, someone else has the join code: run mmwatchdog fleet rotate-join-code, then mmwatchdog fleet forget " + name + ", and change the credentials of the alert destinations."
+	event := checksandalerts.Event{ID: incidents.ID(), Type: "notice", AlertSeverity: "info", At: at, Message: title, Body: body, Notify: true}
+	_ = d.record([]checksandalerts.Event{event}) // record keeps the notice pending and reports a storage failure.
 }
 
 // forgot applies a forget the fleet store has committed: the node's

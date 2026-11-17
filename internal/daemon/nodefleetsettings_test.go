@@ -211,7 +211,7 @@ func TestMaintenanceHoldsTheRaiseOfASilentNode(t *testing.T) {
 	hub := newHubDaemon(t, nil)
 	now := time.Now().UTC()
 	settings := config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", RaiseToSosAfterThisNodeIsSilentFor: "10m"}
-	hub.joined("app-1", now, settings)
+	hub.joined("app-1", "192.0.2.1", now, settings)
 	// The join carried the setting: the hub has it before the first report.
 	if got := fleetCheck(hub, "app-1").AlertSeveritySettings; got != settings.Silence() || got.RaiseToSosAfterFailingFor != "10m" {
 		t.Fatal(got)
@@ -520,7 +520,7 @@ func TestARestartedHubCountsNoNodeAsSilentBeforeItsFreshDeadline(t *testing.T) {
 	hub := newHubDaemon(t, nil)
 	now := time.Now().UTC()
 	for _, name := range []string{"app-1", "app-2", "app-3"} {
-		hub.joined(name, now, nodeSettings("warn"))
+		hub.joined(name, "192.0.2.1", now, nodeSettings("warn"))
 	}
 	hub.mu.Lock()
 	for _, name := range []string{"app-1", "app-2"} {
@@ -626,7 +626,7 @@ func TestMaintenanceOnNodeReportsHoldsTheRaiseOfAnAnnouncedIncident(t *testing.T
 	hub := newHubDaemon(t, nil)
 	now := time.Now().UTC()
 	settings := config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", RaiseToSosAfterThisNodeIsSilentFor: "10m"}
-	hub.joined("app-1", now, settings)
+	hub.joined("app-1", "192.0.2.1", now, settings)
 	hub.receipt("app-1", time.Time{}, settings, now)
 	opened := now.Add(3 * reportInterval)
 	tick(hub, opened)
@@ -652,9 +652,9 @@ func TestTheRaiseByTimeAndTheRaiseByCountRaiseANodeOnce(t *testing.T) {
 	hub.config.FleetHubRole.RaiseToSosWhenSilentNodesReachCount = new(2)
 	hub.mu.Unlock()
 	now := time.Now().UTC()
-	hub.joined("app-1", now, config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", RaiseToSosAfterThisNodeIsSilentFor: "10m"})
-	hub.joined("app-2", now, nodeSettings("warn"))
-	hub.joined("app-3", now, nodeSettings("warn"))
+	hub.joined("app-1", "192.0.2.1", now, config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", RaiseToSosAfterThisNodeIsSilentFor: "10m"})
+	hub.joined("app-2", "192.0.2.1", now, nodeSettings("warn"))
+	hub.joined("app-3", "192.0.2.1", now, nodeSettings("warn"))
 	hub.mu.Lock()
 	hub.snapshot.Checks[fleet.FleetKey("app-1")].Deadline = now.Add(time.Minute)
 	hub.snapshot.Checks[fleet.FleetKey("app-2")].Deadline = now.Add(11 * time.Minute)
@@ -689,7 +689,7 @@ func TestARestartedHubKeepsTheNodeSettingsForTheFleet(t *testing.T) {
 	if _, status, err := hub.hub.Join("db-1", code.Secret, joinedOnly, "10.0.0.5", now); status != 200 || err != nil {
 		t.Fatal(status, err)
 	}
-	hub.joined("db-1", now, joinedOnly)
+	hub.joined("db-1", "192.0.2.1", now, joinedOnly)
 	tick(hub, now)
 	if err := hub.Close(); err != nil {
 		t.Fatal(err)
@@ -763,7 +763,7 @@ func TestAReplacementNodeTakesNoneOfTheOldNodesSettingsForTheFleet(t *testing.T)
 	if _, status, err := hub.hub.Join("app-1", code.Secret, nodeSettings("info"), "10.0.0.6", now); status != 200 || err != nil {
 		t.Fatal(status, err)
 	}
-	hub.joined("app-1", now, nodeSettings("info"))
+	hub.joined("app-1", "192.0.2.1", now, nodeSettings("info"))
 	tick(hub, now)
 	if got := fleetCheck(hub, "app-1").AlertSeveritySettings; got != (checksandalerts.AlertSeveritySettings{AlertSeverity: "info"}) {
 		t.Fatal(got)
@@ -1094,8 +1094,8 @@ func TestANodeGroupRaisesOnlyTheNodesThatStateTheSetting(t *testing.T) {
 	t.Parallel()
 	hub := newHubDaemon(t, nil)
 	now := time.Now().UTC()
-	hub.joined("jobs-1", now, config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", ThisNodeIsInNodeGroups: []string{"jobs_servers"}, RaiseToSosWhenEveryNodeOfTheseNodeGroupsIsSilent: []string{"jobs_servers"}})
-	hub.joined("jobs-2", now, config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", ThisNodeIsInNodeGroups: []string{"jobs_servers"}})
+	hub.joined("jobs-1", "192.0.2.1", now, config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", ThisNodeIsInNodeGroups: []string{"jobs_servers"}, RaiseToSosWhenEveryNodeOfTheseNodeGroupsIsSilent: []string{"jobs_servers"}})
+	hub.joined("jobs-2", "192.0.2.1", now, config.NodeFleetSettings{AlertSeverityWhenThisNodeGoesSilent: "warn", ThisNodeIsInNodeGroups: []string{"jobs_servers"}})
 	hub.mu.Lock()
 	for _, name := range []string{"jobs-1", "jobs-2"} {
 		hub.snapshot.Checks[fleet.FleetKey(name)].Deadline = now
@@ -1129,8 +1129,8 @@ func TestANodeGroupWithANodeThatIsHeldOrReportingIsNotSilent(t *testing.T) {
 			hub.config.ThisNodeIsInNodeGroups = []string{"jobs_servers"}
 		}
 		hub.mu.Unlock()
-		hub.joined("jobs-1", now, settings)
-		hub.joined("jobs-2", now, settings)
+		hub.joined("jobs-1", "192.0.2.1", now, settings)
+		hub.joined("jobs-2", "192.0.2.1", now, settings)
 		hub.receipt("jobs-1", time.Time{}, settings, now)
 		// The last report of jobs-2 shows a whole-node window of one hour.
 		hub.receipt("jobs-2", now.Add(time.Hour), settings, now)

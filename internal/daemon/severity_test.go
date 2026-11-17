@@ -521,7 +521,7 @@ func TestSilentNodesRaiseToSosThreshold(t *testing.T) {
 	hub.mu.Unlock()
 	now := time.Now().UTC()
 	for _, name := range []string{"app-1", "app-2", "app-3"} {
-		hub.joined(name, now, nodeSettings("warn"))
+		hub.joined(name, "192.0.2.1", now, nodeSettings("warn"))
 	}
 	deadline := func(name string, at time.Time) {
 		hub.mu.Lock()
@@ -999,7 +999,7 @@ func TestJoinRequiresSilenceSeverity(t *testing.T) {
 	if _, status, err := hub.hub.Join("app-1", hub.hub.Code.Secret, nodeSettings("info"), "10.0.0.5", now); status != 200 || err != nil {
 		t.Fatal(status, err)
 	}
-	hub.joined("app-1", now, nodeSettings("info"))
+	hub.joined("app-1", "192.0.2.1", now, nodeSettings("info"))
 	if st := fleetCheck(hub, "app-1"); st == nil || st.AlertSeveritySettings.AlertSeverity != "info" {
 		t.Fatal(st)
 	}

@@ -39,12 +39,13 @@ func (d *Daemon) handleJoin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	now := d.now()
-	credential, status, e := d.hub.Join(req.Name, req.Secret, req.NodeFleetSettings, fleet.RemoteHost(r), now)
+	address := fleet.RemoteHost(r)
+	credential, status, e := d.hub.Join(req.Name, req.Secret, req.NodeFleetSettings, address, now)
 	if e != nil {
 		apiError(w, e, status)
 		return
 	}
-	d.joined(req.Name, now, req.NodeFleetSettings)
+	d.joined(req.Name, address, now, req.NodeFleetSettings)
 	writeJSON(w, map[string]string{"credential": credential})
 }
 

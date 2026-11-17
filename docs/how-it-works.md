@@ -763,6 +763,9 @@ the hub. The hub then gives the node a credential of its own, and keeps only a h
 the credential. The hub takes each report's node from the credential, never
 from a name in the report.
 
+- **Every join sends an `info` notice** that names the node and the
+  address it joined from, also when a new node takes a silent node's name.
+  A node that you did not add means that someone else has the join code.
 - **A name can be taken over only from a silent node.** Anyone with the
   current join secret can join under a new name. A node that reports keeps
   its name, so the join secret cannot take over a working node.

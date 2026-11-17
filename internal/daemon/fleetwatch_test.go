@@ -519,7 +519,7 @@ func TestFleetTimingChangePreservesCurrentDeadlines(t *testing.T) {
 	if _, status, err := h.Join("app-1", h.Code.Secret, nodeSettings("warn"), "original", at); status != http.StatusOK || err != nil {
 		t.Fatal(status, err)
 	}
-	d.joined("app-1", at, nodeSettings("warn"))
+	d.joined("app-1", "192.0.2.1", at, nodeSettings("warn"))
 	r := fleet.NodeStatusReport{AlertSeverityWhenThisNodeGoesSilent: "warn", StartID: incidents.ID(), Seq: 1, History: incidents.ID(), After: -1, Sent: at}
 	if _, status, err := h.Accept("app-1", &r, at); status != http.StatusOK || err != nil {
 		t.Fatal(status, err)
@@ -568,4 +568,18 @@ func TestSilentNodesText(t *testing.T) {
 // outageAlerterDestinations leaves the direct alerts queued without a worker.
 func outageAlerterDestinations() map[string]checksandalerts.Destination {
 	return map[string]checksandalerts.Destination{"ops": {RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, Inputs: &checksandalerts.Webhook{URL: "https://example.com/alerts"}, TimeLimitPerDeliveryAttempt: "1m"}}
+}
+
+// Each join sends an info notice that names the node and its address, so a
+// node that someone added with a leaked join code does not go unseen.
+func TestAJoinSendsANotice(t *testing.T) {
+	t.Parallel()
+	ops := captureAlerts(t)
+	hub, code, _ := startHubWith(t, map[string]checksandalerts.Destination{"ops": {RemindEvery: "never", AlertSeverities: []string{"info"}, Inputs: &checksandalerts.Webhook{URL: ops.URL}, TimeLimitPerDeliveryAttempt: "1m"}})
+	runWorker(t, hub)
+	joinedNode(t, code, "app-1").report(context.Background())
+	got := ops.wait(t, 1)[0]
+	if got.Type != "notice" || got.AlertSeverity != "info" || got.Message != "node app-1 joined the fleet from 127.0.0.1" || !strings.Contains(got.Body, "mmwatchdog fleet rotate-join-code, then mmwatchdog fleet forget app-1") {
+		t.Fatalf("%+v", got)
+	}
 }
