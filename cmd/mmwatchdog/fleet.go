@@ -221,9 +221,11 @@ func printNode(b []byte, asJSON bool, now time.Time) error {
 			for _, n := range checksandalerts.Names(r.Maintenance) {
 				fmt.Printf("  Maintenance: %s %s\n", n, r.Maintenance[n].Describe())
 			}
-			for _, key := range checksandalerts.Names(r.Checks) {
+			checkNames := checksandalerts.Names(r.Checks)
+			width := nameColumnWidth(checkNames, 28)
+			for _, key := range checkNames {
 				c := r.Checks[key]
-				fmt.Printf("%-28s %-12s %s\n", key, c.State, c.Message)
+				fmt.Printf("%-*s %-12s %s\n", width, key, c.State, c.Message)
 				// An every_systemd_unit check has one line for each failed unit.
 				for _, unit := range checksandalerts.Names(c.Findings) {
 					u := c.Findings[unit]

@@ -490,9 +490,15 @@ func run(args []string) (result error) {
 				return e
 			}
 		} else {
-			for _, n := range checksandalerts.Names(observations) {
+			names := checksandalerts.Names(observations)
+			fullNames := make([]string, len(names))
+			for i, n := range names {
+				fullNames[i] = name + "/" + n
+			}
+			width := nameColumnWidth(fullNames, 24)
+			for _, n := range names {
 				o := observations[n]
-				fmt.Printf("%-24s %-8s %s\n", name+"/"+n, o.Status, o.Message)
+				fmt.Printf("%-*s %-8s %s\n", width, name+"/"+n, o.Status, o.Message)
 				printObservation(o)
 			}
 			if countAsScheduledRun {
@@ -1046,9 +1052,10 @@ func printStatus(b []byte, name string, asJSON bool) error {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
+		width := nameColumnWidth(keys, 28)
 		for _, key := range keys {
 			st := status.Checks[key]
-			fmt.Printf("%-28s %-12s %s\n", key, st.State, st.Explanation())
+			fmt.Printf("%-*s %-12s %s\n", width, key, st.State, st.Explanation())
 			// A check whose module is not core says which kind of module
 			// that is: the configuration does not show it.
 			if st.Module != "" && st.ModuleKind != "core" {
@@ -1329,4 +1336,17 @@ func sendHeartbeat(ctx context.Context, name, url, tokenPath, trustedCertificate
 		}
 	}
 	return last
+}
+
+// nameColumnWidth returns the width of a table's name column: at least
+// minimum, and wide enough for the longest name, so that every state lines
+// up under the others.
+func nameColumnWidth(names []string, minimum int) int {
+	width := minimum
+	for _, n := range names {
+		if len(n) > width {
+			width = len(n)
+		}
+	}
+	return width
 }
