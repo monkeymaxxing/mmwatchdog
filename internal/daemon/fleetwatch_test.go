@@ -576,6 +576,7 @@ func TestAJoinSendsANotice(t *testing.T) {
 	t.Parallel()
 	ops := captureAlerts(t)
 	hub, code, _ := startHubWith(t, map[string]checksandalerts.Destination{"ops": {RemindEvery: "never", AlertSeverities: []string{"info"}, Inputs: &checksandalerts.Webhook{URL: ops.URL}, TimeLimitPerDeliveryAttempt: "1m"}})
+	hub.withoutJoinNotices = false
 	runWorker(t, hub)
 	joinedNode(t, code, "app-1").report(context.Background())
 	got := ops.wait(t, 1)[0]

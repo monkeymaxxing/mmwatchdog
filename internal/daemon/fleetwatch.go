@@ -113,6 +113,9 @@ func (d *Daemon) joined(name, address string, at time.Time, settings config.Node
 	}
 	d.members[name] = fleet.FleetMember{Joined: at, NodeFleetSettings: settings}
 	d.applyMember(name, at)
+	if d.withoutJoinNotices {
+		return
+	}
 	// Anyone with the join code can join, so each join is told. Reason: a
 	// node that nobody added could take a hub-outage alerter place or a
 	// node group, and receives the destination credentials.

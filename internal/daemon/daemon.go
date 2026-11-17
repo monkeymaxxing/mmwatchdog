@@ -36,6 +36,9 @@ import (
 type Daemon struct {
 	// Build identifies the executable in fleet reports. Set it before Run.
 	Build fleet.Build
+	// withoutJoinNotices leaves out the notice of each join. Only tests set
+	// it, so that the alerts that they count are the ones they study.
+	withoutJoinNotices bool
 	// now is the daemon's one clock, time.Now, which tests replace: every
 	// entry point takes its time from it. Its times carry Go's monotonic
 	// reading, on which every wait counts; see "Time is a parameter" in

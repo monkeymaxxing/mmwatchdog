@@ -939,6 +939,9 @@ func newHubDaemonOnClock(t *testing.T, destinations map[string]checksandalerts.D
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { d.Close() })
+	// Tests count the alerts that they study; TestAJoinSendsANotice turns
+	// the join notices back on.
+	d.withoutJoinNotices = true
 	return d
 }
 
