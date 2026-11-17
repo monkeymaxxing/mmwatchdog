@@ -1231,8 +1231,10 @@ else:
                     vm.console('dnf --quiet --assumeyes upgrade ' + shlex.quote(package), check=False, timeout=900)
             finds_the_waiting_updates()
 
-            # dnf's reboot hint: the C library installed again since the boot.
-            vm.console('dnf -y -q reinstall glibc >/dev/null 2>&1', timeout=900)
+            # dnf's reboot hint: the C library installed again since the boot. When the
+            # mirrors no longer hold the installed version (Rocky Linux 9 and AlmaLinux 10
+            # on 2026-11-17), its update gives the same hint.
+            vm.console('dnf -y -q reinstall glibc >/dev/null 2>&1 || dnf -y -q upgrade glibc >/dev/null 2>&1', timeout=900)
             assert vm.console('dnf --quiet --disablerepo="*" needs-restarting --reboothint', check=False).returncode == 1
             observed = now_is('node_needs_no_reboot', 'failed', 'this node needs a reboot (dnf needs-restarting)' if fedora else 'this node needs a reboot (dnf needs-restarting --reboothint)')
             assert any('glibc' in line for line in observed.get('details', [])), observed
