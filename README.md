@@ -458,7 +458,9 @@ the project's plain files and out of our chat. Tell me what the vault passphrase
 Start with one server, and run each step's check before the next step. Show
 me the MMX dryrun output and wait for my yes before every mmx run. Then
 prove the alert path: make one check fail and recover, and ask me whether
-both messages arrived. Answer each of my questions before you go on. At the
+both messages arrived. Answer each of my questions before you go on. Keep
+your messages short. When I must choose, give your recommendation and a
+one-line reason, so I can just say yes. At the
 end, show me how to run `sudo mmwatchdog status` on the server myself, to see
 every check.
 ```
@@ -606,6 +608,10 @@ check before moving on. Use one server first, then the rest.
 | 7 | The person can see for themselves that MMWatchdog runs. | The person ran `ssh NODE sudo mmwatchdog status` and saw every check. |
 
 - Answer each question the person asks before you go on to the next step.
+- Keep each message short: the person skims long ones. When the person must
+  choose, such as port 7443 or `connection: ssh_only`, or how to test the
+  alert path, give your recommendation and a one-line reason, so that the
+  person can say yes.
 - Look up each module with `mmwatchdog describe-module NAME` before using
   it. Use a core module when one fits. Use `shell` for a short script.
 - Give each check a name that says what is healthy, such as
