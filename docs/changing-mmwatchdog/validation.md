@@ -6,18 +6,21 @@ results.
 
 ## Current build
 
-The release checks for the first release (2026-11-16), with Go 1.27.4 and
-the MMX code released with MMWatchdog:
+The release checks for 0.1.1 (2026-11-17), with Go 1.27.4 and the MMX code
+released with MMWatchdog. The checks ran on the commit that adds the
+release's last product change; the later commits change only tests and
+this page, and the suites they change ran again:
 
 | Run or check | Result |
 | --- | --- |
-| Static analysis, `scripts/static-analysis.sh` | `go vet`, `staticcheck`, `errcheck`, `exhaustive`, and `nilaway` report nothing; `govulncheck`, on the upstream versions of the copies, finds no vulnerability that MMWatchdog's code reaches. With Go 1.27.3 it found GO-2026-6859 in `net/http` (fixed in Go 1.27.4), and `exhaustive` found a switch on the distribution family without the Debian family |
+| Static analysis, `scripts/static-analysis.sh` | Reports nothing |
 | Go tests, also with the race detector, on a Mac | All passed |
-| Every suite on every [target distribution](testing.md#every-target-distribution), AMD64, Incus on the test servers | All passed on all nine. Every earlier failure was in the test, not in MMWatchdog. In a first run, under a heavy load from other test runs on the same servers, InnoDB counted only 147 to 295 of the 300 changes that grow its history list (the scenario now asserts only the check's limit of 100), `mongosh` took 4.8 seconds of a 5-second limit, and the web service example's status page answered after its 500 ms limit; the last two passed unchanged at a normal load. In the next run, `zpool wait -t resilver` returned before the resilver started, and Postfix greeted after the `ssh` check's read had ended; both scenarios now wait for that state, and passed |
-| ARM64, Hetzner `cax11` servers | `native`, `deployment`, and `node` passed on Debian 13; `native` and `deployment` passed on Ubuntu 26.04. On Ubuntu 26.04 the `node` suite's Ubuntu Pro step ran longer than 4 minutes; see below |
-| [Fuzz tests](testing.md#fuzz-tests-for-a-release), 10 minutes each on an AMD64 test server | All passed, with no failing input: `FuzzCheckGroupConfigurationFile`, 192,011 inputs; `FuzzNodeSettingsFile`, 753,506; `FuzzModuleDescription`, 4,580,739; `FuzzExecutableModuleOutput`, 15,717,002; `FuzzStarlarkModuleResult`, 7,978,534; `FuzzJoinRequestOnTheHub`, 7,428,716; `FuzzNodeStatusReportOnTheHub`, 2,657,571; `FuzzMMHotlineReceipt`, 11,897,340 |
-| `TestRealServiceMMHotline` against MMHotline's code released with MMWatchdog, with MMHotline's fake sending services | Passed: the `info` alert and its retry made one alert, the `sos` alert opened an incident, and the `resolved-sos` resolved it two minutes later |
-| Release archives from a fresh clone, with `scripts/release.py 0.1.0 --output-dir .` | Both archives and `SHA256SUMS` built, and `sha256sum --check` passed |
+| Every suite on every [target distribution](testing.md#every-target-distribution), AMD64, Incus on the test servers | All passed on all nine. The first run found two faults of the tests. The `native` suite failed everywhere because the test of a hub's run settings took root, which runs the tests on the servers, for the hub's account; the test now names another account, and `native` passed on all nine. The `node` suite stopped on Rocky Linux 9 and AlmaLinux 10, because those distributions' mirrors no longer held an older version of any installed package with a security advisory, nor the installed version of `glibc`. The dnf scenario now prints `NOT RUN` for the step that downgrades a package, as both distributions did, and updates `glibc` when it cannot install the same version again; `node` then passed on both |
+| ARM64, Hetzner `cax11` servers | `native`, `deployment`, and `node` passed on Debian 13; `native` and `deployment` passed on Ubuntu 26.04. On Ubuntu 26.04 the `node` suite's Ubuntu Pro step again ran longer than its time limit; see below |
+| [Fuzz tests](testing.md#fuzz-tests-for-a-release), 10 minutes each on the AMD64 test servers | All passed, with no failing input: `FuzzCheckGroupConfigurationFile`, 57,662 inputs; `FuzzNodeSettingsFile`, 259,151; `FuzzModuleDescription`, 1,003,511; `FuzzExecutableModuleOutput`, 6,257,648; `FuzzStarlarkModuleResult`, 1,131,663; `FuzzJoinRequestOnTheHub`, 1,701,273; `FuzzNodeStatusReportOnTheHub`, 768,895; `FuzzMMHotlineReceipt`, 2,311,121 |
+| `TestRealServiceMMHotline` against MMHotline's current code, with MMHotline's fake sending services | Passed: the `info` alert was delivered, the `sos` alert opened an incident and escalated, and the `resolved-sos` resolved it two minutes later |
+| Release archives from a fresh clone, with `scripts/release.py 0.1.1 --output-dir out` | Both archives and `SHA256SUMS` built, and the checksum check passed |
+| A newcomer walk-through: a fresh agent with only the README and a server, as a person who wants an email when the app breaks | Reached email alerts for a failed and a recovered check through the README's agent prompt. Of 22 moments, 7 were clear, 14 needed thought, and 1 went wrong (an edit of the MMX vault in vim). The README now says where to start, what a first dry run shows, and what the playbook `hub_and_standalone` sets up |
 
 The Ubuntu Pro client on ARM64: `pro security-status --format json` took
 37 to 43 seconds on a Hetzner `cax11` server (2 ARM64 cores, Ubuntu 26.04,
