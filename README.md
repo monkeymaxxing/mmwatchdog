@@ -477,7 +477,7 @@ download, and unpacks it. Put your node's SSH login in the first line:
 (
 set -eu
 node=root@203.0.113.11
-version=0.1.1
+version=0.1.2
 case "$(ssh "$node" uname -m)" in
   x86_64)  platform=linux-amd64 ;;
   aarch64) platform=linux-arm64 ;;
@@ -498,7 +498,7 @@ project, and [First run](#first-run) works in it.
 
 The checksum finds a damaged download. To check also that GitHub built the
 archive from this repository, run
-`gh attestation verify mmwatchdog-0.1.1-linux-amd64.tar.gz --repo monkeymaxxing/mmwatchdog`
+`gh attestation verify mmwatchdog-0.1.2-linux-amd64.tar.gz --repo monkeymaxxing/mmwatchdog`
 (with your archive's name) with the [GitHub CLI](https://cli.github.com/).
 
 **By hand.** `uname -m` on the node prints `x86_64` for the archive
