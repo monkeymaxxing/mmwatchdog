@@ -14,6 +14,11 @@ used a monitoring tool before. If you have used
 [Monit](https://mmonit.com/monit/), much of MMWatchdog will be familiar, and
 [If you've used Monit](#if-youve-used-monit) lists the differences.
 
+**To start,** paste the prompt in
+[Set it up with your coding agent](#set-it-up-with-your-coding-agent) into
+your agent, or follow [Install](#install) and [First run](#first-run)
+yourself.
+
 MMWatchdog runs on each server that it watches. Such a server is called a
 **node**. One `mmwatchdog` process on the node runs the node's checks,
 restarts services, and sends the node's alerts, so a node needs no other
@@ -521,6 +526,11 @@ In the unpacked MMX project:
    mmx dryrun hub_and_standalone      # show what would change on the node
    mmx run hub_and_standalone         # install MMWatchdog and start it
    ```
+
+   On a node without MMWatchdog, the dry run marks many steps
+   `not_checked`, some with an error such as `exit status 127`: those
+   steps depend on files and accounts that the run itself creates first.
+   The line `Run ...: succeeded` near the end says that the run can go ahead.
 
 6. On the node, `sudo mmwatchdog status` shows every check.
 7. Make a check fail and recover, and confirm that both messages arrive.
