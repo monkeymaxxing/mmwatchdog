@@ -83,15 +83,17 @@ same.
 
 1. **Put the secret in MMX's vault.** MMX keeps secrets in the encrypted
    file `secrets_vault.age` in the project, and writes them to the node
-   during each run. Open the vault in your editor; MMX asks for the vault's
-   passphrase:
+   during each run. Choose a file name for the token, and store the token
+   under it:
 
    ```sh
-   mmx secrets edit
+   mmx secrets set mmwatchdog_secret_files webhook-token-on-call
    ```
 
-   Under `mmwatchdog_secret_files`, add one line: a file name of your
-   choice, and the token. Save, and close the editor:
+   MMX asks for the vault's passphrase, then for the value. Type the token
+   at the hidden prompt. A coding agent asks the person to run this command
+   and type the token themselves, so the token never passes through the
+   chat. The vault then holds:
 
    ```yaml
    mmwatchdog_secret_files:
@@ -99,12 +101,9 @@ same.
      webhook-token-on-call: "the receiver's token"
    ```
 
-   A coding agent asks the person to run `mmx secrets edit` and type the
-   token themselves, so the token never passes through the chat.
-
-   **Check:** `mmx secrets edit` ends with `Saved encrypted vault:
-   secrets_vault.age`. If it reports an error instead, it kept the vault as
-   it was: run it again and fix the line.
+   **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`.
+   `mmx secrets set` prints nothing when it succeeds. If it reports an
+   error, it kept the vault as it was: run it again.
 
 2. **List the file in the inventory,** in
    `inventories/hub_and_standalone.yml`, under `vars`:
@@ -241,7 +240,8 @@ vars:
   mmwatchdog_config_source_dir: files/hub_and_standalone
   # The secret files that each node gets in /etc/mmwatchdog/secrets, with
   # mode 0600. List the file names here, and put each file's content in the
-  # MMX vault under the secret mmwatchdog_secret_files with mmx secrets edit:
+  # MMX vault under the secret mmwatchdog_secret_files with
+  # mmx secrets set mmwatchdog_secret_files NAME, which asks for the value:
   #   mmwatchdog_secret_files:
   #     slack-webhook-team: "https://hooks.slack.com/services/..."
   # A node of this inventory gets the whole mmwatchdog_secret_files secret,
@@ -270,7 +270,8 @@ destinations:
     remind_every: 1h
 ```
 
-The vault, as `mmx secrets edit` shows it:
+The vault holds these entries (`mmx secrets list-keys` shows its keys,
+never its values):
 
 ```yaml
 mmwatchdog_secret_files:
@@ -485,7 +486,7 @@ says.
 2. If the destination read a secret file, such as `webhook-token-on-call`,
    delete that name from `mmwatchdog_secret_files` in
    `inventories/hub_and_standalone.yml`, and its entry from the vault
-   with `mmx secrets edit`.
+   with `mmx secrets edit`. Removing an entry has no single-value command.
 3. The run in step 4 writes the listed secret files and does not delete
    one that is no longer listed. Delete the file on each node by hand:
 
@@ -623,7 +624,7 @@ works fully without it.
 - **The test notice says `failed:`.** The line gives the module's reason,
   such as `webhook returned HTTP 401` for a wrong token, or `Slack answered
   404: no_service` for a webhook that Slack removed. Fix the secret with
-  `mmx secrets edit` and run `mmx run hub_and_standalone`; a changed secret
+  `mmx secrets set mmwatchdog_secret_files NAME --replace` and run `mmx run hub_and_standalone`; a changed secret
   file restarts MMWatchdog. Then send the test notice again. The module's
   page lists its errors.
 - **The run fails at `validate_config`.** The output names the file, the
@@ -632,7 +633,7 @@ works fully without it.
   on the node.
 - **The run fails at `write_secret_files`** with `value is unavailable at
   /secrets/mmwatchdog_secret_files/NAME`. The inventory lists a file that
-  the vault does not hold: add it with `mmx secrets edit`, or fix the
+  the vault does not hold: add it with `mmx secrets set mmwatchdog_secret_files NAME`, or fix the
   spelling.
 - **`sudo mmwatchdog validate` warns that no destination receives some
   alerts,** such as

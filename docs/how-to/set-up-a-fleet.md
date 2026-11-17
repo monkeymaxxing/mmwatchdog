@@ -143,15 +143,16 @@ the node's host name, which `hostname` prints on the node.
 
 5. **Put the Slack address in MMX's vault.** The address is a secret:
    anyone who has it can post to your channel. MMX keeps secrets in the
-   encrypted file `secrets_vault.age` in the project. Open the vault in
-   your editor:
+   encrypted file `secrets_vault.age` in the project. Store the address
+   under the file name `slack-webhook-team`:
 
    ```sh
-   mmx secrets edit
+   mmx secrets set mmwatchdog_secret_files slack-webhook-team
    ```
 
-   The first time, MMX asks for a new passphrase twice. Add these two
-   lines with your webhook's address, save, and close the editor:
+   The first time, MMX asks for a new vault passphrase twice. Keep the
+   passphrase in your password manager. Then type your webhook's address at
+   the hidden prompt. The vault then holds:
 
    ```yaml
    mmwatchdog_secret_files:
@@ -171,9 +172,8 @@ the node's host name, which `hostname` prints on the node.
    readable only by root. The joined nodes need no such file: they get the
    address from the hub with the fleet settings.
 
-   **Check:** `mmx secrets edit` ends with `Saved encrypted vault:
-   secrets_vault.age`, and `mmx secrets list-keys` prints
-   `mmwatchdog_secret_files`.
+   **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`.
+   `mmx secrets set` prints nothing when it succeeds.
 
 6. **Say where alerts go.** Replace `destinations: {}` in
    `files/hub_and_standalone/alert_destinations.yml` with:

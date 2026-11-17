@@ -121,7 +121,7 @@ The destination's values:
   to send MMHotline fewer severities.
 
 **With MMX,** put the block in the MMX configuration and the secret in the
-MMX vault (`mmx secrets edit`), and let the deploy write the secret file.
+MMX vault (`mmx secrets set mmwatchdog_secret_files NAME`), and let the deploy write the secret file.
 The next deploy replaces `alert_destinations.yml`, and the vault gives a
 rebuilt node the secret back.
 

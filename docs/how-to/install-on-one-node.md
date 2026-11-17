@@ -157,23 +157,25 @@ you.
 6. **Put the Slack address in MMX's vault.** The address is a secret:
    anyone who has it can post to your channel. MMX keeps secrets in the
    encrypted file `secrets_vault.age` in the project, and writes them to the
-   node during the install. Open the vault in your editor:
+   node during the install. Store the address under the file name
+   `slack-webhook-team`:
 
    ```sh
-   mmx secrets edit
+   mmx secrets set mmwatchdog_secret_files slack-webhook-team
    ```
 
-   The first time, MMX asks for a new passphrase twice, and the editor
-   shows an empty vault:
+   The first time, MMX asks for a new vault passphrase twice. Keep the
+   passphrase in your password manager, because each install asks for it:
 
    ```text
-   Vault passphrase:
-   Confirm vault passphrase:
+   New vault passphrase:
+   Confirm new vault passphrase:
    ```
 
-   Add these two lines with your webhook's address, save, and close the
-   editor. A coding agent asks the person to run `mmx secrets edit` and type
-   the address themselves, so the address never passes through the chat:
+   Then MMX asks for the value. Type your webhook's address at the hidden
+   prompt. A coding agent asks the person to run this command and type the
+   address themselves, so the address never passes through the chat.
+   The vault then holds:
 
    ```yaml
    mmwatchdog_secret_files:
@@ -192,10 +194,10 @@ you.
    Each install writes each listed file to `/etc/mmwatchdog/secrets/` on
    the node, readable only by root, before it checks the configuration.
 
-   **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`. If
-   `mmx secrets edit` reports an error instead of `Saved encrypted vault:
-   secrets_vault.age`, it kept the vault as it was: run it again and fix
-   the two lines.
+   **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`.
+   `mmx secrets set` prints nothing when it succeeds. If it reports an
+   error, it kept the vault as it was: run it again. To change the address
+   later, run it again with `--replace`.
 
 7. **Say where alerts go.** Replace `destinations: {}` in
    `files/hub_and_standalone/alert_destinations.yml` with:
@@ -337,7 +339,8 @@ vars:
   mmwatchdog_config_source_dir: files/hub_and_standalone
   # The secret files that each node gets in /etc/mmwatchdog/secrets, with
   # mode 0600. List the file names here, and put each file's content in the
-  # MMX vault under the secret mmwatchdog_secret_files with mmx secrets edit:
+  # MMX vault under the secret mmwatchdog_secret_files with
+  # mmx secrets set mmwatchdog_secret_files NAME, which asks for the value:
   #   mmwatchdog_secret_files:
   #     slack-webhook-team: "https://hooks.slack.com/services/..."
   # A node of this inventory gets the whole mmwatchdog_secret_files secret,
@@ -404,7 +407,7 @@ when memory or the disk runs short. Next,
   The line gives the reason, such as `the module slack reported: the file
   that webhook_url_file names must hold one web address that starts with
   https:// or http://, and nothing else`. Fix the address with
-  `mmx secrets edit` and run `mmx run hub_and_standalone`; a changed secret
+  `mmx secrets set mmwatchdog_secret_files NAME --replace` and run `mmx run hub_and_standalone`; a changed secret
   file restarts MMWatchdog.
 - **You build the archives yourself.** [Release MMWatchdog](../changing-mmwatchdog/releasing.md)
   says how; the archives are the same as a downloaded release's.

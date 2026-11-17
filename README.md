@@ -448,8 +448,9 @@ My servers:
 I log in to them as root with my current SSH setup. My application runs as
 the systemd unit myapp.service and answers at http://127.0.0.1:8080/health.
 Send alerts to my Slack channel. When you need the webhook address, have me
-type it into `mmx secrets edit` myself, and keep it out of the project's
-plain files and out of our chat.
+type it at the hidden prompt of `mmx secrets set mmwatchdog_secret_files
+slack-webhook-team` myself, and keep it out of the project's plain files and
+out of our chat.
 
 Start with one server, and run each step's check before the next step. Show
 me the MMX dryrun output and wait for my yes before every mmx run. Then
@@ -529,15 +530,16 @@ In the unpacked MMX project:
 3. Say where alerts go in `files/hub_and_standalone/alert_destinations.yml`.
    The starter configuration has no alert destination until you add one.
 4. Put the secret of the alert destination, such as the Slack address, in
-   MMX's encrypted vault. `mmx secrets edit` opens the vault in your
-   editor. The first time, it asks you to choose a vault passphrase: keep
-   the passphrase in your password manager, because each install asks for
-   it. Add:
+   MMX's encrypted vault:
 
-   ```yaml
-   mmwatchdog_secret_files:
-     slack-webhook-team: "https://hooks.slack.com/services/..."
+   ```sh
+   mmx secrets set mmwatchdog_secret_files slack-webhook-team
    ```
+
+   Type the address at the hidden prompt. The first time, MMX asks you to
+   choose a new vault passphrase and to type it twice: keep the passphrase
+   in your password manager, because each install asks for it. To change
+   the address later, add `--replace` to the command.
 
    Then list the file in `inventories/hub_and_standalone.yml`, under
    `vars`: `mmwatchdog_secret_files: [slack-webhook-team]`. Each install
@@ -593,7 +595,8 @@ check before moving on. Use one server first, then the rest.
 - Give each check a name that says what is healthy, such as
   `health_page_answers`, because the name appears in every alert.
 - Never put a secret's value in a plain project file, a command line, or
-  the chat. Have the person type it into `mmx secrets edit`. Each install
+  the chat. Have the person run `mmx secrets set mmwatchdog_secret_files NAME` and type
+  the value at the hidden prompt. Each install
   writes it to a file under `/etc/mmwatchdog/secrets` that only root can
   read, and the configuration names the file.
 - Do not set `alert_after_failing_for: 0s` to make alerts faster without

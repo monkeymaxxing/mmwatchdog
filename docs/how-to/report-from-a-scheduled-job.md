@@ -71,14 +71,16 @@ and a check group named `nightly_backup`.
 
 2. **Put the token in MMX's vault.** MMX keeps secrets in the encrypted
    file `secrets_vault.age` in the project, and writes them to the node
-   during each install. Open the vault in your editor:
+   during each install. Store the token under the file name
+   `nightly-backup-heartbeat`, beside the entries that are there:
 
    ```sh
-   mmx secrets edit
+   mmx secrets set mmwatchdog_secret_files nightly-backup-heartbeat
    ```
 
-   Under `mmwatchdog_secret_files`, beside the entries that are there, add
-   your token:
+   Type the token at the hidden prompt. A coding agent asks the person to
+   run this command and type the token themselves, so the token never
+   passes through the chat. The vault then holds:
 
    ```yaml
    mmwatchdog_secret_files:
@@ -86,10 +88,8 @@ and a check group named `nightly_backup`.
      nightly-backup-heartbeat: "58ba5ed9832159481c44241f0fe1d3fc923362d7e7ea0f507c2bbbad09785b93"
    ```
 
-   Save, and close the editor.
-
-   **Check:** `mmx secrets edit` prints `Saved encrypted vault:
-   secrets_vault.age`.
+   **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`.
+   `mmx secrets set` prints nothing when it succeeds.
 
 3. **List the token's file in the inventory.** In
    `inventories/hub_and_standalone.yml`, under `vars`:
@@ -344,10 +344,10 @@ group and its own token:
 
 1. **Make the token:** `openssl rand -hex 32`.
    **Check:** one line of 64 characters.
-2. **Put the token in the vault** with `mmx secrets edit`, under
-   `mmwatchdog_secret_files`, such as
-   `weekly-report-heartbeat: "..."`.
-   **Check:** `Saved encrypted vault: secrets_vault.age`.
+2. **Put the token in the vault** with
+   `mmx secrets set mmwatchdog_secret_files weekly-report-heartbeat`, and
+   type the token at the hidden prompt.
+   **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`.
 3. **Add the file's name to `mmwatchdog_secret_files`** in
    `inventories/hub_and_standalone.yml`.
    **Check:** each name in the list is a name in the vault.
@@ -405,9 +405,16 @@ receives the heartbeats. This section uses that node's address
    ```
 
 2. **Put the certificate and the key in the vault.** Run
-   `mmx secrets edit`, and under `mmwatchdog_secret_files` add the contents
-   of the two files. Indent each line of a file by four spaces under its
-   name:
+   these two commands, which read each file from standard input and store
+   its contents under `mmwatchdog_secret_files`:
+
+   ```sh
+   mmx secrets set mmwatchdog_secret_files heartbeat-receiver.crt < heartbeat-receiver.crt
+   mmx secrets set mmwatchdog_secret_files heartbeat-receiver.key < heartbeat-receiver.key
+   ```
+
+   The vault then holds, with each line of a file indented by four spaces
+   under its name:
 
    ```yaml
    mmwatchdog_secret_files:
@@ -428,8 +435,8 @@ receives the heartbeats. This section uses that node's address
    each install writes the vault's files to the node before it checks the
    configuration, and the check opens the certificate.
 
-   **Check:** `mmx secrets edit` prints `Saved encrypted vault:
-   secrets_vault.age`. Then delete the key from the project directory,
+   **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`.
+   Then delete the key from the project directory,
    because the vault holds it now:
 
    ```sh
@@ -604,8 +611,8 @@ people have accounts, use the `mmwatchdog` program instead.
   the window alerts when the window ends, without waiting.
   [Pause alerts during planned work](pause-alerts-during-planned-work.md)
   explains the windows.
-- **You change the token.** Change it in the vault with `mmx secrets edit`
-  and run `mmx run hub_and_standalone`. A job that reads the file in
+- **You change the token.** Change it in the vault with
+  `mmx secrets set mmwatchdog_secret_files NAME --replace` and run `mmx run hub_and_standalone`. A job that reads the file in
   `/etc/mmwatchdog/secrets/` sends the new token at its next run; update
   every copy on other accounts and machines.
 - **You change a node that MMX did not install.** Put the files in

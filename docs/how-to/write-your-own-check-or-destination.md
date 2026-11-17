@@ -10,7 +10,8 @@ writes what it sends.
 **Who acts:** you, or your coding agent. Each step runs on your controller
 machine, the machine where you run `mmx`, except where the step runs a
 command on the node over `ssh`. A coding agent asks the person to run
-`mmx secrets edit` in step 12 and to type the token themselves, so the token
+`mmx secrets set mmwatchdog_secret_files alarm-system-token` in step 12 and
+to type the token themselves, so the token
 never passes through the chat.
 
 **What this page does:** you write `queued_jobs`, a check module that reads
@@ -429,15 +430,14 @@ that a test alert arrives.
 
 12. **Put the token in MMX's vault.** The token is a secret, so MMX keeps
     it in the encrypted file `secrets_vault.age` and writes it to the node
-    during the install. Open the vault:
+    during the install. Store the alarm system's token, beside the Slack
+    address, under the file name `alarm-system-token`:
 
     ```sh
-    mmx secrets edit
+    mmx secrets set mmwatchdog_secret_files alarm-system-token
     ```
 
-    Add one line below `mmwatchdog_secret_files:`, beside the Slack
-    address, with the alarm system's token, then save and close the
-    editor:
+    Type the token at the hidden prompt. The vault then holds:
 
     ```yaml
     mmwatchdog_secret_files:
@@ -457,9 +457,8 @@ that a test alert arrives.
     Each install writes each listed file to `/etc/mmwatchdog/secrets/` on
     the node, readable only by root.
 
-    **Check:** `mmx secrets edit` ends with
-    `Saved encrypted vault: secrets_vault.age`, and `mmx validate` prints
-    `Valid: mmwatchdog`.
+    **Check:** `mmx secrets list-keys` prints `mmwatchdog_secret_files`,
+    and `mmx validate` prints `Valid: mmwatchdog`.
 
 13. **Add the destination.** In
     `files/hub_and_standalone/alert_destinations.yml`, add
@@ -543,7 +542,7 @@ that a test alert arrives.
 | `the module queued_jobs has no code: ... must hold the script module.star or the executable module_executable` | The module's directory has no script. Check the file name. |
 | The check shows `unknown` with `MMWatchdog cannot read the queue file: open /var/lib/myapp/pending: permission denied` | The module runs as the account `mmwatchdog`, which cannot read the file. Make the file readable by that account, or run the module as the application's account: add `run_as_user_account: myapp` beside `queue_file_path`. |
 | The check shows `unknown` with `the module queued_jobs reported the measurement jobs, which its description does not list` | The script reports a measurement under another name than the description. Use the same name in both files. |
-| `team_alarm_system   failed: the module alarm_system reported: the alarm system answered HTTP 401` | The module reached the alarm system, and the alarm system refused the token. Check the token in `mmx secrets edit`, run `mmx run hub_and_standalone`, and send the notice again. MMWatchdog keeps a failed alert and tries again. |
+| `team_alarm_system   failed: the module alarm_system reported: the alarm system answered HTTP 401` | The module reached the alarm system, and the alarm system refused the token. Change the token with `mmx secrets set mmwatchdog_secret_files alarm-system-token --replace`, run `mmx run hub_and_standalone`, and send the notice again. MMWatchdog keeps a failed alert and tries again. |
 | The node is in a fleet | Destinations live on the hub, but a joined node that cannot reach the hub delivers its alerts itself, with its own copy of the module. Put the module in the project once: the hub's and the joined nodes' playbooks install the same modules on every node. |
 | You change a node that MMX did not install | Copy the module's directory into `/usr/local/lib/mmwatchdog/external_modules/` on the node, as root, then run `sudo mmwatchdog validate` and `sudo mmwatchdog reload`. `reload` reads the modules again, and uses the new configuration only if all of it is valid. |
 

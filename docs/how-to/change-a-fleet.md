@@ -537,7 +537,8 @@ during the move; they keep their checks, and send alerts themselves.
   `sudo mmwatchdog fleet --json` lists with your inventory, and remove
   each node that you do not know. Then change the secrets of your alert
   destinations, because a joined node has them: change each one in its
-  service, put it in the vault with `mmx secrets edit`, and run
+  service, put it in the vault with `mmx secrets set mmwatchdog_secret_files NAME
+  --replace`, and run
   `mmx run hub_and_standalone`.
 - **The hub's address is a host name that stays the same,** such as
   `hub.example.com:8445` in `address_for_nodes`. Point the name at the new
