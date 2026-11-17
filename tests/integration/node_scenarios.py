@@ -1170,11 +1170,18 @@ else:
 
             # A security update that waits: a package that has a security advisory, chosen now
             # from the guest, in the version before the update.
-            package = helper('downgrade-a-package')
+            # The distribution's mirrors may hold no older version of any such package,
+            # as Rocky Linux 9 and AlmaLinux 10 on 2026-11-17: the run then says so and
+            # goes on with the steps that need no waiting update.
+            found = vm.console('python3 ' + DNF_HELPER + ' downgrade-a-package', check=False, timeout=1800)
+            package = found.stdout.strip() if found.returncode == 0 else ''
+            if not package:
+                print('NOT RUN a waiting security update of a downgraded package: ' + (found.stderr or found.stdout).strip(), flush=True)
             try:
-                assert package in helper('waiting').splitlines(), package
-                observed = finds_the_waiting_updates()
-                assert package in observed['message'], (package, observed)
+                if package:
+                    assert package in helper('waiting').splitlines(), package
+                    observed = finds_the_waiting_updates()
+                    assert package in observed['message'], (package, observed)
 
                 # Package data that nobody refreshed for nine days (dnf 5: twenty, because
                 # one of Fedora's repositories keeps its package data 14 days). The stamp
@@ -1220,7 +1227,8 @@ else:
                     vm.console(' && '.join('mv ' + cache + '/' + directory + '.of-the-test ' + cache + '/' + directory for directory in moved))
                 finds_the_waiting_updates()
             finally:
-                vm.console('dnf --quiet --assumeyes upgrade ' + shlex.quote(package), check=False, timeout=900)
+                if package:
+                    vm.console('dnf --quiet --assumeyes upgrade ' + shlex.quote(package), check=False, timeout=900)
             finds_the_waiting_updates()
 
             # dnf's reboot hint: the C library installed again since the boot.
