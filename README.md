@@ -630,9 +630,10 @@ check before moving on. Use one server first, then the rest.
   `connection: ssh_only` on the node in the inventory, MMX opens no port
   and works over SSH, a little slower. Let them choose before the run.
 - Before the alert test, tell the person that each `mmx run` that restarts
-  MMWatchdog sends two notices, `NODE: maintenance on for the whole node`
-  and `NODE: maintenance off for the whole node`: the run pauses alerts
-  while MMWatchdog restarts. Adding `--without-maintenance-on-and-off-alerts`
+  a running MMWatchdog sends two notices, `NODE: maintenance on for the
+  whole node` and `NODE: maintenance off for the whole node`: the run
+  pauses alerts while MMWatchdog restarts. The first install sends neither,
+  because no MMWatchdog runs yet. Adding `--without-maintenance-on-and-off-alerts`
   to the `maintenance on` command of the `start_maintenance` task in the
   playbooks turns the two notices off.
 - Do not set `alert_after_failing_for: 0s` to make alerts faster without
