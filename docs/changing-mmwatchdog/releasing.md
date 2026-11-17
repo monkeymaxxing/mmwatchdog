@@ -30,9 +30,13 @@ version number tells users whether an update needs work from them:
 
 | Release | Example | What it may contain |
 |---|---|---|
-| Patch | 0.1.1 after 0.1.0 | Only fixes of faults. A user changes nothing. |
-| Minor, while the version starts with `0.` | 0.2.0 after 0.1.1 | New commands, modules, and fields, and changes that need a user's edit, such as a renamed setting. |
+| Patch | 0.1.1 after 0.1.0 | Fixes of faults and text changes, such as the documentation or a message. A user changes nothing. |
+| Minor, while the version starts with `0.` | 0.2.0 after 0.1.1 | New commands, modules, and fields, and changes that existing users must act on, such as a renamed setting, a changed file format, or work during the upgrade. |
 | Major, from 1.0.0 | 2.0.0 after 1.4.0 | Changes that need a user's edit. From 1.0.0, only a major release may contain them. |
+
+Choose the smallest step that is honest. Gather small text fixes on the
+main branch and release them together, unless one of them fixes something
+that people would otherwise get wrong.
 
 A change needs a user's edit when a configuration file no longer
 validates or behaves differently, when a command, a flag, or a result

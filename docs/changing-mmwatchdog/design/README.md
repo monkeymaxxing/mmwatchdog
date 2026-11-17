@@ -499,12 +499,11 @@ Beyond the features:
 
 MMWatchdog follows semantic versioning, starting at 0.1.0, as MMX does:
 
-- A patch release, such as 0.1.1, only fixes faults and makes no incompatible
-  change.
-- While MMWatchdog is 0.x, a minor release, such as 0.2.0, may break compatibility.
-  The minor release's notes list each incompatible edit and what the
-  operator must do.
-  New commands, modules, and fields also come in minor releases.
+- A patch release, such as 0.1.1, holds fixes of faults and text changes,
+  and makes no incompatible change.
+- While MMWatchdog is 0.x, a minor release, such as 0.2.0, holds new
+  commands, modules, and fields, and may break compatibility. Its notes list
+  each incompatible edit and what the operator must do.
 - Version 1.0.0 comes once names and file formats settle. From then on,
   incompatible changes require a new major version.
 
