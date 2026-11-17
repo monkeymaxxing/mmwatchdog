@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -819,4 +820,60 @@ func TestCombinedMessages(t *testing.T) {
 	if m = store.Combine(silent, "util"); m.Message != "2 nodes still not reporting: app-1, app-2" || m.Destination != "oncall" {
 		t.Fatal(m.Message, m.Destination)
 	}
+}
+
+// In a small fleet, one node's outage can bring more alerts than its share
+// of the hub's alert intake. The hub takes them up to the share, the node
+// delivers the rest without the hub, and every alert reaches the
+// destination.
+func TestAlertsBeyondANodesShareOfTheIntakeStillArrive(t *testing.T) {
+	t.Parallel()
+	dest := captureAlerts(t)
+	hub, code, _ := startHubWith(t, map[string]checksandalerts.Destination{"ops": {RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, Inputs: &checksandalerts.Webhook{URL: dest.URL}, TimeLimitPerDeliveryAttempt: "1m"}})
+	limits := config.DefaultStorageLimits
+	limits.UndeliveredAlertsOfNodesBytes = 64 * 1024
+	hub.store.SetLimits(limits)
+	node := joinedNode(t, code, "app-1")
+	node.report(context.Background())
+	node.fleetSettings.Fleet.SendAlertWithoutHubAfterWaitingFor = "300ms" // below what configuration allows
+	checks := []string{}
+	events := []checksandalerts.Event{}
+	for i := range 10 {
+		check := fmt.Sprintf("check_%d", i)
+		checks = append(checks, check)
+		st := &incidents.CheckState{CheckGroup: "app", Check: check, Timing: checksandalerts.Timing{AlertAfterFailingFor: "0s", RecoveredAfterHealthyFor: "0s"}, AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"}}
+		for _, ev := range st.Observe(checksandalerts.Observation{Status: "failed", Message: strings.Repeat("the outage of app-1 ", 50), At: time.Now().UTC()}, st.Timing, false) {
+			if ev.Notify {
+				events = append(events, withFleetIncidentKey(ev))
+			}
+		}
+	}
+	recordEvents(t, node, events...)
+	runWorker(t, node)
+	// The hub takes its share and the node sends the rest directly; the
+	// hub's worker starts later, as after an outage of its own.
+	deadline := time.Now().Add(testhelpers.LongestWaitForAnEvent)
+	var held int
+	for time.Now().Before(deadline) && outboxCount(t, node, config.HubDestination) > 0 {
+		time.Sleep(50 * time.Millisecond)
+	}
+	hub.store.DB.QueryRow("SELECT COUNT(*) FROM intake WHERE node='app-1'").Scan(&held)
+	if held == 0 || held == len(events) {
+		t.Fatalf("the hub held %d of %d alerts; the share should take some and refuse the rest", held, len(events))
+	}
+	runWorker(t, hub)
+	for time.Now().Before(deadline) {
+		missing := []string{}
+		text := fmt.Sprint(dest.received())
+		for _, check := range checks {
+			if !strings.Contains(text, "app/"+check+" ") && !strings.Contains(text, check+" failed") {
+				missing = append(missing, check)
+			}
+		}
+		if len(missing) == 0 {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("not every alert arrived: %v", dest.received())
 }

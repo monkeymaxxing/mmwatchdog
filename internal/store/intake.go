@@ -25,6 +25,15 @@ const intakeDone = 2
 
 var ErrIntakeFull = errors.New("the hub's alert queue is full")
 
+// NodeShareOfTheIntake is the part of
+// fleet_hub_role.undelivered_alerts_of_nodes_content_size_limit that the
+// alerts of one node may hold. Reason: an outage of one node never needs
+// more, and the rest keeps the hub open to the other nodes, so one node,
+// also a hostile one, cannot make every node's alerts wait for the direct
+// way. A node's alert beyond its share is refused like one beyond the
+// limit, and the node delivers it without the hub.
+const NodeShareOfTheIntake = 4
+
 // IntakeSubject is what an alert in the alert grouping step is about: its
 // check group and check, and for an alert about one failed unit of a
 // every_systemd_unit check that unit, so the alerts of each unit are
@@ -274,8 +283,16 @@ func (s *Store) Accept(node string, event checksandalerts.Event, now time.Time) 
 	if e = tx.QueryRow("SELECT COALESCE(SUM(length(event)),0) FROM intake WHERE state!=?", intakeDone).Scan(&size); e != nil {
 		return e
 	}
-	if size+int64(len(b)) > s.Limits.Load().UndeliveredAlertsOfNodesBytes {
+	limit := s.Limits.Load().UndeliveredAlertsOfNodesBytes
+	if size+int64(len(b)) > limit {
 		return ErrIntakeFull
+	}
+	var nodeSize int64
+	if e = tx.QueryRow("SELECT COALESCE(SUM(length(event)),0) FROM intake WHERE state!=? AND node=?", intakeDone, node).Scan(&nodeSize); e != nil {
+		return e
+	}
+	if nodeSize+int64(len(b)) > limit/NodeShareOfTheIntake {
+		return fmt.Errorf("%w for the alerts of %s: one node may hold a quarter of it", ErrIntakeFull, node)
 	}
 	if e = queueIntake(tx, node, event, b, now); e != nil {
 		return e

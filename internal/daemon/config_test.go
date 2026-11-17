@@ -808,7 +808,7 @@ func TestStorageSettings(t *testing.T) {
 		t.Fatal("hub defaults", c, e)
 	}
 	c, e = config.Load(testhelpers.ConfigFile(t, "state_database_size_limit: 1GiB\nfleet_hub_role: {report_every: 30s, alert_after_hub_unreachable_for: 3m, send_alert_without_hub_after_waiting_for: 30s, listen_on_address: '0.0.0.0:8445', address_for_nodes: 'util:8445', keep_event_history_of_nodes_for: 30d, event_history_of_nodes_content_size_limit: 20GiB, undelivered_alerts_of_nodes_content_size_limit: 256MiB}\n"+group))
-	if e != nil || c.FleetHubRole.HubLimits() != (config.HubLimits{KeepEventHistoryOfNodesFor: 30 * 24 * time.Hour, EventHistoryOfNodesBytes: 20 * 1024 * 1024 * 1024, KeepMeasurementHistoryOfNodesFor: "7d", MeasurementHistoryOfNodesSizeLimit: "20GiB"}) || c.StorageLimits().UndeliveredAlertsOfNodesBytes != 256*1024*1024 {
+	if e != nil || c.FleetHubRole.HubLimits() != (config.HubLimits{KeepEventHistoryOfNodesFor: 30 * 24 * time.Hour, EventHistoryOfNodesBytes: 20 * 1024 * 1024 * 1024, KeepMeasurementHistoryOfNodesFor: "7d", MeasurementHistoryOfNodesSizeLimit: "20GiB", JoinedNodeLimit: config.DefaultJoinedNodeLimit}) || c.StorageLimits().UndeliveredAlertsOfNodesBytes != 256*1024*1024 {
 		t.Fatal("hub stated", c, e)
 	}
 	for text, want := range map[string]string{

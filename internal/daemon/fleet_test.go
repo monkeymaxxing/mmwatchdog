@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1110,7 +1111,7 @@ func TestHubEventHistoryLimits(t *testing.T) {
 		return bytes, counts
 	}
 	const limit = 100 * 1024
-	h.SetLimits(config.HubLimits{KeepEventHistoryOfNodesFor: 7 * 24 * time.Hour, EventHistoryOfNodesBytes: limit, KeepMeasurementHistoryOfNodesFor: "7d", MeasurementHistoryOfNodesSizeLimit: "20GiB"})
+	h.SetLimits(config.HubLimits{KeepEventHistoryOfNodesFor: 7 * 24 * time.Hour, EventHistoryOfNodesBytes: limit, KeepMeasurementHistoryOfNodesFor: "7d", MeasurementHistoryOfNodesSizeLimit: "20GiB", JoinedNodeLimit: config.DefaultJoinedNodeLimit})
 	// Joining left one event for each node.
 	_, joined := stored()
 	save("quiet", 20, now)
@@ -1176,11 +1177,13 @@ func TestHubAlertIntakeSizeLimit(t *testing.T) {
 	}
 	defer s.Close()
 	alert := func() checksandalerts.Event {
-		return checksandalerts.Event{ID: incidents.ID(), Node: "app-1", CheckGroup: "web", Check: "http", Type: "failed", AlertSeverity: "warn", At: time.Now().UTC(), Message: strings.Repeat("x", 1000), Notify: true}
+		return checksandalerts.Event{ID: incidents.ID(), CheckGroup: "web", Check: "http", Type: "failed", AlertSeverity: "warn", At: time.Now().UTC(), Message: strings.Repeat("x", 1000), Notify: true}
 	}
+	// Each node holds at most a quarter of the limit, so eight nodes with
+	// one alert each fill it.
 	accepted := 0
 	for ; accepted < 20; accepted++ {
-		if e = s.Accept("app-1", alert(), time.Now().UTC()); e != nil {
+		if e = s.Accept(fmt.Sprintf("app-%d", accepted), alert(), time.Now().UTC()); e != nil {
 			break
 		}
 	}
@@ -1190,8 +1193,37 @@ func TestHubAlertIntakeSizeLimit(t *testing.T) {
 	// A reload that states a larger limit accepts alerts again.
 	limits.UndeliveredAlertsOfNodesBytes = 64 * 1024
 	s.SetLimits(limits)
-	if e = s.Accept("app-1", alert(), time.Now().UTC()); e != nil {
+	if e = s.Accept("app-new", alert(), time.Now().UTC()); e != nil {
 		t.Fatal(e)
+	}
+}
+
+// One node's alerts hold at most a quarter of the hub's intake, so a node,
+// also a hostile one, cannot fill it for the other nodes. The node's next
+// alert is refused, and the node delivers it without the hub.
+func TestOneNodeHoldsAQuarterOfTheHubAlertIntake(t *testing.T) {
+	t.Parallel()
+	limits := config.DefaultStorageLimits
+	limits.UndeliveredAlertsOfNodesBytes = 16 * 1024
+	s, e := store.OpenStore(filepath.Join(t.TempDir(), "state"), limits)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer s.Close()
+	alert := func() checksandalerts.Event {
+		return checksandalerts.Event{ID: incidents.ID(), CheckGroup: "web", Check: "http", Type: "failed", AlertSeverity: "warn", At: time.Now().UTC(), Message: strings.Repeat("x", 1000), Notify: true}
+	}
+	accepted := 0
+	for ; accepted < 20; accepted++ {
+		if e = s.Accept("noisy", alert(), time.Now().UTC()); e != nil {
+			break
+		}
+	}
+	if !errors.Is(e, store.ErrIntakeFull) || !strings.Contains(e.Error(), "noisy") || accepted < 2 || accepted > 4 {
+		t.Fatal("one node held more than a quarter of the intake", accepted, e)
+	}
+	if e = s.Accept("app-2", alert(), time.Now().UTC()); e != nil {
+		t.Fatal("another node was refused while the intake had room", e)
 	}
 }
 
@@ -1260,5 +1292,30 @@ func TestTheHubFindsOldEventsThroughAnIndex(t *testing.T) {
 	}
 	if got := strings.Join(plan, "\n"); !strings.HasPrefix(got, "SEARCH events USING ") || !strings.Contains(got, "INDEX events_received (at<?)") || strings.Contains(got, "SCAN") {
 		t.Fatal(got)
+	}
+}
+
+// A hub takes at most joined_node_limit nodes, so a leaked join code cannot
+// fill its database with nodes. The refusal says how to raise the limit, and
+// a node that has joined can join again.
+func TestAHubTakesAtMostItsJoinedNodeLimit(t *testing.T) {
+	t.Parallel()
+	d := newHubDaemon(t, nil)
+	h := d.hub
+	limits := *h.Limits.Load()
+	limits.JoinedNodeLimit = 2
+	h.SetLimits(limits)
+	at := time.Now().UTC()
+	for _, name := range []string{"app-1", "app-2"} {
+		if _, status, err := h.Join(name, h.Code.Secret, nodeSettings("warn"), "192.0.2.1", at); err != nil || status != 200 {
+			t.Fatal(name, status, err)
+		}
+	}
+	_, status, err := h.Join("app-3", h.Code.Secret, nodeSettings("warn"), "192.0.2.3", at)
+	if status != 403 || err == nil || err.Error() != "the fleet hub has 2 joined nodes, its joined_node_limit; to let more nodes join, raise joined_node_limit under fleet_hub_role in the hub's mmwatchdog_node_settings.yml and reload MMWatchdog on the hub" {
+		t.Fatal(status, err)
+	}
+	if _, status, _ := h.Join("app-1", h.Code.Secret, nodeSettings("warn"), "192.0.2.1", at); status == 403 {
+		t.Fatal("a joined node's name was refused for the limit")
 	}
 }

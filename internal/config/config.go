@@ -122,7 +122,15 @@ type FleetHubRole struct {
 	KeepEventHistoryOfNodesFor               checksandalerts.Duration `yaml:"keep_event_history_of_nodes_for" json:"keep_event_history_of_nodes_for,omitempty"`
 	EventHistoryOfNodesContentSizeLimit      checksandalerts.Size     `yaml:"event_history_of_nodes_content_size_limit" json:"event_history_of_nodes_content_size_limit,omitempty"`
 	UndeliveredAlertsOfNodesContentSizeLimit checksandalerts.Size     `yaml:"undelivered_alerts_of_nodes_content_size_limit" json:"undelivered_alerts_of_nodes_content_size_limit,omitempty"`
+	// JoinedNodeLimit is how many nodes may join; see DefaultJoinedNodeLimit.
+	JoinedNodeLimit *int `yaml:"joined_node_limit" json:"joined_node_limit,omitempty"`
 }
+
+// DefaultJoinedNodeLimit is the joined_node_limit of a hub that states none.
+// Reason: far above the fleets that MMWatchdog is tested with, and well
+// within the size of fleet.db, so that a leaked join code cannot fill the
+// hub's database with nodes until the hub stops saving reports and joins.
+const DefaultJoinedNodeLimit = 1000
 
 // The defaults of the hub's storage settings.
 const (
@@ -163,16 +171,21 @@ type HubLimits struct {
 	EventHistoryOfNodesBytes           int64
 	KeepMeasurementHistoryOfNodesFor   checksandalerts.Duration
 	MeasurementHistoryOfNodesSizeLimit checksandalerts.Size
+	JoinedNodeLimit                    int
 }
 
 // DefaultHubLimits are the limits of a hub that states no limit for its
 // events, and for its readings the two required settings with the values of
 // the design's example.
-var DefaultHubLimits = HubLimits{7 * 24 * time.Hour, 4 * 1024 * 1024 * 1024, "7d", "20GiB"}
+var DefaultHubLimits = HubLimits{7 * 24 * time.Hour, 4 * 1024 * 1024 * 1024, "7d", "20GiB", DefaultJoinedNodeLimit}
 
 // HubLimits are the limits a validated hub configuration states.
 func (h *FleetHubRole) HubLimits() HubLimits {
-	return HubLimits{h.KeepEventHistoryOfNodesFor.Value(), h.EventHistoryOfNodesContentSizeLimit.Bytes(), h.KeepMeasurementHistoryOfNodesFor, h.MeasurementHistoryOfNodesSizeLimit}
+	joinedNodeLimit := DefaultJoinedNodeLimit
+	if h.JoinedNodeLimit != nil {
+		joinedNodeLimit = *h.JoinedNodeLimit
+	}
+	return HubLimits{h.KeepEventHistoryOfNodesFor.Value(), h.EventHistoryOfNodesContentSizeLimit.Bytes(), h.KeepMeasurementHistoryOfNodesFor, h.MeasurementHistoryOfNodesSizeLimit, joinedNodeLimit}
 }
 
 // FleetTimings are the hub's fleet-wide timings: how often nodes report
@@ -439,6 +452,9 @@ func validateNode(n *yaml.Node, t reflect.Type, modules *checksandalerts.ModuleC
 	}
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
+	}
+	if path == "fleet_hub_role.joined_node_limit" && (n.Kind != yaml.ScalarNode || n.Tag != "!!int") {
+		return nodeError(at, path, "expected an integer for the number of nodes that may join; set joined_node_limit: 1000")
 	}
 	if path == "fleet_hub_role.raise_to_sos_when_silent_nodes_reach_count" && (n.Kind != yaml.ScalarNode || n.Tag != "!!int") {
 		return nodeError(at, path, "expected an integer for the number of silent nodes that raises silence alerts to sos; set raise_to_sos_when_silent_nodes_reach_count: 5")
@@ -817,6 +833,9 @@ func (c *Config) validate() error {
 
 		if h.KeepEventHistoryOfNodesFor.Value() <= 0 {
 			return c.ErrorAt("fleet_hub_role.keep_event_history_of_nodes_for", "must be positive")
+		}
+		if h.JoinedNodeLimit != nil && *h.JoinedNodeLimit < 1 {
+			return c.ErrorAt("fleet_hub_role.joined_node_limit", "the number of nodes that may join must be at least 1; set joined_node_limit: 1000")
 		}
 		if h.RaiseToSosWhenSilentNodesReachCount != nil && h.RaiseToSosWhenSilentNodesReachPercent != nil {
 			return c.ErrorAt("fleet_hub_role.raise_to_sos_when_silent_nodes_reach_count", "both silence thresholds are set; keep only raise_to_sos_when_silent_nodes_reach_count or raise_to_sos_when_silent_nodes_reach_percent to choose when silence alerts rise to sos")

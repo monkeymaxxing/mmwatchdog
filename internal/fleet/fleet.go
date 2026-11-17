@@ -812,6 +812,13 @@ func (h *Hub) Join(name, secret string, settings config.NodeFleetSettings, addre
 		return "", 400, fmt.Errorf("join %s", problem)
 	}
 	existing := h.Nodes[name]
+	joined := len(h.Nodes)
+	if _, hubIsANode := h.Nodes[h.Name]; hubIsANode {
+		joined--
+	}
+	if limit := h.Limits.Load().JoinedNodeLimit; existing == nil && name != h.Name && joined >= limit {
+		return "", 403, fmt.Errorf("the fleet hub has %d joined nodes, its joined_node_limit; to let more nodes join, raise joined_node_limit under fleet_hub_role in the hub's mmwatchdog_node_settings.yml and reload MMWatchdog on the hub", joined)
+	}
 	if name == h.Name || (existing != nil && h.State(existing, now) != "silent") {
 		if existing != nil {
 			claimed := *existing

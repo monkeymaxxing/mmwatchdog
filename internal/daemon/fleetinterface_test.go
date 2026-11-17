@@ -188,6 +188,8 @@ func TestFleetThresholdSettingsAreNumericAndExclusive(t *testing.T) {
 		{"raise_to_sos_when_silent_nodes_reach_percent: 0", "above 0"},
 		{"raise_to_sos_when_silent_nodes_reach_percent: 5%", "expected a number"},
 		{"raise_to_sos_when_silent_nodes_reach_percent: .nan", "expected a finite number"},
+		{"joined_node_limit: 0", "the number of nodes that may join must be at least 1"},
+		{"joined_node_limit: 2.5", "expected an integer for the number of nodes that may join"},
 	} {
 		text := "fleet_hub_role: {listen_on_address: '0.0.0.0:8445', address_for_nodes: 'hub.test:8445', " + tc.settings + "}\ncheck_groups: {app: {shell: 'true'}}\n"
 		if _, err := config.Load(testhelpers.ConfigFile(t, text)); err == nil || !strings.Contains(err.Error(), tc.problem) {

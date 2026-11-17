@@ -315,13 +315,14 @@ fleet_hub_role:
 | `report_every` | duration, at least `1s` | Required | How often each joined node reports. Three missed reports make a node silent |
 | `alert_after_hub_unreachable_for` | duration, at least `1s` and at least twice `report_every` | Required | How long a joined node waits before the node alerts that the hub is unreachable. Twice `report_every` at least, so one late report does not alert |
 | `send_alert_without_hub_after_waiting_for` | duration, at least `1s` | Required | How long a joined node waits for the hub to accept an alert before the node delivers the alert to the destinations itself |
-| `undelivered_alerts_of_nodes_content_size_limit` | size | Required | How much of the nodes' alert content the hub keeps while the alerts wait for delivery |
+| `undelivered_alerts_of_nodes_content_size_limit` | size | Required | How much of the nodes' alert content the hub keeps while the alerts wait for delivery. One node's alerts may hold a quarter of it, so a node with many alerts, or a hostile one, cannot fill it for the others; the node delivers an alert beyond its share itself, without the hub |
 | `keep_measurement_history_of_nodes_for` | duration, above `0s` | Required | How long the hub keeps the readings that the nodes send. [Measurement history](#measurement-history) |
-| `measurement_history_of_nodes_size_limit` | size | Required | How much of the hub's disk those readings may take |
+| `measurement_history_of_nodes_size_limit` | size | Required | How much of the hub's disk those readings may take. All nodes share it: when it is full, the oldest readings go, of any node, so one node that sends many readings can push out the history of the others |
 | `keep_event_history_of_nodes_for` | duration, above `0s` | `7d` | How long the hub keeps the nodes' events |
 | `event_history_of_nodes_content_size_limit` | size | `4GiB` | How much of the nodes' event content the hub keeps |
 | `raise_to_sos_when_silent_nodes_reach_count` | whole number, from 1 | None | Raises the silence alerts to `sos` when this many joined nodes are silent at the same time |
 | `raise_to_sos_when_silent_nodes_reach_percent` | number above 0, at most 100 | None | The same, as a percentage of the joined nodes, written without `%`, such as `20` |
+| `joined_node_limit` | whole number, from 1 | `1000` | How many nodes may join. The default is far above the fleets that MMWatchdog is tested with and well within the hub's database, so that a leaked join code cannot fill the database with nodes. A join beyond the limit is refused with a message that says to raise it |
 
 - **The three fleet timings have no upper limit,** so a fleet with slow
   links can state longer timings. The joined nodes take the timings from
