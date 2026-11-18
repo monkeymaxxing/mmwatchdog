@@ -8,8 +8,8 @@ results.
 
 The release checks for 0.1.3 (2026-11-18), with Go 1.27.4 and the MMX code
 released with MMWatchdog. The checks ran on the commit with the release's
-last product change; the later commit only names version 0.1.3 in the
-README and the guides:
+last product change; the later commits change only the text of the README
+and the guides, such as the version they name:
 
 | Run or check | Result |
 | --- | --- |
