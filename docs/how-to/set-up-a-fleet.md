@@ -69,7 +69,7 @@ the node's host name, which `hostname` prints on the node.
    `x86_64` or `aarch64`.
 
    ```sh
-   version=0.1.2
+   version=0.1.3
    platform=linux-amd64      # linux-arm64 for ARM64 nodes
    release=https://github.com/monkeymaxxing/mmwatchdog/releases/download/v$version
 
@@ -87,7 +87,7 @@ the node's host name, which `hostname` prints on the node.
    ```
 
    ```text
-   mmwatchdog-0.1.2-linux-amd64.tar.gz: OK
+   mmwatchdog-0.1.3-linux-amd64.tar.gz: OK
    ```
 
    **Check:** your archive's line ends with `OK`. If not, download it
@@ -258,7 +258,7 @@ the node's host name, which `hostname` prints on the node.
    ```text
    Run 38f83cc6: succeeded
    1 finished
-   Saved: /home/dev/monitoring/mmwatchdog-0.1.2-linux-amd64/.mmx/runs/20261115T092520.420798015-38f83cc6936b45e9
+   Saved: /home/dev/monitoring/mmwatchdog-0.1.3-linux-amd64/.mmx/runs/20261115T092520.420798015-38f83cc6936b45e9
    ```
 
    On its first start, the hub creates its TLS key, a certificate, and the
@@ -361,7 +361,7 @@ the node's host name, which `hostname` prints on the node.
     ```text
     Run 17da248d: succeeded
     2 finished
-    Saved: /home/dev/monitoring/mmwatchdog-0.1.2-linux-amd64/.mmx/runs/20261115T092615.418622364-17da248dfc89be69
+    Saved: /home/dev/monitoring/mmwatchdog-0.1.3-linux-amd64/.mmx/runs/20261115T092615.418622364-17da248dfc89be69
     ```
 
     Each node joins with its first report, a few seconds after MMWatchdog
