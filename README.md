@@ -607,6 +607,14 @@ check before moving on. Use one server first, then the rest.
 | 6 | The alert path works. | The person saw the failure message and the recovery message at the destination. |
 | 7 | The person can see for themselves that MMWatchdog runs. | The person ran `ssh NODE sudo mmwatchdog status` and saw every check. |
 
+- Talk to the person in their own words: your server, your laptop, the
+  monitoring program, the list of your servers, a group of checks. Use a
+  name from MMX's or MMWatchdog's files, such as node, controller,
+  inventory, check group, daemon, unit, `hub_and_standalone`, or
+  `mmx-https-api.service`, only inside a command or file the person will
+  type or open, or after one plain line that says what it is.
+- When a step is done, report it in at most five short lines about what now
+  works, not paths, versions, or checksums.
 - Answer each question the person asks before you go on to the next step.
 - Keep each message short: the person skims long ones. When the person must
   choose, such as port 7443 or `connection: ssh_only`, or how to test the
