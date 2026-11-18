@@ -6,23 +6,23 @@ results.
 
 ## Current build
 
-The release checks for 0.1.2 (2026-11-17), with Go 1.27.4 and the MMX code
-released with MMWatchdog. The checks ran on the commit that adds the
-release's last product change; the later commit changes only a test, and
-the suite it changes ran again:
+The release checks for 0.1.3 (2026-11-18), with Go 1.27.4 and the MMX code
+released with MMWatchdog. The checks ran on the commit with the release's
+last product change; the later commit only names version 0.1.3 in the
+README and the guides:
 
 | Run or check | Result |
 | --- | --- |
 | Static analysis, `scripts/static-analysis.sh` | Reports nothing |
-| Go tests, also with the race detector, on a Mac | All passed. Each security fix has a test that failed on the code before the fix: the password in a busy program's arguments, the link in a directory above a log, the token in an http check's query, and one node that fills the hub's alert intake |
-| Every suite on every [target distribution](testing.md#every-target-distribution), AMD64, Incus on the test servers | All passed on all nine, `services` with the real MySQL and MariaDB clients and `--local-infile=0`. In the first run the `node` suite failed everywhere at one scenario that found its test programs by the arguments that resource alerts no longer show; the scenario now finds them by process ID and checks that no alert line holds an argument, and `node` then passed on all nine |
+| Go tests, also with the race detector, on a Mac | All passed. The new test of `mmwatchdog events CHECK_GROUP/CHECK` fails on the code before the fix |
+| Every suite on every [target distribution](testing.md#every-target-distribution), AMD64, Incus on the test servers | All passed on all nine |
 | ARM64, Hetzner `cax11` servers | `native`, `deployment`, and `node` passed on Debian 13; `native` and `deployment` passed on Ubuntu 26.04. On Ubuntu 26.04 the `node` suite's Ubuntu Pro step again ran longer than its time limit; see below |
-| [Fuzz tests](testing.md#fuzz-tests-for-a-release), 10 minutes each on the AMD64 test servers | All passed, with no failing input: `FuzzCheckGroupConfigurationFile`, 68,350 inputs; `FuzzNodeSettingsFile`, 175,293; `FuzzModuleDescription`, 584,370; `FuzzExecutableModuleOutput`, 6,113,487; `FuzzStarlarkModuleResult`, 924,943; `FuzzJoinRequestOnTheHub`, 1,558,129; `FuzzNodeStatusReportOnTheHub`, 682,772; `FuzzMMHotlineReceipt`, 2,450,313 |
-| Release archives from a fresh clone, with `scripts/release.py 0.1.2 --output-dir out` | Both archives and `SHA256SUMS` built, and the checksum check passed |
+| [Fuzz tests](testing.md#fuzz-tests-for-a-release), 10 minutes each on the AMD64 test servers | All passed, with no failing input: `FuzzCheckGroupConfigurationFile`, 103,617 inputs; `FuzzNodeSettingsFile`, 302,438; `FuzzModuleDescription`, 905,256; `FuzzExecutableModuleOutput`, 6,305,455; `FuzzStarlarkModuleResult`, 1,518,059; `FuzzJoinRequestOnTheHub`, 1,714,209; `FuzzNodeStatusReportOnTheHub`, 859,523; `FuzzMMHotlineReceipt`, 2,581,408 |
+| Release archives from a fresh clone, with `scripts/release.py 0.1.3 --output-dir out` | Both archives and `SHA256SUMS` built, and the checksum check passed |
+| Newcomer walk-through: a stand-in person follows the README with their own coding agent, interactive Claude Code in auto mode, to email alerts from one server | Passed on the README of this release: the person reached the goal, failure and recovery emails arrived, with no step stuck or wrong. Four earlier runs that day found the steps fixed in this release |
 
-`TestRealServiceMMHotline` and the newcomer walk-through ran for 0.1.1, on
-the same day; 0.1.2 changes neither the `mmhotline` destination nor the
-README's steps.
+`TestRealServiceMMHotline` ran for 0.1.1; 0.1.3 does not change the
+`mmhotline` destination.
 
 The Ubuntu Pro client on ARM64: `pro security-status --format json` took
 37 to 43 seconds on a Hetzner `cax11` server (2 ARM64 cores, Ubuntu 26.04,
