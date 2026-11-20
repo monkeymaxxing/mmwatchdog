@@ -11,7 +11,7 @@ you name, such as email or [Slack](https://slack.com/).
 > [!NOTE]
 > **This is an alpha version.** MMWatchdog watches our own servers every day. The names of some checks and settings may still change between versions. If an alert was unclear, or the setup lost you somewhere, please tell us: [how to report it](CONTRIBUTING.md). Thanks!
 
-Your coding agent, such as [Claude Code](https://claude.com/claude-code) or [Codex](https://openai.com/codex/), can write the YAML files
+Your coding agent, such as [Claude](https://claude.com/claude-code) or [Codex](https://openai.com/codex/), can write the YAML files
 and run the commands, or you can do both yourself. You don't need to have
 used a monitoring tool before. If you have used
 [Monit](https://mmonit.com/monit/), much of MMWatchdog will be familiar, and
@@ -56,7 +56,8 @@ simple server systems.
 | [MMX](https://github.com/monkeymaxxing/mmx) | Sets up your servers, and makes every later change to them |
 | **MMWatchdog** (this tool) | Watches your servers, restarts what fails, and alerts you |
 | [MMHotline](https://github.com/monkeymaxxing/mmhotline) | Gets each urgent alert to the person on call, and can let your coding agent investigate first |
-| [Monkeymaxxing Stack](https://github.com/monkeymaxxing/monkeymaxxing-stack) | Instructions for your coding agent that build and run a whole production system with the three tools above |
+| [doubleshell](https://github.com/monkeymaxxing/doubleshell) | Carries SSH over WireGuard so you can close port 22 to the internet without a laptop VPN |
+| [Monkeymaxxing Stack](https://github.com/monkeymaxxing/monkeymaxxing-stack) | Instructions for your coding agent that build and run a whole production system with the tools above |
 
 You install MMWatchdog with MMX. You do not need MMHotline or the
 Monkeymaxxing Stack to use MMWatchdog.

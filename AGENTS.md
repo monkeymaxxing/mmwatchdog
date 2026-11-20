@@ -116,7 +116,7 @@ readers, and a deliberately small core.
 
 ## Compatibility between releases
 
-**MMWatchdog 0.1.0 is released. Every change keeps the promises in
+**MMWatchdog is released (since 0.1.0). Every change keeps the promises in
 [Compatibility between releases](docs/changing-mmwatchdog/design/README.md#compatibility-between-releases).**
 
 - A patch release, such as 0.1.1, makes no incompatible change. An
