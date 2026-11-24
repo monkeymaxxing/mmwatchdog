@@ -387,7 +387,10 @@ func (r *AlertGroupingState) Plan(rows []store.IntakeRow, active map[string]bool
 			if sentNow[key] || now.Sub(r.Sent[key]) < r.Window {
 				continue
 			}
-			seqs := collect(i, func(o store.IntakeRow) bool { return o.AlertGroupKey() == key })
+			// An alert with an exact finding never joins the one-minute
+			// message, also during a rolling upgrade, when an older node's
+			// alert of the same finding has none.
+			seqs := collect(i, func(o store.IntakeRow) bool { return !o.ExactFinding && o.AlertGroupKey() == key })
 			p.Messages = append(p.Messages, store.AlertGroupMessage{Members: seqs})
 			p.Sent = append(p.Sent, key)
 			sentNow[key] = true

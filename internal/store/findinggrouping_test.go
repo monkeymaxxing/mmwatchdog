@@ -210,6 +210,30 @@ func TestCoveredGrowthWaitsForTheSharedTick(t *testing.T) {
 	expectKinds(t, h.take("chat"))
 }
 
+// During a rolling upgrade, a 0.1.x node's failure without an exact finding
+// and a 0.2.0 node's failure of the same finding with one arrive together.
+// The old alert keeps the one-minute grouping; the new one goes out on its
+// own and announces its exact finding, whichever arrived first, so a later
+// node with that exact finding is covered growth.
+func TestAnOlderNodesAlertNeverSwallowsAnExactFinding(t *testing.T) {
+	t.Parallel()
+	for _, oldFirst := range []bool{true, false} {
+		h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+		old, current := h.alert("old-1", "failed", "warn", "", 0, tenOFive), h.alert("app-1", "failed", "warn", versionA, 0, tenOFive)
+		if oldFirst {
+			h.arrive(tenOFive, old, current)
+		} else {
+			h.arrive(tenOFive, current, old)
+		}
+		got := h.take("chat")
+		if len(got) != 2 || !slices.ContainsFunc(got, func(a checksandalerts.Event) bool { return a.Node == "app-1" && a.ExactFinding == versionA }) {
+			t.Fatalf("old first %v: %q %+v", oldFirst, kinds(got), got)
+		}
+		h.arrive(tenOFive.Add(5*time.Minute), h.alert("db-1", "failed", "warn", versionA, 0, tenOFive.Add(5*time.Minute)))
+		expectKinds(t, h.take("chat"))
+	}
+}
+
 // An exact finding that was not announced goes out at once, once per
 // destination and key: nodes moving from A to B give one message for B,
 // and the others are growth for the next update.
