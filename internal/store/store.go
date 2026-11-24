@@ -49,7 +49,8 @@ const stateFormat = 21
 // row of each node incident, marked grouped_by_exact_finding, and its
 // pending_change for the next finding_nodes_changed update; in
 // fleet_direct_sends_settled, the direct sends of nodes that the hub has
-// settled; and in fleet_incident_keys, what has been
+// settled, each with the version of the node's record that it settled
+// (directSendVersion); and in fleet_incident_keys, what has been
 // announced to the destination for the key, and when the key's next update
 // and reminder are due. The outbox keeps, for its order (Pending), each
 // delivery's key, whether it is urgent (sos) or closes its key, and the key
@@ -86,7 +87,7 @@ const stateTables = `
   exact_finding TEXT NOT NULL, exact_finding_sequence INTEGER NOT NULL, alert_severity TEXT NOT NULL, opened INTEGER NOT NULL, reminder_eligible INTEGER NOT NULL, set_aside_entry TEXT NOT NULL DEFAULT '', set_aside_reason TEXT NOT NULL DEFAULT '', send_alerts_only_to_destinations TEXT NOT NULL DEFAULT '',
   exact_finding_sequence_named INTEGER NOT NULL DEFAULT -1, PRIMARY KEY(reporter,incident_id));
  CREATE INDEX IF NOT EXISTS fleet_node_incidents_key ON fleet_node_incidents(incident_key,exact_finding);
- CREATE TABLE IF NOT EXISTS fleet_direct_sends_settled (destination TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, settled INTEGER NOT NULL, PRIMARY KEY(destination,reporter,incident_id));
+ CREATE TABLE IF NOT EXISTS fleet_direct_sends_settled (destination TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, settled INTEGER NOT NULL, settled_version TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,reporter,incident_id));
  CREATE TABLE IF NOT EXISTS incident_alert_destinations (incident_id TEXT NOT NULL, destination TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(incident_id,destination));
 `
 

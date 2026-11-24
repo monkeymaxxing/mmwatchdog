@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -766,9 +767,10 @@ func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWi
 		return nil, err
 	}
 	// The hub settles the record of a finding with an exact finding by
-	// itself, whether or not the incident is in the destination's set.
-	settled := map[IncidentKnownToTheHub]bool{}
-	settledRows, err := s.DB.Query("SELECT destination, incident_id FROM fleet_direct_sends_settled WHERE reporter=?", reporter)
+	// itself, whether or not the incident is in the destination's set, one
+	// version of the record at a time.
+	settled := map[IncidentKnownToTheHub]string{}
+	settledRows, err := s.DB.Query("SELECT destination, incident_id, settled_version FROM fleet_direct_sends_settled WHERE reporter=?", reporter)
 	if err != nil {
 		return nil, err
 	}
@@ -777,10 +779,11 @@ func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWi
 	}()
 	for settledRows.Next() {
 		var incident IncidentKnownToTheHub
-		if err := settledRows.Scan(&incident.Destination, &incident.Incident); err != nil {
+		var version string
+		if err := settledRows.Scan(&incident.Destination, &incident.Incident, &version); err != nil {
 			return nil, err
 		}
-		settled[incident] = true
+		settled[incident] = version
 	}
 	if err := settledRows.Err(); err != nil {
 		return nil, err
@@ -788,7 +791,7 @@ func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWi
 	known := []IncidentKnownToTheHub{}
 	for _, d := range carried {
 		incident := IncidentKnownToTheHub{Destination: d.Destination, Incident: d.Incident}
-		if d.ExactFinding != "" && settled[incident] || d.ExactFinding == "" && held[incident] {
+		if d.ExactFinding != "" && settled[incident] == directSendVersion(d.AlertSeveritiesSentForIncident, d.AlertSource, d.ExactFindingSequence) || d.ExactFinding == "" && held[incident] {
 			known = append(known, incident)
 		}
 	}
@@ -1221,7 +1224,17 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 	return out, e
 }
 
-// settleDirectSend settles, once, the record of a direct send that the
+// directSendVersion names one version of a node's record of a direct
+// send: the severities that the node sent of the incident, the MMHotline
+// alert source it sent under, and the sequence of its exact finding. A
+// later direct send of the same incident, such as a raise in another hub
+// outage, makes a new version, which the hub settles again before it
+// acknowledges the record.
+func directSendVersion(severities []string, alertSource string, exactFindingSequence int64) string {
+	return strings.Join(lowestFirst(severities), ",") + "|" + alertSource + "|" + strconv.FormatInt(exactFindingSequence, 10)
+}
+
+// settleDirectSend settles, once for each version, the record of a direct send that the
 // reporter's node made to the set's destination without the hub, for a
 // finding with an exact finding (c), whatever the set holds. A direct
 // send is never the last word: an incident that is not set aside joins the
@@ -1235,8 +1248,9 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 // keeps carrying it. The record is acknowledged afterwards
 // (IncidentsKnownToTheHub).
 func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), reason string, awaitingReports bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
+	version := directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence)
 	var settled bool
-	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=?)", set.Destination, reporter, id).Scan(&settled); e != nil || settled || r.Forgotten || reason != "" && awaitingReports {
+	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=? AND settled_version=?)", set.Destination, reporter, id, version).Scan(&settled); e != nil || settled || r.Forgotten || reason != "" && awaitingReports {
 		return e
 	}
 	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
@@ -1266,7 +1280,7 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 	if e != nil {
 		return e
 	}
-	_, e = tx.Exec("INSERT OR IGNORE INTO fleet_direct_sends_settled(destination,reporter,incident_id,settled) VALUES(?,?,?,?)", set.Destination, reporter, id, now.UnixNano())
+	_, e = tx.Exec("INSERT INTO fleet_direct_sends_settled(destination,reporter,incident_id,settled,settled_version) VALUES(?,?,?,?,?) ON CONFLICT(destination,reporter,incident_id) DO UPDATE SET settled=excluded.settled, settled_version=excluded.settled_version", set.Destination, reporter, id, now.UnixNano(), version)
 	return e
 }
 

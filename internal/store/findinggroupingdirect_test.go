@@ -139,6 +139,43 @@ func TestASetAsideDirectSendClosesNothingThatAnotherNodeHoldsOpen(t *testing.T) 
 	})
 }
 
+// A node that sends an incident directly again, in a later hub outage,
+// after the hub settled its first direct send, sends a new version of the
+// record: the hub settles that version too, and acknowledges it only
+// then. Here the set-aside incident rose to sos, which is never set aside,
+// went to MMHotline under the node source, and recovered before the hub
+// was back: the hub resolves it there.
+func TestALaterDirectSendOfTheSameIncidentIsSettledAgain(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	first := carriedTo(shows("app-1", "warn", versionA, 0, tenOFive, tenOFive.Add(10*time.Minute)), "hotline", nodeAlertSource)
+	h.report(tenOFive.Add(10*time.Minute), map[string]store.ReportedIncidents{"app-1": first})
+	expectKinds(t, h.take("hotline"), "closed_without_recovery resolved-warn")
+	record := store.IncidentSentWithoutTheHub{Destination: "hotline", Incident: "incident-app-1", CheckGroup: "packages", Check: "flaws", Finding: flaw, Type: "failed", AlertSeveritiesSentForIncident: []string{"warn"}, ExactFinding: versionA, AlertSource: nodeAlertSource}
+	if known, e := h.s.IncidentsKnownToTheHub("app-1", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 1 {
+		t.Fatal(known, e)
+	}
+	// The second outage: the raise to sos went directly, and the incident
+	// recovered before the hub was back.
+	record.AlertSeveritiesSentForIncident = []string{"warn", "sos"}
+	if known, e := h.s.IncidentsKnownToTheHub("app-1", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 0 {
+		t.Fatal("a new direct send is acknowledged before the hub settled it", known, e)
+	}
+	later := tenOFive.Add(5 * time.Hour)
+	raised := first.SentWithoutTheHub["hotline"]["incident-app-1"]
+	raised.AlertSeverity, raised.AlertSeveritiesSentForIncident = "sos", []string{"warn", "sos"}
+	h.report(later, map[string]store.ReportedIncidents{"app-1": {Sent: later, SentWithoutTheHub: map[string]map[string]checksandalerts.Event{"hotline": {"incident-app-1": raised}}}})
+	got := h.take("hotline")
+	expectKinds(t, got, "recovered resolved-sos")
+	if sourceOf(got[0]) != nodeAlertSource {
+		t.Fatal("the resolution goes under", sourceOf(got[0]))
+	}
+	if known, e := h.s.IncidentsKnownToTheHub("app-1", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 1 {
+		t.Fatal("the settled record is not acknowledged", known, e)
+	}
+}
+
 // A set-aside incident never blocks its node's direct-send records: the
 // hub settles the record, and the destination, which got the direct send,
 // gets closed_without_recovery when nothing else of the key is open for
