@@ -535,6 +535,11 @@ destinations:
   `file_contents_by_destination`, under
   `alert_source_for_nodes_sending_without_the_hub.mmhotline_signing_secret_file`.
   A fleet without the block has the same fleet settings as before.
+- Removing the block, or changing its `mmhotline_alert_source_id`, drops
+  the alerts that wait to go under the old ID, and `sudo mmwatchdog
+  events` shows `delivery_cancelled`. MMWatchdog never sends them under
+  the destination's own alert source, where a resolution could close
+  another incident of the key.
 - A joined node needs MMWatchdog 0.2.0 or later: an older node refuses
   fleet settings with the block and keeps its earlier copy.
   `mmwatchdog validate` and `mmwatchdog reload` on the hub warn while a
