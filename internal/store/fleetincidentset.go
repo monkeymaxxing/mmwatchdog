@@ -1059,7 +1059,8 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 				} else if changed[x.key] == "" {
 					changed[x.key] = "recovered"
 				}
-				if x.grouped {
+				// The next update names a recovery, never a forget.
+				if x.grouped && !r.Forgotten {
 					closedGrouped = append(closedGrouped, closedRow{x.key, reporter, id, x.severity})
 				}
 			case fleetIncidentResolved:

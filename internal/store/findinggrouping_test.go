@@ -246,6 +246,28 @@ func TestAFailureAndItsRecoveryInOneStepCloseTheKey(t *testing.T) {
 	expectKinds(t, h.take("hotline"), "failed warn", "recovered resolved-warn")
 }
 
+// A node whose incident closes without recovery, because its check was
+// retired or the node was forgotten, is never named as ok again while
+// other nodes keep the key open: recovered_nodes are confirmed recoveries.
+func TestARetiredIncidentIsNotOkAgain(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	for _, node := range []string{"app-1", "app-2", "app-3"} {
+		h.arrive(tenOFive, h.alert(node, "failed", "warn", versionA, 0, tenOFive))
+	}
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	h.take("chat")
+	at := tenOFive.Add(3 * time.Hour)
+	h.arrive(at, h.alert("app-2", "closed_without_recovery", "warn", versionA, 0, at))
+	h.report(at, map[string]store.ReportedIncidents{"app-3": {Forgotten: true}})
+	h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+	for _, a := range h.take("chat") {
+		if slices.Contains(a.RecoveredNodes, "app-2") || slices.Contains(a.RecoveredNodes, "app-3") {
+			t.Fatalf("a retired node is ok again: %+v", a)
+		}
+	}
+}
+
 // An exact finding that was not announced goes out at once, once per
 // destination and key: nodes moving from A to B give one message for B,
 // and the others are growth for the next update.

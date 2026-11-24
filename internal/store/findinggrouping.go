@@ -370,7 +370,9 @@ func (set IncidentSet) groupedClosing(tx *sql.Tx, at int64, name string, dest ch
 			return e
 		}
 		for _, m := range closedBy[key] {
-			if open {
+			// Only a recovery is ok again; a retirement is no news for the
+			// update while the key stays open, as in every fleet incident set.
+			if open && message.Type != "closed_without_recovery" {
 				if e = set.markPending(tx, key, m.Node, m.Incident, pendingRecovered, m.AlertSeverity, from, now); e != nil {
 					return e
 				}
