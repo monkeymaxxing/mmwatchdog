@@ -141,6 +141,14 @@ func TestTheListingOfSetAsideFindings(t *testing.T) {
 	}
 	f.node("app-sos", at, report(at, "failed", "sos", versionA))
 	f.node("unk-1", at, report(at, "unknown", "", ""))
+	// unk-2's check cannot run now, while another flaw keeps its incident
+	// open, so its state is failed.
+	other := report(at, "failed", "warn", "another exact finding")
+	check := other.Checks["packages/flaws"]
+	check.Findings = map[string]fleet.ReportedCheck{"CVE-2026-1 other": check.Findings[flaw]}
+	check.CannotCheckIncident = &incidents.Track{Incident: incidents.ID(), Opened: at, AlertSeverity: "warn"}
+	other.Checks["packages/flaws"] = check
+	f.node("unk-2", at, other)
 	// new-1 joined and has not reported yet.
 	f.node("new-1", at, nil)
 	listing := f.hub.SetAsideFindingsNow(at.Add(time.Second))
@@ -157,9 +165,10 @@ func TestTheListingOfSetAsideFindings(t *testing.T) {
 	if b.CoveredNodeCount != 0 || len(b.CoveredNodes) != 0 || !b.MatchesNoNodeNow {
 		t.Fatalf("B: %+v", b)
 	}
-	// new-1 waits for its first report, and unk-1's check is unknown.
+	// new-1 waits for its first report, unk-1's check is unknown, and
+	// unk-2's has an open cannot-check incident.
 	for _, e := range listing {
-		if e.NodesThatCannotCheckNow != 2 {
+		if e.NodesThatCannotCheckNow != 3 {
 			t.Fatalf("%s: %d nodes cannot check", e.ExactFinding, e.NodesThatCannotCheckNow)
 		}
 	}

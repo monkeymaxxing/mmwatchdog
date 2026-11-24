@@ -195,7 +195,11 @@ func (h *Hub) SetAsideFindingsNow(now time.Time) []SetAsideFindingNow {
 			if report != nil {
 				c, has = report.Checks[entry.Check]
 			}
-			if report == nil || h.State(m, now) == "waiting_for_first_report" || has && c.State == "unknown" {
+			// A check that cannot run while another finding keeps its
+			// incident open is failed, not unknown: its open cannot-check
+			// incident says that it cannot check.
+			cannotCheck := has && (c.State == "unknown" || c.CannotCheckIncident != nil && c.CannotCheckIncident.Incident != "")
+			if report == nil || h.State(m, now) == "waiting_for_first_report" || cannotCheck {
 				e.NodesThatCannotCheckNow++
 			}
 			t := c.Findings[entry.Finding].FailureIncident

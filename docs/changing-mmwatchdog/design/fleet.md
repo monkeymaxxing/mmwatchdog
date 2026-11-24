@@ -1808,8 +1808,8 @@ set_aside_findings:
     `covered_nodes`, up to 20 of them;
   - `matches_no_node_now`, computed over every node's latest saved report,
     also the hub's and silent nodes';
-  - `nodes_that_cannot_check_now`: nodes whose check is `unknown`, nodes
-    that wait for a first report, and nodes without a saved report. Remove
+  - `nodes_that_cannot_check_now`: nodes whose check is `unknown` or has
+    an open cannot-check incident, nodes that wait for a first report, and nodes without a saved report. Remove
     an entry only when `matches_no_node_now` is true and this count is 0.
 - `mmwatchdog fleet findings CHECK_GROUP/CHECK [--finding ID] [--json]`
   lists every node with the check's findings, each with its exact finding

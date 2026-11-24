@@ -1070,8 +1070,8 @@ reason, investigation note, who set it aside, and when, and:
 - how many nodes the entry covers now, with up to 20 of them;
 - whether the entry matches no node now, over every node's latest saved
   report, also the hub's and those of silent nodes;
-- how many nodes cannot check now: nodes whose check is `unknown`, nodes
-  that wait for their first report, and nodes without a saved report.
+- how many nodes cannot check now: nodes whose check is `unknown` or has
+  an open cannot-check incident, nodes that wait for their first report, and nodes without a saved report.
   Remove an entry only when it matches no node and this count is 0,
   because one of those nodes may still have the exact finding.
 
