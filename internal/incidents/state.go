@@ -44,6 +44,15 @@ type Track struct {
 	// Reminded is the last reminder sent to each destination.
 	RemindFrom time.Time            `json:"remind_from,omitempty"`
 	Reminded   map[string]time.Time `json:"reminded,omitempty"`
+	// CurrentExactFinding is the exact finding of the latest run, and
+	// AnnouncedExactFinding the one that the incident's last alert carried.
+	// ExactFindingSequence counts the changes of CurrentExactFinding.
+	CurrentExactFinding   string `json:"current_exact_finding,omitempty"`
+	AnnouncedExactFinding string `json:"announced_exact_finding,omitempty"`
+	ExactFindingSequence  int64  `json:"exact_finding_sequence,omitempty"`
+	// ReminderEligible reports an open, announced incident that is neither
+	// in maintenance nor in quiet time.
+	ReminderEligible bool `json:"reminder_eligible"`
 }
 
 // reminding reports that the track's incident is open and announced.

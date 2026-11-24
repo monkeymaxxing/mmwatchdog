@@ -63,7 +63,7 @@ var FleetIncidentKeyPattern = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // a reminder, and an alert that closes the incident. A notice, a reboot
 // notice, and a maintenance alert do not.
 func BelongsToAnIncident(eventType string) bool {
-	return Opens(eventType) || Closes(eventType) || eventType == "reminder"
+	return Opens(eventType) || Closes(eventType) || eventType == "reminder" || eventType == ExactFindingChanged || eventType == FindingNodesChanged
 }
 
 // ScopeFleetIncidentKey separates independent fleets and standalone nodes.
