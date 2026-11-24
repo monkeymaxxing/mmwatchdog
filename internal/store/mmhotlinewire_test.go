@@ -253,6 +253,29 @@ func TestAJoinedNodeSendsWithoutTheHubUnderTheNodeAlertSource(t *testing.T) {
 	}
 }
 
+// The hub sends a grouped key's opening under the key that it derives from
+// its own identity and the alert's check and finding, the key of the set
+// and of the resolution, whatever key the node's alert carried.
+func TestAGroupedOpeningGoesUnderTheHubsOwnKey(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline(), "chat": chatTaking("https://chat.example.com", "warn")})
+	failure := h.alert("app-1", "failed", "warn", versionA, 0, tenOFive)
+	failure.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey("another key"), "app-1", groupingFleet)
+	h.arrive(tenOFive, failure)
+	opening := h.take("hotline")
+	chat := h.take("chat")
+	h.arrive(tenOFive.Add(time.Hour), h.alert("app-1", "recovered", "warn", versionA, 0, tenOFive.Add(time.Hour)))
+	resolution := h.take("hotline")
+	expectKinds(t, opening, "failed warn")
+	expectKinds(t, resolution, "recovered resolved-warn")
+	if a, b := wire(t, opening[0]), wire(t, resolution[0]); a["sender_incident_key"] != b["sender_incident_key"] {
+		t.Fatal("the opening and the resolution have other keys", a["sender_incident_key"], b["sender_incident_key"])
+	}
+	if chat[0].FleetIncidentKey != resolution[0].FleetIncidentKey {
+		t.Fatal("the chat's opening has another key", chat[0].FleetIncidentKey)
+	}
+}
+
 // An alert queued under the node alert source, when the destination no
 // longer has that source, is cancelled with the destination's other
 // changes, never sent under the destination's own source, where its

@@ -329,6 +329,9 @@ func (set IncidentSet) groupedOpening(tx *sql.Tx, at int64, name string, dest ch
 	if _, e = tx.Exec("UPDATE fleet_incident_set SET pending_change='' WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(m.Node, m.Incident)...); e != nil {
 		return e
 	}
+	// The key that the set, the updates, and the closing alert use, from the
+	// hub's own identity, not the key that the node's alert carried.
+	m.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
 	return queueToDestination(tx, at, name, dest, key, m, from, key)
 }
 
