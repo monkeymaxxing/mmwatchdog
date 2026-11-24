@@ -933,7 +933,8 @@ func scanEvents(rows *sql.Rows, maxBytes int) ([]checksandalerts.Event, error) {
 // Next is for display and for the first wait after a start.
 func (s *Store) Pending() ([]Delivery, error) {
 	rows, e := s.DB.Query(`WITH heads AS (SELECT r.seq, r.destination, r.urgent, r.attempts FROM outbox r WHERE NOT EXISTS (SELECT 1 FROM outbox c
-  WHERE c.destination=r.destination AND c.incident_key=r.incident_key AND c.seq<r.seq AND (r.urgent=0 OR c.closes=1 OR c.attempts=0)))
+  WHERE c.destination=r.destination AND c.incident_key=r.incident_key AND c.seq<r.seq AND (r.urgent=0 OR c.closes=1 OR (c.attempts=0 AND
+   (SELECT o.attempts FROM outbox o WHERE o.destination=r.destination AND o.incident_key=r.incident_key ORDER BY o.seq LIMIT 1)=0))))
  SELECT seq,destination,event,target,attempts,next,error,sent_without_the_hub FROM outbox WHERE seq IN (
   SELECT COALESCE(MIN(CASE WHEN urgent=1 THEN seq END), MIN(CASE WHEN attempts=0 THEN seq END), MIN(seq)) FROM heads GROUP BY destination) ORDER BY seq`)
 	if e != nil {

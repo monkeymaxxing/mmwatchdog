@@ -13,11 +13,13 @@ import (
 // (Store.Pending). The queue holds a line of deliveries for each fleet
 // incident key, and one line of the deliveries without a key, such as
 // notices, which so keep their place among themselves. A line's head is
-// its oldest delivery, except that an sos alert of an incident may pass
-// deliveries of its own key that have had a failed attempt and wait to be
-// retried: never one that was not attempted yet, so an incident's opening
-// reaches the destination before its raise, and never a closing alert, so
-// a resolution and what follows it keep their order. Of the heads of its
+// its oldest delivery, except that an sos alert may pass deliveries of its
+// own line when the line is stuck, its oldest delivery having had a failed
+// attempt and waiting to be retried: then it passes every delivery of the
+// line but a closing alert, so a warn that keeps failing never holds the
+// sos back. A line that is not stuck keeps its order, so an incident's
+// opening reaches a healthy destination before its raise, and a resolution
+// and what follows it keep their order. Of the heads of its
 // lines, the destination gets an sos head first, else a head that does not
 // wait to be retried, else the oldest: an alert that keeps failing holds
 // back no other key, and so no other key's sos. Nothing is removed. The

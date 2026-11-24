@@ -1117,13 +1117,15 @@ destination.
     first. The deliveries without a key, such as a
     [notice](#send-a-notice), wait in one line of their own, so a notice
     keeps its place among them.
-  - A line's next delivery is its oldest, except that an `sos` passes
-    deliveries of its own key that have had a failed attempt and wait to
-    be retried, so a `warn` stuck behind a refusal or HTTP `429` never
-    holds the `sos` back. It never passes a delivery of its key that was
-    not attempted yet, so a healthy destination gets an incident's opening
-    before its raise, and never a closing alert, so closing and opening
-    alerts of one key keep their order.
+  - A line's next delivery is its oldest. An `sos` may pass deliveries of
+    its own line only when the line is stuck, which means its oldest
+    delivery has had a failed attempt and waits to be retried. Then the
+    `sos` passes every delivery of the line except a closing alert, so a
+    `warn` stuck behind a refusal or HTTP `429` never holds the `sos`
+    back. A line that is not stuck keeps its order, so a healthy
+    destination gets an incident's opening before its raise. An `sos`
+    never passes a closing alert, so closing and opening alerts of one
+    key keep their order.
   - Of the lines' next deliveries, the destination gets an `sos` first,
     else one that does not wait to be retried, else the oldest. So a
     delivery that keeps failing holds back no other key: another key's

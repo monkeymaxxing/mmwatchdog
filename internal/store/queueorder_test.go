@@ -185,17 +185,38 @@ func TestAnSosWaitsForAnUntriedAlertOfItsOwnKey(t *testing.T) {
 	t.Parallel()
 	q := newQueue(t)
 	q.queue("B failed", "failed", "warn", "dns", "i-b")
-	if got := q.attempt(func(string) bool { return false }); got != "B failed" {
-		t.Fatal(got)
-	}
-	q.queue("B changed", checksandalerts.ExactFindingChanged, "warn", "dns", "i-b")
 	q.queue("B raised", checksandalerts.FailureIncidentEvents.Raised, "sos", "dns", "i-b")
 	delivered := []string{}
 	for id := q.attempt(func(string) bool { return true }); id != ""; id = q.attempt(func(string) bool { return true }) {
 		delivered = append(delivered, id)
 	}
-	if want := []string{"B failed", "B changed", "B raised"}; !slices.Equal(delivered, want) {
+	if want := []string{"B failed", "B raised"}; !slices.Equal(delivered, want) {
 		t.Fatalf("delivered in the order %q, want %q", delivered, want)
+	}
+}
+
+// Once the oldest alert of a key waits for a retry, the key is stuck: its
+// sos passes every alert of the key that is not a closing, also an untried
+// one behind the stuck alert, so a warn that keeps failing never holds the
+// sos back. The passed alerts keep their order after it.
+func TestAnSosPassesItsStuckKey(t *testing.T) {
+	t.Parallel()
+	q := newQueue(t)
+	q.queue("B failed", "failed", "warn", "dns", "i-b")
+	if got := q.attempt(func(string) bool { return false }); got != "B failed" {
+		t.Fatal(got)
+	}
+	q.queue("B changed", checksandalerts.ExactFindingChanged, "warn", "dns", "i-b")
+	q.queue("B raised", checksandalerts.FailureIncidentEvents.Raised, "sos", "dns", "i-b")
+	if got := q.attempt(func(id string) bool { return id != "B failed" }); got != "B raised" {
+		t.Fatalf("the sos waited behind its stuck key: %q went first", got)
+	}
+	delivered := []string{}
+	for id := q.attempt(func(string) bool { return true }); id != ""; id = q.attempt(func(string) bool { return true }) {
+		delivered = append(delivered, id)
+	}
+	if want := []string{"B failed", "B changed"}; !slices.Equal(delivered, want) {
+		t.Fatalf("after the sos, delivered in the order %q, want %q", delivered, want)
 	}
 }
 
