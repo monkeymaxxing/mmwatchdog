@@ -344,6 +344,10 @@ type Hub struct {
 	// FleetSettings is the settings copy joined nodes fetch. The daemon
 	// replaces it on start and reload; it needs no lock.
 	FleetSettings atomic.Pointer[FleetSettings]
+	// SetAsideFindings are the entries of set_aside_findings.yml in force,
+	// for the fleet views (setaside.go). The daemon replaces them on start
+	// and reload; they need no lock.
+	SetAsideFindings atomic.Pointer[config.SetAsideFindings]
 	// Reported holds what each report accepted since the fleet incident set
 	// step last ran shows about the node's announced incidents and those
 	// that it sent without the hub.

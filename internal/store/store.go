@@ -42,7 +42,8 @@ const stateFormat = 21
 //
 // Grouping by exact finding on the hub (findinggrouping.go) keeps:
 // fleet_node_incidents, one row for each open incident of a node that the
-// hub knows; in fleet_incident_set, for every destination, the membership
+// hub knows, with the set-aside entry that covers it, if any, and the
+// destinations that its check names (setaside.go); in fleet_incident_set, for every destination, the membership
 // row of each node incident, marked grouped_by_exact_finding, and its
 // pending_change for the next finding_nodes_changed update; in
 // fleet_direct_sends_settled, the direct sends of nodes that the hub has
@@ -80,7 +81,7 @@ const stateTables = `
  CREATE INDEX IF NOT EXISTS fleet_incident_keys_update ON fleet_incident_keys(next_update_due);
  CREATE INDEX IF NOT EXISTS fleet_incident_keys_reminder ON fleet_incident_keys(next_reminder_due);
  CREATE TABLE IF NOT EXISTS fleet_node_incidents (reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, node TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL,
-  exact_finding TEXT NOT NULL, exact_finding_sequence INTEGER NOT NULL, alert_severity TEXT NOT NULL, opened INTEGER NOT NULL, reminder_eligible INTEGER NOT NULL, set_aside_entry TEXT NOT NULL DEFAULT '', set_aside_reason TEXT NOT NULL DEFAULT '', PRIMARY KEY(reporter,incident_id));
+  exact_finding TEXT NOT NULL, exact_finding_sequence INTEGER NOT NULL, alert_severity TEXT NOT NULL, opened INTEGER NOT NULL, reminder_eligible INTEGER NOT NULL, set_aside_entry TEXT NOT NULL DEFAULT '', set_aside_reason TEXT NOT NULL DEFAULT '', send_alerts_only_to_destinations TEXT NOT NULL DEFAULT '', PRIMARY KEY(reporter,incident_id));
  CREATE INDEX IF NOT EXISTS fleet_node_incidents_key ON fleet_node_incidents(incident_key,exact_finding);
  CREATE TABLE IF NOT EXISTS fleet_direct_sends_settled (destination TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, settled INTEGER NOT NULL, PRIMARY KEY(destination,reporter,incident_id));
  CREATE TABLE IF NOT EXISTS incident_alert_destinations (incident_id TEXT NOT NULL, destination TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(incident_id,destination));
@@ -118,6 +119,16 @@ type Store struct {
 	// fleet_hub_role.send_newly_affected_nodes_every, which a reload
 	// replaces. Zero is config.DefaultSendNewlyAffectedNodesEvery.
 	NewlyAffectedNodesEvery atomic.Int64
+	// setAside are, on the hub, the entries of set_aside_findings.yml in
+	// force. SettleSetAsideFindings alone replaces them.
+	setAside atomic.Pointer[config.SetAsideFindings]
+}
+
+func (s *Store) setAsideFindings() config.SetAsideFindings {
+	if p := s.setAside.Load(); p != nil {
+		return *p
+	}
+	return nil
 }
 
 func (s *Store) newlyAffectedNodesEvery() time.Duration {
@@ -567,7 +578,10 @@ func (s *Store) Save(snap incidents.Snapshot, events []checksandalerts.Event, ro
 func QueueDirect(tx *sql.Tx, at int64, message checksandalerts.Event, members []checksandalerts.Event, destinations map[string]checksandalerts.Destination, from QueuedBy) error {
 	grouped := false
 	if from.Role == FleetHubSender {
-		kept, isGrouped, e := nodeIncidentsOfMessage(tx, message, members, from.hub())
+		kept, isGrouped, coverage, e := nodeIncidentsOfMessage(tx, message, members, from)
+		if e == nil {
+			e = applyCoverageChanges(tx, at, coverage, destinations, from, from.now())
+		}
 		if e != nil || len(kept) == 0 {
 			return e
 		}

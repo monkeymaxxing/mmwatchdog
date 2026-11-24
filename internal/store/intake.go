@@ -427,7 +427,7 @@ func (s *Store) Emit(p AlertGroupingPlan, destinations map[string]checksandalert
 		if len(events) > 1 || message.Title == "" {
 			message.WriteAlertTexts(events, s.Node)
 		}
-		if e = QueueDirect(tx, now.UnixNano(), message, events, destinations, QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, AwaitingFirstReports: awaitingFirstReports, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), Now: now}); e != nil {
+		if e = QueueDirect(tx, now.UnixNano(), message, events, destinations, QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, AwaitingFirstReports: awaitingFirstReports, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), SetAsideFindings: s.setAsideFindings(), Now: now}); e != nil {
 			return e
 		}
 	}

@@ -101,6 +101,10 @@ type Daemon struct {
 	latestHubAttemptError error
 	// alert groups is the hub's alert grouping memory.
 	alertGroups fleet.AlertGroupingState
+	// setAsideUnsettled is set on the hub while the set-aside entries of
+	// the configuration in force could not be settled against the open
+	// node incidents; the fleet incident set step tries again.
+	setAsideUnsettled bool
 	// members is the hub's copy of the fleet membership: when each joined
 	// node joined. watching is set on the node the hub chose as its hub-outage alerter.
 	members  map[string]fleet.FleetMember
@@ -324,6 +328,9 @@ func newDaemon(path string, clock func() time.Time) (*Daemon, error) {
 		st.Interrupt()
 	}
 	d.config, d.tokens, d.slots = c, tokens, make(chan struct{}, c.MaxConcurrentChecks)
+	// A set_aside_findings.yml changed while the hub was stopped takes
+	// effect now.
+	d.settleSetAsideFindings(c, now)
 	if err := d.restoreDestinationHealth(); err != nil {
 		d.Close()
 		return nil, fmt.Errorf("destination health: %w", err)
@@ -789,6 +796,7 @@ func (d *Daemon) reload() (ReloadResult, error) {
 		}
 	}
 	d.config, d.tokens, d.policies = c, tokens, policies
+	d.settleSetAsideFindings(c, now)
 	if len(tokens) == 0 {
 		_ = d.syncHeartbeatSocket(c.Socket, false) // Closing cannot fail.
 	}

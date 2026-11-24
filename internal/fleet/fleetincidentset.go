@@ -20,6 +20,11 @@ import (
 // reports to the hub's fleet incident sets.
 const FleetIncidentSets = "fleet incident sets"
 
+// SetAsideFindingsSettlement is the name of the storage operation that
+// settles the entries of set_aside_findings.yml against the open node
+// incidents, at a start and at each reload.
+const SetAsideFindingsSettlement = "set-aside findings"
+
 // announcedIncidents lists what a report of reporter says for the fleet
 // incident sets: its announced incidents, each with when it opened and the
 // message of its check, and the incidents that it sent without the hub, by
