@@ -30,6 +30,17 @@ func outboxOrderOf(event checksandalerts.Event) (urgent bool, key string, closes
 	return urgent, event.FleetIncidentKey, closes
 }
 
+// forgetUndeliveredAnnouncements makes each key whose announcement an
+// outbox row that matches where carries no longer announced to the row's
+// destination, before the rows leave the outbox undelivered: by retention,
+// a permanent refusal, or a replaced destination. The next matching alert
+// then opens the key again.
+func forgetUndeliveredAnnouncements(tx *sql.Tx, where string, args ...any) error {
+	_, e := tx.Exec(`UPDATE fleet_incident_keys SET announced_alert_severity='', announced_exact_findings='[]'
+ WHERE (destination,incident_key) IN (SELECT destination, announced_key FROM outbox WHERE announced_key!='' AND (`+where+`))`, args...)
+	return e
+}
+
 // insertOutbox queues one delivery of alert for the destination name, whose
 // identity at this time is target. announces is the readable fleet
 // incident key whose announcement for the destination the alert carries,

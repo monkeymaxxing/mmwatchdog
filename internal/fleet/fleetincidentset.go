@@ -25,12 +25,13 @@ const FleetIncidentSets = "fleet incident sets"
 // message of its check, and the incidents that it sent without the hub, by
 // destination.
 func announcedIncidents(reporter string, r *NodeStatusReport) store.ReportedIncidents {
-	found := store.ReportedIncidents{Sent: r.Sent, Incidents: map[string]checksandalerts.Event{}, SentWithoutTheHub: map[string]map[string]checksandalerts.Event{}}
+	found := store.ReportedIncidents{Sent: r.Sent, Incidents: map[string]checksandalerts.Event{}, SentWithoutTheHub: map[string]map[string]checksandalerts.Event{}, ReminderEligible: map[string]bool{}}
 	for _, d := range r.IncidentsSentWithoutTheHub {
 		if found.SentWithoutTheHub[d.Destination] == nil {
 			found.SentWithoutTheHub[d.Destination] = map[string]checksandalerts.Event{}
 		}
-		found.SentWithoutTheHub[d.Destination][d.Incident] = checksandalerts.Event{Node: reporter, CheckGroup: d.CheckGroup, Check: d.Check, Finding: d.Finding, Type: d.Type, Incident: d.Incident, AlertSeverity: config.HighestSeverity(d.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: d.AlertSeveritiesSentForIncident}
+		found.SentWithoutTheHub[d.Destination][d.Incident] = checksandalerts.Event{Node: reporter, CheckGroup: d.CheckGroup, Check: d.Check, Finding: d.Finding, Type: d.Type, Incident: d.Incident, AlertSeverity: config.HighestSeverity(d.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: d.AlertSeveritiesSentForIncident,
+			ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence}
 	}
 	for key, c := range r.Checks {
 		group, check, _ := strings.Cut(key, "/")
@@ -47,7 +48,8 @@ func announcedIncidents(reporter string, r *NodeStatusReport) store.ReportedInci
 		for _, track := range tracks {
 			if t := track.t; t != nil && t.Incident != "" && t.Announced == t.Incident {
 				found.Incidents[t.Incident] = checksandalerts.Event{Node: reporter, CheckGroup: group, Check: check, Finding: track.unit, Type: track.kind, Incident: t.Incident, AlertSeverity: t.AlertSeverity, AlertSeveritiesSentForIncident: t.AnnouncedAlertSeverities, SendAlertsOnlyToDestinations: c.SendAlertsOnlyToDestinations,
-					At: t.Opened, Message: track.message}
+					At: t.Opened, Message: track.message, ExactFinding: t.CurrentExactFinding, ExactFindingSequence: t.ExactFindingSequence}
+				found.ReminderEligible[t.Incident] = t.ReminderEligible
 			}
 		}
 	}

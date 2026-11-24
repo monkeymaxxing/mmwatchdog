@@ -176,7 +176,7 @@ func (d *Daemon) handleAlert(w http.ResponseWriter, r *http.Request) {
 		e = checksandalerts.DecodeJSONUpTo(b, &event, fleet.AlertLimit)
 	}
 	if e == nil && (!fleet.IDPattern.MatchString(event.ID) || !fleet.Notifying[event.Type] || !fleet.ValidSeverities(event) || event.At.IsZero() || event.Nodes != nil || event.NodeCount != 0 || event.MMHotlineAlert != nil || (event.Maintenance != nil) != strings.HasPrefix(event.Type, "maintenance_") || !fleet.ValidMaintenanceCheckGroups(event) ||
-		(event.Finding != "" && !checksandalerts.ValidFindingID(event.Finding)) ||
+		(event.Finding != "" && !checksandalerts.ValidFindingID(event.Finding)) || !fleet.ValidExactFinding(event) ||
 		(event.FleetIncidentKey != "") != checksandalerts.BelongsToAnIncident(event.Type) ||
 		(event.FleetIncidentKey != "" && !checksandalerts.FleetIncidentKeyPattern.MatchString(event.FleetIncidentKey)) ||
 		(event.Type == "reminder") != checksandalerts.NamePattern.MatchString(event.Destination)) {

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"fmt"
 	"slices"
 	"strings"
 	"time"
@@ -9,6 +10,7 @@ import (
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
 	"mmwatchdog/internal/incidents"
+	"mmwatchdog/internal/primitives"
 )
 
 // Fleet incident sets. A destination whose service keeps incidents of its
@@ -45,25 +47,15 @@ type IncidentSet struct {
 }
 
 // IncidentSetOf returns the fleet incident set of the destination named
-// name, when the destination keeps one: on the hub and on a standalone
-// node, where the module's description decides.
+// name, and whether the destination keeps incidents, so that its set holds
+// every incident of its alerts: on the hub and on a standalone node, where
+// the module's description decides. Every other destination's set holds
+// only the incidents of findings with an exact finding, on the hub.
 func IncidentSetOf(name string, d checksandalerts.Destination) (IncidentSet, bool) {
 	if p := d.MMHotline(); p != nil {
 		return IncidentSet{Destination: name, AlertSource: p.AlertSourceID}, true
 	}
 	return IncidentSet{Destination: name}, d.ServiceKeepsIncidents()
-}
-
-// IncidentSets lists the fleet incident sets that destinations keep, by
-// destination name.
-func IncidentSets(destinations map[string]checksandalerts.Destination) map[string]IncidentSet {
-	sets := map[string]IncidentSet{}
-	for name, d := range destinations {
-		if set, keeps := IncidentSetOf(name, d); keeps {
-			sets[name] = set
-		}
-	}
-	return sets
 }
 
 // inSet selects the rows of one fleet incident set in a statement;
@@ -106,6 +98,26 @@ type QueuedBy struct {
 	// fallback, the destinations that the fleet settings say keep
 	// incidents: the hub's own modules decide, not the node's copies.
 	DestinationsWhoseServiceKeepsIncidents []string
+	// NewlyAffectedNodesEvery is, on the hub, the shared tick of the updates
+	// of grouped keys: fleet_hub_role.send_newly_affected_nodes_every.
+	NewlyAffectedNodesEvery time.Duration
+	// Now is the time of the hub's step that queues, from its entry point;
+	// zero takes the clock's.
+	Now time.Time
+}
+
+func (f QueuedBy) now() time.Time {
+	if f.Now.IsZero() {
+		return time.Now()
+	}
+	return f.Now
+}
+
+func (f QueuedBy) newlyAffectedNodesEvery() time.Duration {
+	if f.NewlyAffectedNodesEvery > 0 {
+		return f.NewlyAffectedNodesEvery
+	}
+	return config.DefaultSendNewlyAffectedNodesEvery.Value()
 }
 
 // keepsIncidents reports a destination other than the mmhotline
@@ -199,6 +211,11 @@ type keyClosing struct {
 	// stillOpen, for the mmhotline destination's resolved-sos, are the
 	// incidents that keep the key open at a severity below sos.
 	stillOpen *keyRows
+	// othersStillOpen reports, on the hub, that other nodes still have an
+	// incident of the key open with an exact finding, routed elsewhere or
+	// set aside: the closing alert claims recovery only for the nodes that
+	// it covered.
+	othersStillOpen bool
 }
 
 // closeKeys returns the keys among changed that close, and marks the
@@ -208,39 +225,64 @@ type keyClosing struct {
 // sosResolvesFirst, for the mmhotline destination, a key that was sent at
 // sos closes its SOS as soon as none of its open incidents is sos: the key
 // is then a key of the severity that remains.
+//
+// A key that closes is no longer announced: a key that opens again starts
+// fresh. After resolved-sos the announced severity is the highest severity
+// still open. Whether a key closes is decided from indexed lookups, so an
+// alert that closes one of many incidents of a key costs the same as any.
 func (set IncidentSet) closeKeys(tx *sql.Tx, changed map[string]string, waiting map[string]bool, sosResolvesFirst bool, now time.Time) ([]keyClosing, error) {
 	closings := []keyClosing{}
 	for _, key := range checksandalerts.Names(changed) {
 		if waiting[key] {
 			continue
 		}
-		open, e := set.keyRows(tx, key, FleetIncidentOpen)
+		sent, e := set.keySent(tx, key)
 		if e != nil {
 			return nil, e
+		}
+		open, e := set.hasOpen(tx, key, "")
+		if e != nil {
+			return nil, e
+		}
+		var stillOpen *keyRows
+		if open {
+			if !sosResolvesFirst || config.HighestSeverity(sent) != "sos" {
+				continue
+			}
+			if openSos, e := set.hasOpen(tx, key, "sos"); e != nil || openSos {
+				if e != nil {
+					return nil, e
+				}
+				continue
+			}
+			rows, e := set.keyRows(tx, key, FleetIncidentOpen)
+			if e != nil {
+				return nil, e
+			}
+			stillOpen = &rows
 		}
 		closed, e := set.keyRows(tx, key, fleetIncidentClosed)
 		if e != nil {
 			return nil, e
 		}
-		sent, e := set.keySent(tx, key)
-		if e != nil {
-			return nil, e
+		if len(closed.nodes) == 0 {
+			continue
 		}
-		c := keyClosing{key: key, change: changed[key], closed: closed, sent: sent}
+		c := keyClosing{key: key, change: changed[key], closed: closed, sent: sent, stillOpen: stillOpen}
 		// After a closing alert the key starts over with the severities of
 		// what stays open, and the key keeps the time of the closing alert
 		// (reopenings).
-		startOver := ""
-		switch {
-		case len(closed.nodes) == 0:
-			continue
-		case len(open.nodes) == 0:
-		case sosResolvesFirst && config.HighestSeverity(sent) == "sos" && open.highest != "sos":
-			c.stillOpen, startOver = &open, open.highest
-		default:
-			continue
+		if stillOpen != nil {
+			_, e = tx.Exec(`INSERT INTO fleet_incident_keys(destination,alert_source,incident_key,alert_severities_sent,last_closing_alert_at,announced_alert_severity) VALUES(?,?,?,?,?,?)
+ ON CONFLICT(destination,alert_source,incident_key) DO UPDATE SET alert_severities_sent=excluded.alert_severities_sent, last_closing_alert_at=excluded.last_closing_alert_at, announced_alert_severity=excluded.announced_alert_severity`, set.with(key, stillOpen.highest, now.UnixNano(), stillOpen.highest)...)
+		} else {
+			_, e = tx.Exec(`INSERT INTO fleet_incident_keys(destination,alert_source,incident_key,alert_severities_sent,last_closing_alert_at) VALUES(?,?,?,'',?)
+ ON CONFLICT(destination,alert_source,incident_key) DO UPDATE SET alert_severities_sent='', last_closing_alert_at=excluded.last_closing_alert_at, announced_alert_severity='', announced_exact_findings='[]', next_update_due=0, next_reminder_due=0`, set.with(key, now.UnixNano())...)
+			if e == nil {
+				e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_node_incidents WHERE incident_key=? AND exact_finding!='')", key).Scan(&c.othersStillOpen)
+			}
 		}
-		if _, e = tx.Exec("INSERT INTO fleet_incident_keys(destination,alert_source,incident_key,alert_severities_sent,last_closing_alert_at) VALUES(?,?,?,?,?) ON CONFLICT(destination,alert_source,incident_key) DO UPDATE SET alert_severities_sent=excluded.alert_severities_sent, last_closing_alert_at=excluded.last_closing_alert_at", set.with(key, startOver, now.UnixNano())...); e != nil {
+		if e != nil {
 			return nil, e
 		}
 		if _, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=? WHERE "+inSet+" AND incident_key=? AND state=?", append([]any{fleetIncidentResolved, now.UnixNano()}, set.with(key, fleetIncidentClosed)...)...); e != nil {
@@ -475,12 +517,7 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 	if e != nil {
 		return e
 	}
-	for _, c := range closings {
-		if e = queueEvent(tx, at, name, dest, c.closingAlert(closedBy[c.key], message, from, now)); e != nil {
-			return e
-		}
-	}
-	return nil
+	return set.queueClosings(tx, at, name, dest, closings, closedBy, message, from, now)
 }
 
 // notOver lists the members whose incident the set does not hold as closed
@@ -557,7 +594,37 @@ func (c keyClosing) closingAlert(closedNow []checksandalerts.Event, cause checks
 	e.NodeCount = len(c.closed.nodes)
 	e.Nodes = c.closed.nodes[:min(len(c.closed.nodes), CombinedNames)]
 	e.WriteFleetIncidentClosingTexts(c.key, latest)
+	if c.othersStillOpen && e.NodeCount > 1 {
+		parts, was := closingTitle(c.key, e, e.Nodes, e.NodeCount-len(e.Nodes), e.Type, true)
+		e.Message = checksandalerts.TitleText(parts) + " (" + was + ")"
+		e.Title, e.TitleWasShortened = checksandalerts.FitTitle(parts)
+		e.WriteTitleWithAlertSeverity()
+		lines := []string{e.Message}
+		if latest != "" {
+			lines = append(lines, "latest: "+latest)
+		}
+		e.Body = primitives.AsReadableLines(strings.Join(lines, "\n"))
+	}
 	return e
+}
+
+// closingTitle is the title of a key's closing alert before it is fitted,
+// and what was open (checksandalerts.FleetIncidentClosingTitle). While
+// other nodes of the fleet still have an incident of the key open
+// (othersStillOpen), a closing alert for several nodes claims recovery
+// only for the nodes that it covered: "CVE-2026-123158 openssh is ok again
+// on the 3 nodes that this alert covered". "on every node" is said only
+// when no node has the key open.
+func closingTitle(readable string, about checksandalerts.Event, nodes []string, more int, change string, othersStillOpen bool) ([]checksandalerts.TitlePart, string) {
+	parts, was := checksandalerts.FleetIncidentClosingTitle(readable, about, nodes, more, change)
+	if !othersStillOpen || len(nodes)+more <= 1 {
+		return parts, was
+	}
+	covered := fmt.Sprintf(" on the %d nodes that this alert covered", len(nodes)+more)
+	if change == "closed_without_recovery" {
+		return []checksandalerts.TitlePart{{Text: about.AboutCheck() + " incidents closed" + covered + ", maybe not fixed"}}, was
+	}
+	return []checksandalerts.TitlePart{{Text: about.AboutCheck() + " is ok again" + covered}}, was
 }
 
 // recordSentWithoutTheHub records, on a joined node, each incident of
@@ -571,8 +638,10 @@ func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksand
 			return e
 		}
 		sent := strings.Join(lowestFirst(append(strings.Split(earlier, ","), m.AlertSeverity)), ",")
-		if _, e = tx.Exec(`INSERT INTO incidents_sent_without_the_hub(destination,incident_id,check_group,check_name,finding,kind,alert_severities_sent_for_incident,at) VALUES(?,?,?,?,?,?,?,?)
- ON CONFLICT(destination,incident_id) DO UPDATE SET alert_severities_sent_for_incident=excluded.alert_severities_sent_for_incident`, destination, m.Incident, m.CheckGroup, m.Check, m.Finding, checksandalerts.IncidentKind(m.Type), sent, now.UnixNano()); e != nil {
+		if _, e = tx.Exec(`INSERT INTO incidents_sent_without_the_hub(destination,incident_id,check_group,check_name,finding,kind,alert_severities_sent_for_incident,at,exact_finding,exact_finding_sequence) VALUES(?,?,?,?,?,?,?,?,?,?)
+ ON CONFLICT(destination,incident_id) DO UPDATE SET alert_severities_sent_for_incident=excluded.alert_severities_sent_for_incident,
+ exact_finding=CASE WHEN excluded.exact_finding_sequence>=exact_finding_sequence THEN excluded.exact_finding ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,excluded.exact_finding_sequence)`,
+			destination, m.Incident, m.CheckGroup, m.Check, m.Finding, checksandalerts.IncidentKind(m.Type), sent, now.UnixNano(), m.ExactFinding, m.ExactFindingSequence); e != nil {
 			return e
 		}
 	}
@@ -580,14 +649,21 @@ func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksand
 }
 
 // keepOnlyIncidentSets deletes, in the commit tx, the rows of every fleet
-// incident set that is not in sets: of a destination that is gone or no
-// longer keeps incidents, and the mmhotline destination's rows of another
-// alert source. A joined node keeps no set.
-func keepOnlyIncidentSets(tx *sql.Tx, sets map[string]IncidentSet) error {
+// incident set that the destinations in force do not keep: of a
+// destination that is gone, and the mmhotline destination's rows of another
+// alert source. A destination whose service keeps no incidents keeps only
+// the rows of keys grouped by exact finding. A joined node keeps no set.
+func keepOnlyIncidentSets(tx *sql.Tx, destinations map[string]checksandalerts.Destination) error {
 	keep, args := []string{}, []any{}
-	for _, name := range checksandalerts.Names(sets) {
+	grouped, groupedArgs := []string{}, []any{}
+	for _, name := range checksandalerts.Names(destinations) {
+		set, keeps := IncidentSetOf(name, destinations[name])
 		keep = append(keep, "(?,?)")
-		args = append(args, sets[name].with()...)
+		args = append(args, set.with()...)
+		if !keeps {
+			grouped = append(grouped, "(?,?)")
+			groupedArgs = append(groupedArgs, set.with()...)
+		}
 	}
 	for _, table := range []string{"fleet_incident_set", "fleet_incident_keys"} {
 		statement := "DELETE FROM " + table
@@ -598,7 +674,16 @@ func keepOnlyIncidentSets(tx *sql.Tx, sets map[string]IncidentSet) error {
 			return e
 		}
 	}
-	return nil
+	if len(grouped) == 0 {
+		return nil
+	}
+	in := " (destination,alert_source) IN (VALUES " + strings.Join(grouped, ",") + ")"
+	if _, e := tx.Exec("DELETE FROM fleet_incident_set WHERE grouped_by_exact_finding=0 AND"+in, groupedArgs...); e != nil {
+		return e
+	}
+	_, e := tx.Exec(`DELETE FROM fleet_incident_keys WHERE`+in+` AND NOT EXISTS (SELECT 1 FROM fleet_incident_set s
+ WHERE s.destination=fleet_incident_keys.destination AND s.alert_source=fleet_incident_keys.alert_source AND s.incident_key=fleet_incident_keys.incident_key)`, groupedArgs...)
+	return e
 }
 
 // ReportedIncidents is what one node's latest report says for the hub's
@@ -612,6 +697,9 @@ type ReportedIncidents struct {
 	Incidents         map[string]checksandalerts.Event
 	SentWithoutTheHub map[string]map[string]checksandalerts.Event
 	Forgotten         bool
+	// ReminderEligible names the announced incidents that are eligible for
+	// the hub's reminders of a grouped key (incidents.Track.ReminderEligible).
+	ReminderEligible map[string]bool
 }
 
 // IncidentSentWithoutTheHub is an incident whose failure or raise a joined
@@ -630,6 +718,15 @@ type IncidentSentWithoutTheHub struct {
 	// AlertSeveritiesSentForIncident are the severities that its alerts
 	// went to the destination with, lowest first.
 	AlertSeveritiesSentForIncident []string `json:"alert_severities_sent_for_incident"`
+	// ExactFinding is the latest exact finding that the node sent, with
+	// its sequence number. A joined node keeps the record of a finding with
+	// an exact finding for every destination, also a chat or a mailbox: the
+	// hub sends the closing alert.
+	ExactFinding         string `json:"exact_finding,omitempty"`
+	ExactFindingSequence int64  `json:"exact_finding_sequence,omitempty"`
+	// AlertSource is the MMHotline alert source that the direct send used,
+	// or empty for the destination's own.
+	AlertSource string `json:"alert_source,omitempty"`
 }
 
 // IncidentKnownToTheHub is an incident that a report carried as sent
@@ -638,233 +735,6 @@ type IncidentSentWithoutTheHub struct {
 type IncidentKnownToTheHub struct {
 	Destination string `json:"destination"`
 	Incident    string `json:"incident_id"`
-}
-
-// ReconcileIncidentSets applies nodes' latest reports to the fleet incident
-// set of each destination among destinations that keeps one: an announced
-// incident that the set lacks joins it when its alerts go to that
-// destination, and an incident that a newer report no longer shows closes,
-// such as one whose recovery a joined node's fallback did not send. An
-// incident that the node sent to the destination without the hub joins the
-// set too, closed when it is over already. A forgotten node's incidents
-// close. Each key this empties, with no failure waiting in fleet alert
-// grouping, gets its one closing alert. An open incident that joins the set
-// after the destination's closing alert for its key, although it opened
-// before that alert, gets its failure sent again: the closing alert closed
-// what its failure had opened in the service.
-//
-// While awaitingReports, some node has not reported since the hub started,
-// and may hold a key open without the hub knowing, so no key closes; once
-// every node has reported, or three report intervals have passed, keys left
-// with only closed incidents close.
-func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, destinations map[string]checksandalerts.Destination, awaitingReports bool, now time.Time) error {
-	sets := IncidentSets(destinations)
-	if len(sets) == 0 {
-		return nil
-	}
-	tx, e := s.DB.Begin()
-	if e != nil {
-		return e
-	}
-	defer tx.Rollback()
-	waiting, e := waitingFailureKeys(tx, s.Node, nil)
-	if e != nil {
-		return e
-	}
-	from := QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity}
-	for _, name := range checksandalerts.Names(sets) {
-		dest := destinations[name]
-		set := sets[name]
-		reopened, closings, e := set.reconcile(tx, name, destinations, changes, awaitingReports, waiting, s.Node, now)
-		if e != nil {
-			return e
-		}
-		if dest.MMHotline() != nil {
-			alerts := []checksandalerts.Event{}
-			for _, failure := range reopened {
-				key := checksandalerts.ReadableFleetIncidentKey(failure, checksandalerts.IncidentKind(failure.Type), s.Node)
-				open, e := set.keyRows(tx, key, FleetIncidentOpen)
-				if e != nil {
-					return e
-				}
-				if e = set.recordSent(tx, key, open.highest); e != nil {
-					return e
-				}
-				alerts = append(alerts, MMHotlineFailure(failure, []checksandalerts.Event{failure}, from, open.highest))
-			}
-			for _, c := range closings {
-				alerts = append(alerts, c.mmhotlineAlert(checksandalerts.Event{}, from, now))
-			}
-			if e = queueAlerts(tx, now.UnixNano(), name, dest, alerts); e != nil {
-				return e
-			}
-			continue
-		}
-		for _, failure := range reopened {
-			failure.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(checksandalerts.ReadableFleetIncidentKey(failure, checksandalerts.IncidentKind(failure.Type), s.Node)), s.Node, s.FleetIdentity)
-			if e = queueEvent(tx, now.UnixNano(), name, dest, failure); e != nil {
-				return e
-			}
-		}
-		for _, c := range closings {
-			if e = queueEvent(tx, now.UnixNano(), name, dest, c.closingAlert(nil, checksandalerts.Event{}, from, now)); e != nil {
-				return e
-			}
-		}
-	}
-	return tx.Commit()
-}
-
-// reconcile applies the reports to one set, the set of the destination
-// name, and returns the failures to send again and the keys that close.
-// hub is the hub's own name.
-func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[string]checksandalerts.Destination, changes map[string]ReportedIncidents, awaitingReports bool, waiting map[string]bool, hub string, now time.Time) ([]checksandalerts.Event, []keyClosing, error) {
-	changed := map[string]string{}
-	reopened := []checksandalerts.Event{}
-	for _, reporter := range checksandalerts.Names(changes) {
-		r := changes[reporter]
-		carried := r.SentWithoutTheHub[name]
-		type row struct {
-			id, key, severity string
-			state             int
-			opened            int64
-		}
-		rows, e := tx.Query("SELECT incident_id, incident_key, state, opened, alert_severity FROM fleet_incident_set WHERE "+inSet+" AND reporter=?", set.with(reporter)...)
-		if e != nil {
-			return nil, nil, e
-		}
-		held := map[string]row{}
-		for rows.Next() {
-			var x row
-			if e = rows.Scan(&x.id, &x.key, &x.state, &x.opened, &x.severity); e != nil {
-				_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
-				return nil, nil, e
-			}
-			held[x.id] = x
-		}
-		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
-		if e = rows.Err(); e != nil {
-			return nil, nil, e
-		}
-		for id, x := range held {
-			// A resolved row stays while the node still carries the incident,
-			// so it is not added again as a new one.
-			shownIncident, shown := r.Incidents[id]
-			carriedIncident, isCarried := carried[id]
-			// A raise that the hub did not deliver, such as one that the node
-			// sent without the hub, still decides the key's closing alert, as
-			// far as the destination takes its severity.
-			reported := carriedIncident.AlertSeveritiesSentForIncident
-			if shown {
-				reported = append(slices.Clone(reported), severitiesSentTo(name, destinations, shownIncident)...)
-			}
-			if x.state != fleetIncidentResolved && len(reported) > 0 {
-				if higher := config.HigherSeverity(x.severity, config.HighestSeverity(reported)); higher != x.severity {
-					if _, e = tx.Exec("UPDATE fleet_incident_set SET alert_severity=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{higher}, set.with(reporter, id)...)...); e != nil {
-						return nil, nil, e
-					}
-				}
-				if e = set.recordSent(tx, x.key, reported...); e != nil {
-					return nil, nil, e
-				}
-			}
-			if shown || (!r.Forgotten && (x.opened >= r.Sent.UnixNano() || (isCarried && x.state == fleetIncidentResolved))) {
-				continue
-			}
-			switch x.state {
-			case FleetIncidentOpen:
-				_, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{fleetIncidentClosed, now.UnixNano()}, set.with(reporter, id)...)...)
-				// A report cannot tell a recovery from a retirement; a forget
-				// retires.
-				if r.Forgotten {
-					changed[x.key] = "closed_without_recovery"
-				} else if changed[x.key] == "" {
-					changed[x.key] = "recovered"
-				}
-			case fleetIncidentResolved:
-				_, e = tx.Exec("DELETE FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...)
-			}
-			if e != nil {
-				return nil, nil, e
-			}
-		}
-		add := func(id string, m checksandalerts.Event, sent []string, state int) (string, error) {
-			held[id] = row{id: id}
-			key := checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub)
-			_, e := tx.Exec(`INSERT INTO fleet_incident_set(destination,alert_source,reporter,incident_id,incident_key,check_group,check_name,finding,node,opened,alert_severity,state,changed) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				set.with(reporter, id, key, m.CheckGroup, m.Check, m.Finding, checksandalerts.AlertNode(m, hub), r.Sent.UnixNano(), config.HighestSeverity(sent), state, now.UnixNano())...)
-			if e != nil {
-				return "", e
-			}
-			// The incident's alerts reached the destination, through the hub
-			// before a restart or straight from the node.
-			return key, set.recordSent(tx, key, sent...)
-		}
-		for _, id := range checksandalerts.Names(r.Incidents) {
-			// Only an incident whose alerts go to this destination belongs
-			// in its set, with the severities that the destination took.
-			shown := r.Incidents[id]
-			sent := severitiesSentTo(name, destinations, shown)
-			if _, ok := held[id]; ok || len(sent) == 0 {
-				continue
-			}
-			key, e := add(id, shown, sent, FleetIncidentOpen)
-			if e != nil {
-				return nil, nil, e
-			}
-			// The destination's closing alert for the key went out while this
-			// incident was open, so it closed what the incident's failure had
-			// opened in the service: the failure goes out again.
-			closedAt, e := set.lastClosingAlert(tx, key)
-			if e != nil {
-				return nil, nil, e
-			}
-			if !shown.At.IsZero() && closedAt > shown.At.UnixNano() {
-				failure := checksandalerts.Event{ID: incidents.ID(), Incident: id, FleetIncidentKey: checksandalerts.FleetIncidentKey(key), Node: reporter, CheckGroup: shown.CheckGroup, Check: shown.Check, Finding: shown.Finding,
-					Type: shown.Type, AlertSeverity: config.HighestSeverity(sent), At: shown.At, Message: shown.Message, SendAlertsOnlyToDestinations: shown.SendAlertsOnlyToDestinations}
-				failure.WriteAlertTexts([]checksandalerts.Event{failure}, hub)
-				reopened = append(reopened, failure)
-			}
-		}
-		for _, id := range checksandalerts.Names(carried) {
-			if _, ok := held[id]; !ok && !r.Forgotten {
-				m := carried[id]
-				key, e := add(id, m, m.AlertSeveritiesSentForIncident, fleetIncidentClosed)
-				if e != nil {
-					return nil, nil, e
-				}
-				if changed[key] == "" {
-					changed[key] = "recovered"
-				}
-			}
-		}
-	}
-	// Until every node has reported since the hub started, another node
-	// may still hold a key open without the hub knowing.
-	if awaitingReports {
-		return reopened, nil, nil
-	}
-	// Close the keys whose closing waited for those reports.
-	rows, e := tx.Query("SELECT DISTINCT incident_key FROM fleet_incident_set WHERE "+inSet+" AND state=?", set.with(fleetIncidentClosed)...)
-	if e != nil {
-		return nil, nil, e
-	}
-	for rows.Next() {
-		var key string
-		if e = rows.Scan(&key); e != nil {
-			_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
-			return nil, nil, e
-		}
-		if changed[key] == "" {
-			changed[key] = "recovered"
-		}
-	}
-	_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
-	if e = rows.Err(); e != nil {
-		return nil, nil, e
-	}
-	closings, e := set.closeKeys(tx, changed, waiting, destinations[name].MMHotline() != nil, now)
-	return reopened, closings, e
 }
 
 // IncidentsKnownToTheHub lists the incidents among carried that the hub's
@@ -891,21 +761,472 @@ func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWi
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
+	// The hub settles the record of a finding with an exact finding by
+	// itself, whether or not the incident is in the destination's set.
+	settled := map[IncidentKnownToTheHub]bool{}
+	settledRows, err := s.DB.Query("SELECT destination, incident_id FROM fleet_direct_sends_settled WHERE reporter=?", reporter)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_ = settledRows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+	}()
+	for settledRows.Next() {
+		var incident IncidentKnownToTheHub
+		if err := settledRows.Scan(&incident.Destination, &incident.Incident); err != nil {
+			return nil, err
+		}
+		settled[incident] = true
+	}
+	if err := settledRows.Err(); err != nil {
+		return nil, err
+	}
 	known := []IncidentKnownToTheHub{}
 	for _, d := range carried {
 		incident := IncidentKnownToTheHub{Destination: d.Destination, Incident: d.Incident}
-		if held[incident] {
+		if d.ExactFinding != "" && settled[incident] || d.ExactFinding == "" && held[incident] {
 			known = append(known, incident)
 		}
 	}
 	return known, nil
 }
 
+// ReconcileIncidentSets applies nodes' latest reports to the fleet incident
+// set of each destination: an announced incident that the set lacks joins
+// it when its alerts go to that destination, and an incident that a newer
+// report no longer shows closes, such as one whose recovery a joined
+// node's fallback did not send. A destination whose service keeps no
+// incidents takes only the incidents of findings with an exact finding. An
+// incident that the node sent to the destination without the hub joins
+// the set too, closed when it is over already. A forgotten node's
+// incidents close. Each key this empties, with no failure waiting in fleet
+// alert grouping, gets its one closing alert. An open incident that joins
+// the set after the destination's closing alert for its key, although it
+// opened before that alert, gets its failure sent again: the closing alert
+// closed what its failure had opened in the service. Reports keep
+// fleet_node_incidents too (reconcileNodeIncidents).
+//
+// For a finding with an exact finding, an incident that a report adds
+// goes through the rules of grouping by exact finding: covered growth is
+// marked for the key's next update, a reopened failure goes out as new,
+// and a report never announces anything. The hub settles each direct
+// send of such a finding: the node joins the next update, or, when a
+// set-aside entry covers its incident and nothing else of the key is open
+// for the destination, the destination gets closed_without_recovery.
+//
+// While awaitingReports, some node has not reported since the hub started,
+// and may hold a key open without the hub knowing, so no key closes; once
+// every node has reported, or three report intervals have passed, keys left
+// with only closed incidents close.
+func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, destinations map[string]checksandalerts.Destination, awaitingReports bool, now time.Time) error {
+	if len(destinations) == 0 {
+		return nil
+	}
+	tx, e := s.DB.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	setAside, e := reconcileNodeIncidents(tx, changes, s.Node)
+	if e != nil {
+		return e
+	}
+	waiting, e := waitingFailureKeys(tx, s.Node, nil)
+	if e != nil {
+		return e
+	}
+	from := QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), Now: now}
+	at := now.UnixNano()
+	for _, name := range checksandalerts.Names(destinations) {
+		dest := destinations[name]
+		set, keeps := IncidentSetOf(name, dest)
+		r, e := set.reconcile(tx, name, destinations, changes, keeps, awaitingReports, waiting, setAside, from, now)
+		if e != nil {
+			return e
+		}
+		for _, failure := range r.reopened {
+			switch {
+			case checksandalerts.HasExactFinding(failure):
+				e = set.groupedOpening(tx, at, name, dest, failure, from, now)
+			case dest.MMHotline() != nil:
+				key := checksandalerts.ReadableFleetIncidentKey(failure, checksandalerts.IncidentKind(failure.Type), s.Node)
+				var open keyRows
+				if open, e = set.keyRows(tx, key, FleetIncidentOpen); e == nil {
+					if e = set.recordSent(tx, key, open.highest); e == nil {
+						e = queueAlerts(tx, at, name, dest, []checksandalerts.Event{MMHotlineFailure(failure, []checksandalerts.Event{failure}, from, open.highest)})
+					}
+				}
+			default:
+				failure.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(checksandalerts.ReadableFleetIncidentKey(failure, checksandalerts.IncidentKind(failure.Type), s.Node)), s.Node, s.FleetIdentity)
+				e = queueEvent(tx, at, name, dest, failure)
+			}
+			if e != nil {
+				return e
+			}
+		}
+		for _, closing := range r.setAside {
+			if dest.MMHotline() != nil {
+				e = queueAlerts(tx, at, name, dest, []checksandalerts.Event{MMHotlineEvent(closing, closing.ID, closing.FleetIncidentKey, "resolved-"+closing.AlertSeverity, closing.Title, []string{closing.Body, from.SentBy()})})
+			} else {
+				e = queueEvent(tx, at, name, dest, closing)
+			}
+			if e != nil {
+				return e
+			}
+		}
+		if e = set.queueClosings(tx, at, name, dest, r.closings, nil, checksandalerts.Event{}, from, now); e != nil {
+			return e
+		}
+	}
+	return tx.Commit()
+}
+
+// reconcileNodeIncidents applies the reports to fleet_node_incidents: each
+// incident that a report shows is recorded with its severity, its
+// eligibility for the hub's reminders, and its exact finding, unless the
+// hub holds a newer one (exact_finding_sequence), whichever path it came
+// by. An incident that a newer report no longer shows, and each incident of
+// a forgotten node, is removed. It returns the set-aside reason of each
+// reported incident below sos that a set-aside entry covers, by reporter
+// and incident ID (reporter, a zero byte, the ID).
+func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hub string) (map[string]string, error) {
+	aside := map[string]string{}
+	for _, reporter := range checksandalerts.Names(changes) {
+		r := changes[reporter]
+		type held struct {
+			opened        int64
+			entry, reason string
+		}
+		rows, e := tx.Query("SELECT incident_id, opened, set_aside_entry, set_aside_reason FROM fleet_node_incidents WHERE reporter=?", reporter)
+		if e != nil {
+			return nil, e
+		}
+		heldRows := map[string]held{}
+		for rows.Next() {
+			var id string
+			var x held
+			if e = rows.Scan(&id, &x.opened, &x.entry, &x.reason); e != nil {
+				_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+				return nil, e
+			}
+			heldRows[id] = x
+		}
+		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+		if e = rows.Err(); e != nil {
+			return nil, e
+		}
+		for _, id := range checksandalerts.Names(heldRows) {
+			if _, shown := r.Incidents[id]; shown || !r.Forgotten && heldRows[id].opened >= r.Sent.UnixNano() {
+				continue
+			}
+			if _, e = tx.Exec("DELETE FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", reporter, id); e != nil {
+				return nil, e
+			}
+		}
+		for _, id := range checksandalerts.Names(r.Incidents) {
+			m := r.Incidents[id]
+			x, known := heldRows[id]
+			if !known {
+				opened := m.At
+				if opened.IsZero() {
+					opened = r.Sent
+				}
+				_, e = tx.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+					reporter, id, checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub), checksandalerts.AlertNode(m, hub), m.CheckGroup, m.Check, m.Finding, m.ExactFinding, m.ExactFindingSequence, m.AlertSeverity, opened.UnixNano(), r.ReminderEligible[id])
+			} else {
+				_, e = tx.Exec(`UPDATE fleet_node_incidents SET alert_severity=?, reminder_eligible=?, exact_finding=CASE WHEN ?>=exact_finding_sequence THEN ? ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,?) WHERE reporter=? AND incident_id=?`,
+					m.AlertSeverity, r.ReminderEligible[id], m.ExactFindingSequence, m.ExactFinding, m.ExactFindingSequence, reporter, id)
+				if x.entry != "" && m.AlertSeverity != "sos" {
+					aside[reporter+"\x00"+id] = x.reason
+				}
+			}
+			if e != nil {
+				return nil, e
+			}
+		}
+	}
+	return aside, nil
+}
+
+// reconciled is what applying the reports to one set sends: the failures
+// to send again, the closed_without_recovery of direct sends whose
+// incident a set-aside entry covers, and the keys that close.
+type reconciled struct {
+	reopened, setAside []checksandalerts.Event
+	closings           []keyClosing
+}
+
+// reconcile applies the reports to one set, the set of the destination
+// name, which keeps incidents (keeps) or holds only the incidents of
+// findings with an exact finding. setAside are the set-aside reasons of
+// reconcileNodeIncidents.
+func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[string]checksandalerts.Destination, changes map[string]ReportedIncidents, keeps, awaitingReports bool, waiting map[string]bool, setAside map[string]string, from QueuedBy, now time.Time) (reconciled, error) {
+	var out reconciled
+	hub := from.hub()
+	changed := map[string]string{}
+	type closedRow struct{ key, reporter, id, severity string }
+	closedGrouped := []closedRow{}
+	for _, reporter := range checksandalerts.Names(changes) {
+		r := changes[reporter]
+		carried := r.SentWithoutTheHub[name]
+		type row struct {
+			id, key, severity string
+			state             int
+			opened            int64
+			grouped           bool
+		}
+		rows, e := tx.Query("SELECT incident_id, incident_key, state, opened, alert_severity, grouped_by_exact_finding FROM fleet_incident_set WHERE "+inSet+" AND reporter=?", set.with(reporter)...)
+		if e != nil {
+			return out, e
+		}
+		held := map[string]row{}
+		for rows.Next() {
+			var x row
+			if e = rows.Scan(&x.id, &x.key, &x.state, &x.opened, &x.severity, &x.grouped); e != nil {
+				_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+				return out, e
+			}
+			held[x.id] = x
+		}
+		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+		if e = rows.Err(); e != nil {
+			return out, e
+		}
+		for _, id := range checksandalerts.Names(held) {
+			x := held[id]
+			// A resolved row stays while the node still carries the incident,
+			// so it is not added again as a new one.
+			shownIncident, shown := r.Incidents[id]
+			carriedIncident, isCarried := carried[id]
+			// A raise that the hub did not deliver, such as one that the node
+			// sent without the hub, still decides the key's closing alert, as
+			// far as the destination takes its severity.
+			reported := carriedIncident.AlertSeveritiesSentForIncident
+			if shown {
+				reported = append(slices.Clone(reported), severitiesSentTo(name, destinations, shownIncident)...)
+			}
+			if x.state != fleetIncidentResolved && len(reported) > 0 {
+				if higher := config.HigherSeverity(x.severity, config.HighestSeverity(reported)); higher != x.severity {
+					if _, e = tx.Exec("UPDATE fleet_incident_set SET alert_severity=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{higher}, set.with(reporter, id)...)...); e != nil {
+						return out, e
+					}
+				}
+				if e = set.recordSent(tx, x.key, reported...); e != nil {
+					return out, e
+				}
+			}
+			if shown || (!r.Forgotten && (x.opened >= r.Sent.UnixNano() || (isCarried && x.state == fleetIncidentResolved))) {
+				continue
+			}
+			switch x.state {
+			case FleetIncidentOpen:
+				_, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{fleetIncidentClosed, now.UnixNano()}, set.with(reporter, id)...)...)
+				// A report cannot tell a recovery from a retirement; a forget
+				// retires.
+				if r.Forgotten {
+					changed[x.key] = "closed_without_recovery"
+				} else if changed[x.key] == "" {
+					changed[x.key] = "recovered"
+				}
+				if x.grouped {
+					closedGrouped = append(closedGrouped, closedRow{x.key, reporter, id, x.severity})
+				}
+			case fleetIncidentResolved:
+				_, e = tx.Exec("DELETE FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...)
+			}
+			if e != nil {
+				return out, e
+			}
+		}
+		add := func(id string, m checksandalerts.Event, sent []string, state int, grouped bool) (string, error) {
+			held[id] = row{id: id, state: state}
+			key := checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub)
+			_, e := tx.Exec(`INSERT INTO fleet_incident_set(destination,alert_source,reporter,incident_id,incident_key,check_group,check_name,finding,node,opened,alert_severity,state,changed,grouped_by_exact_finding) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				set.with(reporter, id, key, m.CheckGroup, m.Check, m.Finding, checksandalerts.AlertNode(m, hub), r.Sent.UnixNano(), config.HighestSeverity(sent), state, now.UnixNano(), grouped)...)
+			if e != nil {
+				return "", e
+			}
+			// The incident's alerts reached the destination, through the hub
+			// before a restart or straight from the node.
+			return key, set.recordSent(tx, key, sent...)
+		}
+		for _, id := range checksandalerts.Names(r.Incidents) {
+			// Only an incident whose alerts go to this destination belongs
+			// in its set, with the severities that the destination took. A
+			// set-aside incident is never in a set.
+			shown := r.Incidents[id]
+			grouped := checksandalerts.HasExactFinding(shown)
+			sent := severitiesSentTo(name, destinations, shown)
+			if _, ok := held[id]; ok || len(sent) == 0 || !keeps && !grouped || setAside[reporter+"\x00"+id] != "" {
+				continue
+			}
+			key, e := add(id, shown, sent, FleetIncidentOpen, grouped)
+			if e != nil {
+				return out, e
+			}
+			// The destination's closing alert for the key went out while this
+			// incident was open, so it closed what the incident's failure had
+			// opened in the service: the failure goes out again.
+			closedAt, e := set.lastClosingAlert(tx, key)
+			if e != nil {
+				return out, e
+			}
+			if !shown.At.IsZero() && closedAt > shown.At.UnixNano() {
+				failure := checksandalerts.Event{ID: incidents.ID(), Incident: id, FleetIncidentKey: checksandalerts.FleetIncidentKey(key), Node: reporter, CheckGroup: shown.CheckGroup, Check: shown.Check, Finding: shown.Finding,
+					Type: shown.Type, AlertSeverity: config.HighestSeverity(sent), At: shown.At, Message: shown.Message, SendAlertsOnlyToDestinations: shown.SendAlertsOnlyToDestinations,
+					ExactFinding: shown.ExactFinding, ExactFindingSequence: shown.ExactFindingSequence}
+				failure.WriteAlertTexts([]checksandalerts.Event{failure}, hub)
+				if grouped {
+					failure.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(failure.FleetIncidentKey, from.Node, from.FleetIdentity)
+				}
+				out.reopened = append(out.reopened, failure)
+				continue
+			}
+			// A report never announces: an incident that the announcement
+			// covers is growth for the next update, and anything else waits
+			// for its alert, or for the settling of its direct send.
+			if grouped {
+				a, e := set.announcement(tx, key)
+				if e != nil {
+					return out, e
+				}
+				if a.covers(config.HighestSeverity(sent), shown.ExactFinding) {
+					if e = set.markPending(tx, key, reporter, id, pendingJoined, config.HighestSeverity(sent), from, now); e != nil {
+						return out, e
+					}
+				}
+			}
+		}
+		for _, id := range checksandalerts.Names(carried) {
+			c := carried[id]
+			if !checksandalerts.HasExactFinding(c) {
+				if _, ok := held[id]; !ok && !r.Forgotten && keeps {
+					key, e := add(id, c, c.AlertSeveritiesSentForIncident, fleetIncidentClosed, false)
+					if e != nil {
+						return out, e
+					}
+					if changed[key] == "" {
+						changed[key] = "recovered"
+					}
+				}
+				continue
+			}
+			if e = set.settleDirectSend(tx, reporter, id, c, r, func() (string, error) {
+				state := fleetIncidentClosed
+				if _, shown := r.Incidents[id]; shown {
+					state = FleetIncidentOpen
+				}
+				return add(id, c, c.AlertSeveritiesSentForIncident, state, true)
+			}, setAside[reporter+"\x00"+id], changed, &out, from, now); e != nil {
+				return out, e
+			}
+		}
+	}
+	for _, x := range closedGrouped {
+		if open, e := set.hasOpen(tx, x.key, ""); e != nil || !open {
+			if e != nil {
+				return out, e
+			}
+			continue
+		}
+		if e := set.markPending(tx, x.key, x.reporter, x.id, pendingRecovered, x.severity, from, now); e != nil {
+			return out, e
+		}
+	}
+	// Until every node has reported since the hub started, another node
+	// may still hold a key open without the hub knowing.
+	if awaitingReports {
+		return out, nil
+	}
+	// Close the keys whose closing waited for those reports.
+	rows, e := tx.Query("SELECT DISTINCT incident_key FROM fleet_incident_set WHERE "+inSet+" AND state=?", set.with(fleetIncidentClosed)...)
+	if e != nil {
+		return out, e
+	}
+	for rows.Next() {
+		var key string
+		if e = rows.Scan(&key); e != nil {
+			_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+			return out, e
+		}
+		if changed[key] == "" {
+			changed[key] = "recovered"
+		}
+	}
+	_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+	if e = rows.Err(); e != nil {
+		return out, e
+	}
+	out.closings, e = set.closeKeys(tx, changed, waiting, destinations[name].MMHotline() != nil, now)
+	return out, e
+}
+
+// settleDirectSend settles, once, the record of a direct send that the
+// reporter's node made to the set's destination without the hub, for a
+// finding with an exact finding (c), whatever the set holds. A direct
+// send is never the last word: an incident that is not set aside joins the
+// set, added by add when the set lacks it, and an open one is marked as
+// joined for the key's next update, so the agent sees the node. When a
+// set-aside entry covers the incident (reason) and nothing else of the
+// key is open for the destination, the destination gets
+// closed_without_recovery. The record is acknowledged afterwards
+// (IncidentsKnownToTheHub).
+func (set IncidentSet) settleDirectSend(tx *sql.Tx, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), reason string, changed map[string]string, out *reconciled, from QueuedBy, now time.Time) error {
+	var settled bool
+	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=?)", set.Destination, reporter, id).Scan(&settled); e != nil || settled || r.Forgotten {
+		return e
+	}
+	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
+	var e error
+	switch {
+	case reason != "":
+		var open bool
+		if open, e = set.hasOpen(tx, key, ""); e == nil && !open {
+			out.setAside = append(out.setAside, setAsideClosingAlert(c, key, reason, from, now))
+		}
+	default:
+		var state int
+		e = tx.QueryRow("SELECT state FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...).Scan(&state)
+		if e == sql.ErrNoRows {
+			state = fleetIncidentClosed
+			if _, e = add(); e == nil {
+				e = tx.QueryRow("SELECT state FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...).Scan(&state)
+			}
+			if e == nil && state == fleetIncidentClosed && changed[key] == "" {
+				changed[key] = "recovered"
+			}
+		}
+		if e == nil && state == FleetIncidentOpen {
+			e = set.markPending(tx, key, reporter, id, pendingJoined, c.AlertSeverity, from, now)
+		}
+	}
+	if e != nil {
+		return e
+	}
+	_, e = tx.Exec("INSERT OR IGNORE INTO fleet_direct_sends_settled(destination,reporter,incident_id,settled) VALUES(?,?,?,?)", set.Destination, reporter, id, now.UnixNano())
+	return e
+}
+
+// setAsideClosingAlert is the closed_without_recovery that tells a
+// destination which got a node's direct send of an incident that a
+// set-aside entry covers on the hub that the incident is over for it:
+// "Set aside after investigation: REASON". c is the direct send's record.
+func setAsideClosingAlert(c checksandalerts.Event, key, reason string, from QueuedBy, now time.Time) checksandalerts.Event {
+	e := checksandalerts.Event{ID: incidents.ID(), Type: "closed_without_recovery", Node: c.Node, CheckGroup: c.CheckGroup, Check: c.Check, Finding: c.Finding, Incident: c.Incident,
+		AlertSeverity: config.HighestSeverity(c.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: c.AlertSeveritiesSentForIncident, At: now,
+		FleetIncidentKey: checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity), ExactFinding: c.ExactFinding}
+	e.Message = "Set aside after investigation: " + reason
+	e.Title, e.TitleWasShortened = checksandalerts.FitTitle([]checksandalerts.TitlePart{{Text: c.Node + ": " + e.AboutCheck() + " set aside after investigation"}})
+	e.WriteTitleWithAlertSeverity()
+	e.Body = primitives.AsReadableLines(e.Message)
+	return e
+}
+
 // SentWithoutTheHub lists the incidents that this node sent without the
 // hub to a destination that keeps a fleet incident set, and that no
 // report reply has named as known to the hub yet.
 func (s *Store) SentWithoutTheHub() ([]IncidentSentWithoutTheHub, error) {
-	rows, e := s.DB.Query("SELECT destination, incident_id, check_group, check_name, finding, kind, alert_severities_sent_for_incident FROM incidents_sent_without_the_hub ORDER BY at")
+	rows, e := s.DB.Query("SELECT destination, incident_id, check_group, check_name, finding, kind, alert_severities_sent_for_incident, exact_finding, exact_finding_sequence, alert_source FROM incidents_sent_without_the_hub ORDER BY at")
 	if e != nil {
 		return nil, e
 	}
@@ -916,7 +1237,7 @@ func (s *Store) SentWithoutTheHub() ([]IncidentSentWithoutTheHub, error) {
 	for rows.Next() {
 		var d IncidentSentWithoutTheHub
 		var sent string
-		if e = rows.Scan(&d.Destination, &d.Incident, &d.CheckGroup, &d.Check, &d.Finding, &d.Type, &sent); e != nil {
+		if e = rows.Scan(&d.Destination, &d.Incident, &d.CheckGroup, &d.Check, &d.Finding, &d.Type, &sent, &d.ExactFinding, &d.ExactFindingSequence, &d.AlertSource); e != nil {
 			return nil, e
 		}
 		d.AlertSeveritiesSentForIncident = strings.Split(sent, ",")

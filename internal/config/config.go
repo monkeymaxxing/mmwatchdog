@@ -124,7 +124,27 @@ type FleetHubRole struct {
 	UndeliveredAlertsOfNodesContentSizeLimit checksandalerts.Size     `yaml:"undelivered_alerts_of_nodes_content_size_limit" json:"undelivered_alerts_of_nodes_content_size_limit,omitempty"`
 	// JoinedNodeLimit is how many nodes may join; see DefaultJoinedNodeLimit.
 	JoinedNodeLimit *int `yaml:"joined_node_limit" json:"joined_node_limit,omitempty"`
+	// SendNewlyAffectedNodesEvery is the shared tick of the hub's updates of
+	// a finding grouped by exact finding: the nodes that joined below sos,
+	// changed, or are ok again go out on multiples of it since
+	// 1970-01-01T00:00Z in UTC. It is the hub's own setting, so it is not
+	// part of the fleet settings that joined nodes copy. See
+	// DefaultSendNewlyAffectedNodesEvery.
+	SendNewlyAffectedNodesEvery checksandalerts.Duration `yaml:"send_newly_affected_nodes_every" json:"send_newly_affected_nodes_every,omitempty"`
 }
+
+// DefaultSendNewlyAffectedNodesEvery is the send_newly_affected_nodes_every
+// of a hub that states none. Reason: growth below sos asks a person to act
+// within days, and with every key on one tick a triage agent covers at most
+// 4 batches a day. Anything new goes out at once anyway: a new exact
+// finding, a higher severity, and every sos node within a minute.
+const DefaultSendNewlyAffectedNodesEvery checksandalerts.Duration = "6h"
+
+// shortestSendNewlyAffectedNodesEvery is the shortest
+// send_newly_affected_nodes_every. Reason: updates that add sos nodes go
+// each minute, so a shorter tick would only split growth below sos into
+// more messages than sos growth gets.
+const shortestSendNewlyAffectedNodesEvery = time.Minute
 
 // DefaultJoinedNodeLimit is the joined_node_limit of a hub that states none.
 // Reason: far above the fleets that MMWatchdog is tested with, and well
@@ -833,6 +853,12 @@ func (c *Config) validate() error {
 
 		if h.KeepEventHistoryOfNodesFor.Value() <= 0 {
 			return c.ErrorAt("fleet_hub_role.keep_event_history_of_nodes_for", "must be positive")
+		}
+		if h.SendNewlyAffectedNodesEvery == "" {
+			h.SendNewlyAffectedNodesEvery = DefaultSendNewlyAffectedNodesEvery
+		}
+		if every, e := checksandalerts.ParseDuration(string(h.SendNewlyAffectedNodesEvery)); e != nil || every < shortestSendNewlyAffectedNodesEvery {
+			return c.ErrorAt("fleet_hub_role.send_newly_affected_nodes_every", "expected a duration of at least 1m, such as 6h: the hub sends the nodes newly affected by an announced exact finding below sos on multiples of it in UTC")
 		}
 		if h.JoinedNodeLimit != nil && *h.JoinedNodeLimit < 1 {
 			return c.ErrorAt("fleet_hub_role.joined_node_limit", "the number of nodes that may join must be at least 1; set joined_node_limit: 1000")

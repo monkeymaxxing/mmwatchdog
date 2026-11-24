@@ -222,13 +222,17 @@ func (r *NodeStatusReport) Validate() error {
 			if t != nil && (config.SeverityRank(t.AlertSeverity) < 0 || !config.ValidSeverityList(t.AnnouncedAlertSeverities)) {
 				return fmt.Errorf("report carries an incident with an invalid alert severity")
 			}
+			if t != nil && !ValidExactFinding(checksandalerts.Event{Finding: "f", ExactFinding: t.CurrentExactFinding, ExactFindingSequence: t.ExactFindingSequence}) {
+				return fmt.Errorf("report carries an incident with an invalid exact finding")
+			}
 		}
 	}
 	if len(r.Events) > ReportEvents {
 		return fmt.Errorf("report carries more than %d events", ReportEvents)
 	}
 	for _, d := range r.IncidentsSentWithoutTheHub {
-		if !checksandalerts.NamePattern.MatchString(d.Destination) || !IDPattern.MatchString(d.Incident) || !checksandalerts.NamePattern.MatchString(d.CheckGroup) || !checksandalerts.NamePattern.MatchString(d.Check) || (d.Finding != "" && !checksandalerts.ValidFindingID(d.Finding)) || (d.Type != "failed" && d.Type != "cannot_check") || len(d.AlertSeveritiesSentForIncident) == 0 || !config.ValidSeverityList(d.AlertSeveritiesSentForIncident) {
+		if !checksandalerts.NamePattern.MatchString(d.Destination) || !IDPattern.MatchString(d.Incident) || !checksandalerts.NamePattern.MatchString(d.CheckGroup) || !checksandalerts.NamePattern.MatchString(d.Check) || (d.Finding != "" && !checksandalerts.ValidFindingID(d.Finding)) || (d.Type != "failed" && d.Type != "cannot_check") || len(d.AlertSeveritiesSentForIncident) == 0 || !config.ValidSeverityList(d.AlertSeveritiesSentForIncident) ||
+			!ValidExactFinding(checksandalerts.Event{Finding: d.Finding, ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence}) {
 			return fmt.Errorf("report carries an invalid incident sent without the hub")
 		}
 	}

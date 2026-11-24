@@ -40,6 +40,7 @@ func migrateStateDatabase(path string) error {
 		`ALTER TABLE outbox ADD COLUMN announced_key TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE intake ADD COLUMN exact_finding INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE fleet_incident_set ADD COLUMN pending_change TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE fleet_incident_set ADD COLUMN grouped_by_exact_finding INTEGER NOT NULL DEFAULT 0`,
 		`DROP INDEX IF EXISTS fleet_incident_set_key`,
 		`ALTER TABLE incidents_sent_without_the_hub ADD COLUMN exact_finding TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE incidents_sent_without_the_hub ADD COLUMN exact_finding_sequence INTEGER NOT NULL DEFAULT 0`,

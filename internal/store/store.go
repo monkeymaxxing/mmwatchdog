@@ -43,8 +43,10 @@ const stateFormat = 21
 // Grouping by exact finding on the hub (findinggrouping.go) keeps:
 // fleet_node_incidents, one row for each open incident of a node that the
 // hub knows; in fleet_incident_set, for every destination, the membership
-// row of each node incident and its pending_change for the next
-// finding_nodes_changed update; and in fleet_incident_keys, what has been
+// row of each node incident, marked grouped_by_exact_finding, and its
+// pending_change for the next finding_nodes_changed update; in
+// fleet_direct_sends_settled, the direct sends of nodes that the hub has
+// settled; and in fleet_incident_keys, what has been
 // announced to the destination for the key, and when the key's next update
 // and reminder are due. The outbox keeps, for its order (Pending), each
 // delivery's key, whether it is urgent (sos) or closes its key, and the key
@@ -66,7 +68,8 @@ const stateTables = `
   exact_finding INTEGER NOT NULL DEFAULT 0, UNIQUE(node,id));
  CREATE TABLE IF NOT EXISTS intake_queued_bytes (node TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS fleet_incident_set (destination TEXT NOT NULL, alert_source TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, node TEXT NOT NULL, opened INTEGER NOT NULL, alert_severity TEXT NOT NULL, state INTEGER NOT NULL, changed INTEGER NOT NULL,
-  pending_change TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,alert_source,reporter,incident_id));
+  pending_change TEXT NOT NULL DEFAULT '', grouped_by_exact_finding INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(destination,alert_source,reporter,incident_id));
+ CREATE INDEX IF NOT EXISTS fleet_incident_set_not_grouped ON fleet_incident_set(destination,alert_source) WHERE grouped_by_exact_finding=0;
  CREATE INDEX IF NOT EXISTS fleet_incident_set_key_state ON fleet_incident_set(destination,alert_source,incident_key,state,alert_severity);
  CREATE INDEX IF NOT EXISTS fleet_incident_set_state ON fleet_incident_set(destination,alert_source,state,incident_key);
  CREATE INDEX IF NOT EXISTS fleet_incident_set_pending ON fleet_incident_set(destination,alert_source,incident_key,pending_change);
@@ -110,6 +113,18 @@ type Store struct {
 	// which a forward step of the system clock does not move ahead. Without
 	// it, a commit counts back from the wall clock.
 	RetentionNow func() time.Time
+	// NewlyAffectedNodesEvery is, on the hub, the shared tick of the updates
+	// of keys grouped by exact finding, in nanoseconds:
+	// fleet_hub_role.send_newly_affected_nodes_every, which a reload
+	// replaces. Zero is config.DefaultSendNewlyAffectedNodesEvery.
+	NewlyAffectedNodesEvery atomic.Int64
+}
+
+func (s *Store) newlyAffectedNodesEvery() time.Duration {
+	if every := s.NewlyAffectedNodesEvery.Load(); every > 0 {
+		return time.Duration(every)
+	}
+	return config.DefaultSendNewlyAffectedNodesEvery.Value()
 }
 
 // retentionNow is the time that the age limits of a commit count back from.
@@ -470,13 +485,14 @@ func (s *Store) Save(snap incidents.Snapshot, events []checksandalerts.Event, ro
 		return e
 	}
 	// A fleet incident set belongs to its destination, while the
-	// destination keeps incidents, and the mmhotline destination's to one
-	// alert source: anything else starts the set over.
-	sets := map[string]IncidentSet{}
-	if !route.Joined {
-		sets = IncidentSets(route.Destinations)
+	// destination keeps incidents or for keys grouped by exact finding, and
+	// the mmhotline destination's to one alert source: anything else starts
+	// the set over.
+	keeping := route.Destinations
+	if route.Joined {
+		keeping = nil
 	}
-	if e = keepOnlyIncidentSets(tx, sets); e != nil {
+	if e = keepOnlyIncidentSets(tx, keeping); e != nil {
 		return e
 	}
 	if cancelled > 0 {
@@ -545,8 +561,21 @@ func (s *Store) Save(snap incidents.Snapshot, events []checksandalerts.Event, ro
 // fleet incident set gets the message through its set: a mmhotline
 // destination as MMHotline's alerts (QueueMMHotline), and a destination
 // whose service keeps incidents of its own with one closing alert for each
-// key of the set (queueWithIncidentSet).
+// key of the set (queueWithIncidentSet). On the hub, the message of a
+// finding with an exact finding goes to every destination through the
+// destination's set (queueGrouped, findinggrouping.go).
 func QueueDirect(tx *sql.Tx, at int64, message checksandalerts.Event, members []checksandalerts.Event, destinations map[string]checksandalerts.Destination, from QueuedBy) error {
+	grouped := false
+	if from.Role == FleetHubSender {
+		kept, isGrouped, e := nodeIncidentsOfMessage(tx, message, members, from.hub())
+		if e != nil || len(kept) == 0 {
+			return e
+		}
+		if len(kept) != len(members) {
+			message = onlyStillOpen(message, kept, members, from.hub())
+		}
+		members, grouped = kept, isGrouped
+	}
 	for _, name := range checksandalerts.Names(destinations) {
 		if message.Destination != "" && name != message.Destination {
 			continue
@@ -560,10 +589,12 @@ func QueueDirect(tx *sql.Tx, at int64, message checksandalerts.Event, members []
 		}
 		var e error
 		switch {
+		case grouped:
+			e = queueGrouped(tx, at, name, dest, message, members, from, from.now())
 		case dest.MMHotline() != nil:
-			e = QueueMMHotline(tx, at, name, dest, message, members, from, time.Now())
+			e = QueueMMHotline(tx, at, name, dest, message, members, from, from.now())
 		case from.keepsIncidents(name, dest):
-			e = queueWithIncidentSet(tx, at, name, dest, message, members, from, time.Now())
+			e = queueWithIncidentSet(tx, at, name, dest, message, members, from, from.now())
 		default:
 			e = queueEvent(tx, at, name, dest, message)
 		}
@@ -639,6 +670,9 @@ func CancelDeliveries(tx *sql.Tx, destinations map[string]checksandalerts.Destin
 		return 0, e
 	}
 	for _, q := range stale {
+		if e = forgetUndeliveredAnnouncements(tx, "destination=? AND target=?", q.name, q.target); e != nil {
+			return 0, e
+		}
 		r, e := tx.Exec("DELETE FROM outbox WHERE destination=? AND target=?", q.name, q.target)
 		if e != nil {
 			return 0, e
@@ -652,9 +686,13 @@ func CancelDeliveries(tx *sql.Tx, destinations map[string]checksandalerts.Destin
 func (s *Store) PruneInTransaction(tx *sql.Tx, now time.Time) error {
 	limits := s.Limits.Load()
 	// Retain the newest deliveries within the age and encoded-byte limits.
-	r, e := tx.Exec(`DELETE FROM outbox WHERE at < ? OR seq IN (
+	expired := `at < ? OR seq IN (
   SELECT seq FROM (SELECT seq, SUM(length(event)+length(target)) OVER (ORDER BY seq DESC) AS bytes FROM outbox)
-  WHERE bytes > ?)`, now.Add(-limits.KeepUndeliveredAlertsFor).UnixNano(), limits.UndeliveredAlertsBytes)
+  WHERE bytes > ?)`
+	if e := forgetUndeliveredAnnouncements(tx, expired, now.Add(-limits.KeepUndeliveredAlertsFor).UnixNano(), limits.UndeliveredAlertsBytes); e != nil {
+		return e
+	}
+	r, e := tx.Exec(`DELETE FROM outbox WHERE `+expired, now.Add(-limits.KeepUndeliveredAlertsFor).UnixNano(), limits.UndeliveredAlertsBytes)
 	if e != nil {
 		return e
 	}
@@ -675,10 +713,15 @@ func (s *Store) PruneInTransaction(tx *sql.Tx, now time.Time) error {
 	// A resolved incident of a fleet incident set is remembered for a day
 	// at most, and so is the last closing alert of a key that has nothing
 	// open.
-	if _, e = tx.Exec("DELETE FROM fleet_incident_keys WHERE alert_severities_sent='' AND last_closing_alert_at < ?", now.Add(-Retention).UnixNano()); e != nil {
+	// A key keeps what it announced, and its due update and reminder.
+	if _, e = tx.Exec("DELETE FROM fleet_incident_keys WHERE alert_severities_sent='' AND announced_alert_severity='' AND next_update_due=0 AND next_reminder_due=0 AND last_closing_alert_at < ?", now.Add(-Retention).UnixNano()); e != nil {
 		return e
 	}
 	if _, e = tx.Exec("DELETE FROM fleet_incident_set WHERE state=? AND changed < ?", fleetIncidentResolved, now.Add(-Retention).UnixNano()); e != nil {
+		return e
+	}
+	// A node stops carrying a settled direct send at its next report.
+	if _, e = tx.Exec("DELETE FROM fleet_direct_sends_settled WHERE settled < ?", now.Add(-Retention).UnixNano()); e != nil {
 		return e
 	}
 	// Delivered alerts keep only their IDs, so a retry is not accepted twice.
@@ -868,6 +911,9 @@ func (s *Store) refused(d Delivery, refused *checksandalerts.MMHotlineRefusal) e
 		return e
 	}
 	defer tx.Rollback()
+	if e = forgetUndeliveredAnnouncements(tx, "seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID); e != nil {
+		return e
+	}
 	r, e := tx.Exec("DELETE FROM outbox WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID)
 	if e != nil {
 		return e

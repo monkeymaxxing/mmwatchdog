@@ -121,6 +121,10 @@ type IntakeRow struct {
 	Seq                                               int64
 	Node, Kind, Subject, Group, Destination, severity string
 	Held, silence                                     bool
+	// ExactFinding marks an alert of a finding with an exact finding: it
+	// goes out at once and alone, and grouping by exact finding decides
+	// what each destination gets (findinggrouping.go).
+	ExactFinding bool
 }
 
 // AlertGroupKey is the check group, check, change, and severity, and for a
@@ -336,7 +340,7 @@ func (s *Store) Accept(node string, event checksandalerts.Event, now time.Time) 
 }
 
 func (s *Store) Intake() ([]IntakeRow, error) {
-	rows, e := s.DB.Query("SELECT seq, node, type, subject, grp, destination, severity, state FROM intake WHERE state!=? ORDER BY seq", intakeDone)
+	rows, e := s.DB.Query("SELECT seq, node, type, subject, grp, destination, severity, state, exact_finding FROM intake WHERE state!=? ORDER BY seq", intakeDone)
 	if e != nil {
 		return nil, e
 	}
@@ -347,7 +351,7 @@ func (s *Store) Intake() ([]IntakeRow, error) {
 	for rows.Next() {
 		var r IntakeRow
 		var state int
-		if e = rows.Scan(&r.Seq, &r.Node, &r.Kind, &r.Subject, &r.Group, &r.Destination, &r.severity, &state); e != nil {
+		if e = rows.Scan(&r.Seq, &r.Node, &r.Kind, &r.Subject, &r.Group, &r.Destination, &r.severity, &state, &r.ExactFinding); e != nil {
 			return nil, e
 		}
 		r.Held = state == intakeHeld
@@ -402,7 +406,7 @@ func (s *Store) Emit(p AlertGroupingPlan, destinations map[string]checksandalert
 		if len(events) > 1 || message.Title == "" {
 			message.WriteAlertTexts(events, s.Node)
 		}
-		if e = QueueDirect(tx, now.UnixNano(), message, events, destinations, QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, AwaitingFirstReports: awaitingFirstReports}); e != nil {
+		if e = QueueDirect(tx, now.UnixNano(), message, events, destinations, QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, AwaitingFirstReports: awaitingFirstReports, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), Now: now}); e != nil {
 			return e
 		}
 	}

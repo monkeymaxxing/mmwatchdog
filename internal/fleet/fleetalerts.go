@@ -8,6 +8,8 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
@@ -238,7 +240,20 @@ func (h HubSender) Send(ctx context.Context, event checksandalerts.Event) error 
 }
 
 var Notifying = map[string]bool{"failed": true, "recovered": true, "cannot_check": true, "can_check_again": true, "closed_without_recovery": true, "maintenance_on": true, "maintenance_off": true, "rebooted": true, "notice": true, "reminder": true,
-	checksandalerts.FailureIncidentEvents.Raised: true, checksandalerts.CannotCheckIncidentEvents.Raised: true}
+	checksandalerts.FailureIncidentEvents.Raised: true, checksandalerts.CannotCheckIncidentEvents.Raised: true, checksandalerts.ExactFindingChanged: true}
+
+// ValidExactFinding reports an exact finding that a node may send: plain
+// text on one line of at most 255 bytes, with its sequence number in
+// range. A node is less trusted than the hub.
+func ValidExactFinding(e checksandalerts.Event) bool {
+	if e.ExactFindingSequence < 0 || e.ExactFindingSequence > MaxSequenceNumber || len(e.ExactFinding) > 255 || !utf8.ValidString(e.ExactFinding) {
+		return false
+	}
+	if e.ExactFinding != "" && e.Finding == "" || e.Type == checksandalerts.ExactFindingChanged && !checksandalerts.HasExactFinding(e) {
+		return false
+	}
+	return !strings.ContainsFunc(e.ExactFinding, unicode.IsControl)
+}
 
 // ValidSeverities reports that an alert carries a severity, on a recovery
 // or retirement only distinct severities sent for its incident, and as the
@@ -361,6 +376,13 @@ func (r *AlertGroupingState) Plan(rows []store.IntakeRow, active map[string]bool
 			leave(row)
 			p.Messages = append(p.Messages, store.AlertGroupMessage{Members: []int64{row.Seq}})
 		default:
+			// Grouping by exact finding decides, per destination and key,
+			// what such an alert sends; it has no one-minute window.
+			if row.ExactFinding {
+				leave(row)
+				p.Messages = append(p.Messages, store.AlertGroupMessage{Members: []int64{row.Seq}})
+				continue
+			}
 			key := row.AlertGroupKey()
 			if sentNow[key] || now.Sub(r.Sent[key]) < r.Window {
 				continue
@@ -424,7 +446,8 @@ func (h *Hub) Late(event checksandalerts.Event, now time.Time) checksandalerts.E
 		}
 		return addToAlert(event, fmt.Sprintf("%s The MMWatchdog fleet hub waits %d minutes after maintenance ends on every affected node before sending the end alert. The wait combines maintenance alerts from a deployment across several nodes into one start alert and one end alert", ended, int(groupQuiet.Minutes())))
 	}
-	if event.Maintenance != nil || event.Type == "rebooted" || event.Type == "notice" {
+	// An update of a grouped key happened when the hub sent it.
+	if event.Maintenance != nil || event.Type == "rebooted" || event.Type == "notice" || event.Type == checksandalerts.FindingNodesChanged {
 		return event
 	}
 	silence := event.CheckGroup == checksandalerts.NodeReportsCheckGroup && event.Node == h.Name

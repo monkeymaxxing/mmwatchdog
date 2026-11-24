@@ -74,6 +74,16 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 			}
 			alerts = []checksandalerts.Event{MMHotlineFailure(message, kept, from, open.highest)}
 		}
+	case checksandalerts.ExactFindingChanged, checksandalerts.FindingNodesChanged:
+		// On the hub, grouping by exact finding queues these
+		// (queueGrouped); a standalone node and a joined node's fallback send
+		// a changed exact finding at its incident's severity, with its key.
+		if from.Role == FallbackSender {
+			if e := recordSentWithoutTheHub(tx, name, members, now); e != nil {
+				return e
+			}
+		}
+		alerts = []checksandalerts.Event{mmhotlineGroupedAlert(message, from)}
 	case "recovered", "can_check_again", "closed_without_recovery":
 		if from.Role == FallbackSender {
 			return nil
@@ -85,20 +95,18 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 	default:
 		alerts = []checksandalerts.Event{MMHotlineNotice(message, from)}
 	}
-	if len(changed) > 0 && !from.AwaitingFirstReports {
-		waiting, e := waitingFailureKeys(tx, from.hub(), members)
-		if e != nil {
-			return e
-		}
-		closings, e := set.closeKeys(tx, changed, waiting, true, now)
-		if e != nil {
-			return e
-		}
-		for _, c := range closings {
-			alerts = append(alerts, c.mmhotlineAlert(message, from, now))
-		}
+	if e := queueAlerts(tx, at, name, dest, alerts); e != nil || len(changed) == 0 || from.AwaitingFirstReports {
+		return e
 	}
-	return queueAlerts(tx, at, name, dest, alerts)
+	waiting, e := waitingFailureKeys(tx, from.hub(), members)
+	if e != nil {
+		return e
+	}
+	closings, e := set.closeKeys(tx, changed, waiting, true, now)
+	if e != nil {
+		return e
+	}
+	return set.queueClosings(tx, at, name, dest, closings, nil, message, from, now)
 }
 
 // queueAlerts queues MMHotline alerts for the mmhotline destination.
@@ -122,7 +130,7 @@ func (c keyClosing) mmhotlineAlert(cause checksandalerts.Event, from QueuedBy, n
 	if c.stillOpen != nil {
 		return mmhotlineSosResolution(c.key, c.stillOpen.about, c.stillOpen.nodes, c.stillOpen.highest, cause, from, now)
 	}
-	return mmhotlineResolution(c.key, c.closed.about, c.closed.nodes, c.change, config.HighestSeverity(c.sent), cause, from, now)
+	return mmhotlineResolution(c.key, c.closed.about, c.closed.nodes, c.change, config.HighestSeverity(c.sent), c.othersStillOpen, cause, from, now)
 }
 
 // MMHotlineFailure is the alert for a failure or cannot-check message, or
@@ -138,6 +146,19 @@ func MMHotlineFailure(message checksandalerts.Event, members []checksandalerts.E
 	}
 	key := checksandalerts.ReadableFleetIncidentKey(members[0], checksandalerts.IncidentKind(members[0].Type), from.hub())
 	return MMHotlineEvent(message, message.ID, checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity), severity, shown.Title, []string{shown.Body, from.SentBy()})
+}
+
+// mmhotlineGroupedAlert is MMHotline's alert for an alert of a key that
+// grouping by exact finding handles: a node's failure, raise, or changed
+// exact finding, or the hub's finding_nodes_changed update or reminder. It
+// goes at the alert's own severity, never promoted, with the alert's key,
+// title, and body. (The MMHotline wire mapping of these alerts, such as
+// their first line, is completed with the MMHotline lane.)
+func mmhotlineGroupedAlert(e checksandalerts.Event, from QueuedBy) checksandalerts.Event {
+	if e.Title == "" {
+		e.WriteAlertTexts([]checksandalerts.Event{e}, from.hub())
+	}
+	return MMHotlineEvent(e, e.ID, e.FleetIncidentKey, e.AlertSeverity, e.Title, []string{e.Body, from.SentBy()})
 }
 
 // MMHotlineNotice is the alert for a maintenance notice, a reboot notice, or
@@ -164,8 +185,8 @@ func MMHotlineNotice(message checksandalerts.Event, from QueuedBy) checksandaler
 // (checksandalerts.FleetIncidentClosingTitle): what was open across the
 // fleet, or the node's own words when the incidents of one node closed, as
 // always on a standalone node, whose set holds its own incidents only.
-func mmhotlineResolution(key string, about checksandalerts.Event, nodes []string, kind, severity string, cause checksandalerts.Event, from QueuedBy, now time.Time) checksandalerts.Event {
-	parts, was := checksandalerts.FleetIncidentClosingTitle(key, about, nodes, 0, kind)
+func mmhotlineResolution(key string, about checksandalerts.Event, nodes []string, kind, severity string, othersStillOpen bool, cause checksandalerts.Event, from QueuedBy, now time.Time) checksandalerts.Event {
+	parts, was := closingTitle(key, about, nodes, 0, kind, othersStillOpen)
 	title := checksandalerts.TitleText(parts)
 	summary := title
 	if was != "" {

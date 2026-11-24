@@ -270,6 +270,7 @@ func newDaemon(path string, clock func() time.Time) (*Daemon, error) {
 		reportNow:             make(chan chan error),
 	}
 	stateStore.RetentionNow = d.retentionNow
+	setNewlyAffectedNodesEvery(stateStore, c)
 	d.storage.Report(store.MeasurementHistoryWrite, historyUnusable)
 	// The readings that became too old while MMWatchdog did not run go now.
 	d.storage.Report(store.MeasurementHistoryRetention, d.history.Prune(now, c.KeepMeasurementHistoryFor.Value()))
@@ -763,6 +764,7 @@ func (d *Daemon) reload() (ReloadResult, error) {
 	}
 	d.clearChanged(old, next)
 	d.store.SetLimits(c.StorageLimits())
+	setNewlyAffectedNodesEvery(d.store, c)
 	// A changed size limit of the measurement history applies from now on:
 	// a file that is larger than a lower limit shrinks in steps
 	// (trimMeasurementHistories). A changed time applies at the retention

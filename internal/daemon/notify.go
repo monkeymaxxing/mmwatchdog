@@ -199,7 +199,11 @@ func (d *Daemon) notifications(ctx context.Context) {
 				// The fleet store's lock is never held with d.mu.
 				active, awaiting := d.hub.MaintenanceGroups(now), d.hub.AwaitingFirstReports(now)
 				d.mu.Lock()
-				d.storage.Report(fleet.AlertGrouping, d.groupFleetAlerts(active, awaiting, now))
+				e := d.groupFleetAlerts(active, awaiting, now)
+				if e == nil {
+					e = d.store.SendDueUpdatesAndReminders(d.config.Alerts.Destinations, now)
+				}
+				d.storage.Report(fleet.AlertGrouping, e)
 				d.mu.Unlock()
 			}
 			if d.hub != nil {
