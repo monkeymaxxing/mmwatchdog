@@ -69,12 +69,49 @@ func queueIntake(tx *sql.Tx, node string, event checksandalerts.Event, b []byte,
 	// A node's new reminder replaces its undelivered one for the same
 	// incident and destination; see replaceQueuedReminder.
 	if event.Type == "reminder" {
+		var replaced int64
+		if e := tx.QueryRow("SELECT COALESCE(SUM(length(event)),0) FROM intake WHERE node=? AND type='reminder' AND destination=? AND state!=? AND json_extract(event,'$.incident_id')=?", node, event.Destination, intakeDone, event.Incident).Scan(&replaced); e != nil {
+			return e
+		}
 		if _, e := tx.Exec("DELETE FROM intake WHERE node=? AND type='reminder' AND destination=? AND state!=? AND json_extract(event,'$.incident_id')=?", node, event.Destination, intakeDone, event.Incident); e != nil {
 			return e
 		}
+		if e := addIntakeBytes(tx, node, -replaced); e != nil {
+			return e
+		}
 	}
-	_, e := tx.Exec("INSERT OR IGNORE INTO intake(node,id,received,type,subject,grp,destination,severity,event) VALUES(?,?,?,?,?,?,?,?,?)", node, event.ID, now.UnixNano(), event.Type, IntakeSubject(event), group, event.Destination, event.RoutingGroup(), b)
+	r, e := tx.Exec("INSERT OR IGNORE INTO intake(node,id,received,type,subject,grp,destination,severity,event,exact_finding) VALUES(?,?,?,?,?,?,?,?,?,?)", node, event.ID, now.UnixNano(), event.Type, IntakeSubject(event), group, event.Destination, event.RoutingGroup(), b, checksandalerts.HasExactFinding(event))
+	if e != nil {
+		return e
+	}
+	if added, _ := r.RowsAffected(); added == 0 {
+		return nil
+	}
+	return addIntakeBytes(tx, node, int64(len(b)))
+}
+
+// addIntakeBytes changes the running totals of the bytes of the alerts that
+// wait in the intake, of all nodes and of the node, by delta. Acceptance
+// reads them in place of adding up the intake.
+func addIntakeBytes(tx *sql.Tx, node string, delta int64) error {
+	if delta == 0 {
+		return nil
+	}
+	if _, e := tx.Exec("INSERT INTO counters(name,value) VALUES('intake_queued_bytes',?) ON CONFLICT(name) DO UPDATE SET value=value+excluded.value", delta); e != nil {
+		return e
+	}
+	if _, e := tx.Exec("INSERT INTO intake_queued_bytes(node,bytes) VALUES(?,?) ON CONFLICT(node) DO UPDATE SET bytes=bytes+excluded.bytes", node, delta); e != nil {
+		return e
+	}
+	_, e := tx.Exec("DELETE FROM intake_queued_bytes WHERE node=? AND bytes<=0", node)
 	return e
+}
+
+// intakeBytes are the bytes of the alerts that wait in the intake: of all
+// nodes, and of node.
+func intakeBytes(tx *sql.Tx, node string) (all, ofNode int64, e error) {
+	e = tx.QueryRow("SELECT COALESCE((SELECT value FROM counters WHERE name='intake_queued_bytes'),0), COALESCE((SELECT bytes FROM intake_queued_bytes WHERE node=?),0)", node).Scan(&all, &ofNode)
+	return all, ofNode, e
 }
 
 // IntakeRow is an alert in the alert grouping step, without its event. silence marks
@@ -278,18 +315,16 @@ func (s *Store) Accept(node string, event checksandalerts.Event, now time.Time) 
 	}
 	defer tx.Rollback()
 	// The alerts that wait in the alert grouping step stay within
-	// fleet_hub_role.undelivered_alerts_of_nodes_content_size_limit.
-	var size int64
-	if e = tx.QueryRow("SELECT COALESCE(SUM(length(event)),0) FROM intake WHERE state!=?", intakeDone).Scan(&size); e != nil {
+	// fleet_hub_role.undelivered_alerts_of_nodes_content_size_limit. The
+	// running totals make each acceptance cost the same, however many
+	// alerts wait.
+	size, nodeSize, e := intakeBytes(tx, node)
+	if e != nil {
 		return e
 	}
 	limit := s.Limits.Load().UndeliveredAlertsOfNodesBytes
 	if size+int64(len(b)) > limit {
 		return ErrIntakeFull
-	}
-	var nodeSize int64
-	if e = tx.QueryRow("SELECT COALESCE(SUM(length(event)),0) FROM intake WHERE state!=? AND node=?", intakeDone, node).Scan(&nodeSize); e != nil {
-		return e
 	}
 	if nodeSize+int64(len(b)) > limit/NodeShareOfTheIntake {
 		return fmt.Errorf("%w for the alerts of %s: one node may hold a quarter of it", ErrIntakeFull, node)
@@ -333,12 +368,20 @@ func (s *Store) Emit(p AlertGroupingPlan, destinations map[string]checksandalert
 	}
 	defer tx.Rollback()
 	setState := func(seq int64, state int) error {
-		q := "UPDATE intake SET state=? WHERE seq=?"
-		if state == intakeDone {
-			q = "UPDATE intake SET state=?, event=x'' WHERE seq=?"
+		if state != intakeDone {
+			_, e := tx.Exec("UPDATE intake SET state=? WHERE seq=?", state, seq)
+			return e
 		}
-		_, e := tx.Exec(q, state, seq)
-		return e
+		var node string
+		var size int64
+		var was int
+		if e := tx.QueryRow("SELECT node, length(event), state FROM intake WHERE seq=?", seq).Scan(&node, &size, &was); e != nil || was == intakeDone {
+			return e
+		}
+		if _, e := tx.Exec("UPDATE intake SET state=?, event=x'' WHERE seq=?", state, seq); e != nil {
+			return e
+		}
+		return addIntakeBytes(tx, node, -size)
 	}
 	for _, m := range p.Messages {
 		events := []checksandalerts.Event{}
