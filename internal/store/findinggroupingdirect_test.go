@@ -11,6 +11,7 @@ import (
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
 	"mmwatchdog/internal/store"
+	"mmwatchdog/internal/testhelpers"
 )
 
 // fallBack queues node's alert as its fallback does when the hub is
@@ -609,5 +610,62 @@ func TestAnOpeningAfterASetAsideGoesWhereTheNodeOpenedTheIncident(t *testing.T) 
 		if sourceOf(a) != nodeAlertSource {
 			t.Fatalf("%s goes under %s, not where the node opened the incident", a.Type, sourceOf(a))
 		}
+	}
+}
+
+// A changed exact finding that a node sends directly after a direct
+// reminder, during one hub outage, is news for the destination, though its
+// record carries the reminder too: the hub's update names the node with
+// its new exact finding. The node's store records both through the actual
+// acceptance of its direct sends.
+func TestAChangedExactFindingBesideADirectReminderMarksTheNode(t *testing.T) {
+	t.Parallel()
+	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "1h", AlertSeverities: testhelpers.AllSeverities}
+	destinations := map[string]checksandalerts.Destination{"pager": pager}
+	h := newGroupingHub(t, destinations)
+	h.arrive(tenOFive, h.alert("app-2", "failed", "warn", versionA, 0, tenOFive))
+	expectKinds(t, h.take("pager"), "failed warn")
+	node, e := store.OpenStore(filepath.Join(t.TempDir(), "state"), config.DefaultStorageLimits)
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer node.Close()
+	n := &groupingHub{t: t, s: node}
+	direct := func(alert checksandalerts.Event) {
+		t.Helper()
+		tx, e := node.DB.Begin()
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer tx.Rollback()
+		if e = store.QueueDirect(tx, alert.At.UnixNano(), alert, []checksandalerts.Event{alert}, destinations, store.QueuedBy{Role: store.FallbackSender, Node: alert.Node, FleetIdentity: groupingFleet, DestinationsWhoseServiceKeepsIncidents: []string{"pager"}}); e != nil {
+			t.Fatal(e)
+		}
+		if e = tx.Commit(); e != nil {
+			t.Fatal(e)
+		}
+		accept(t, node)
+	}
+	reminder := n.alert("app-2", "reminder", "warn", versionA, 0, tenOFive.Add(time.Hour))
+	reminder.Destination = "pager"
+	direct(reminder)
+	direct(n.alert("app-2", checksandalerts.ExactFindingChanged, "warn", versionB, 1, tenOFive.Add(2*time.Hour)))
+	records, e := node.SentWithoutTheHub()
+	if e != nil || len(records) != 1 || records[0].ReminderAcceptedAt.IsZero() || records[0].ExactFinding != versionB || records[0].ExactFindingSequence != 1 {
+		t.Fatalf("the record of the direct sends %+v %v", records, e)
+	}
+	back := tenOFive.Add(3 * time.Hour)
+	report := shows("app-2", "warn", versionB, 1, tenOFive, back)
+	report.SentWithoutTheHub = map[string]map[string]checksandalerts.Event{"pager": {records[0].Incident: records[0].Carried("app-2")}}
+	h.report(back, map[string]store.ReportedIncidents{"app-2": report})
+	h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+	got := h.take("pager")
+	named := slices.ContainsFunc(got, func(a checksandalerts.Event) bool {
+		return a.Type == checksandalerts.FindingNodesChanged && slices.ContainsFunc(a.NodesByExactFinding, func(g checksandalerts.ExactFindingNodes) bool {
+			return g.ExactFinding == versionB && slices.Contains(g.Nodes, "app-2")
+		})
+	})
+	if !named {
+		t.Fatalf("no update names app-2 with its new exact finding: %q", kinds(got))
 	}
 }

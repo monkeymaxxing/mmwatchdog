@@ -935,6 +935,12 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 	defer tx.Rollback()
 	from := QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), SetAsideFindings: s.setAsideFindings(), Now: now}
 	at := now.UnixNano()
+	// What the hub knew of each reported incident's exact finding before
+	// the reports, which reconcileNodeIncidents brings up to date.
+	sequencesBefore, e := exactFindingSequencesHeld(tx, changes)
+	if e != nil {
+		return e
+	}
 	setAside, coverage, e := reconcileNodeIncidents(tx, changes, s.Node, from.SetAsideFindings)
 	if e != nil {
 		return e
@@ -972,7 +978,7 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 	for _, name := range checksandalerts.Names(destinations) {
 		dest := destinations[name]
 		set, keeps := IncidentSetOf(name, dest)
-		r, e := set.reconcile(tx, name, destinations, changes, keeps, awaitingReports, waiting, setAside, from, now)
+		r, e := set.reconcile(tx, name, destinations, changes, keeps, awaitingReports, waiting, setAside, sequencesBefore, from, now)
 		if e != nil {
 			return e
 		}
@@ -1039,6 +1045,33 @@ func nodeIncidentOpen(tx *sql.Tx, reporter, id string) (bool, error) {
 	var open bool
 	e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_node_incidents WHERE reporter=? AND incident_id=?)", reporter, id).Scan(&open)
 	return open, e
+}
+
+// exactFindingSequencesHeld are the sequence numbers of the exact findings
+// that fleet_node_incidents holds for the reporters of changes, by reporter
+// and incident ID (reporter, a zero byte, the ID).
+func exactFindingSequencesHeld(tx *sql.Tx, changes map[string]ReportedIncidents) (map[string]int64, error) {
+	held := map[string]int64{}
+	for _, reporter := range checksandalerts.Names(changes) {
+		rows, e := tx.Query("SELECT incident_id, exact_finding_sequence FROM fleet_node_incidents WHERE reporter=?", reporter)
+		if e != nil {
+			return nil, e
+		}
+		for rows.Next() {
+			var id string
+			var sequence int64
+			if e = rows.Scan(&id, &sequence); e != nil {
+				_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+				return nil, e
+			}
+			held[reporter+"\x00"+id] = sequence
+		}
+		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+		if e = rows.Err(); e != nil {
+			return nil, e
+		}
+	}
+	return held, nil
 }
 
 // reconcileNodeIncidents applies the reports to fleet_node_incidents: each
@@ -1150,8 +1183,10 @@ type setAsideDirectSend struct {
 // reconcile applies the reports to one set, the set of the destination
 // name, which keeps incidents (keeps) or holds only the incidents of
 // findings with an exact finding. setAside are the set-aside reasons of
-// reconcileNodeIncidents.
-func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[string]checksandalerts.Destination, changes map[string]ReportedIncidents, keeps, awaitingReports bool, waiting map[string]bool, setAside map[string]string, from QueuedBy, now time.Time) (reconciled, error) {
+// reconcileNodeIncidents, and sequencesBefore the sequence numbers of the
+// exact findings that the hub held before the reports
+// (exactFindingSequencesHeld).
+func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[string]checksandalerts.Destination, changes map[string]ReportedIncidents, keeps, awaitingReports bool, waiting map[string]bool, setAside map[string]string, sequencesBefore map[string]int64, from QueuedBy, now time.Time) (reconciled, error) {
 	var out reconciled
 	hub := from.hub()
 	changed := map[string]string{}
@@ -1187,12 +1222,17 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 			return out, e
 		}
 		// The severity of each incident that the set held open before this
-		// report: the destination knew the node already, from the hub or
-		// from an earlier send of the node.
-		openBefore := map[string]string{}
+		// report, and the exact finding that the hub held of it: the
+		// destination knew the node already, from the hub or from an
+		// earlier send of the node.
+		openBefore := map[string]knownBefore{}
 		for id, x := range held {
 			if x.state == FleetIncidentOpen {
-				openBefore[id] = x.severity
+				sequence, known := sequencesBefore[reporter+"\x00"+id]
+				if !known {
+					sequence = -1
+				}
+				openBefore[id] = knownBefore{x.severity, sequence}
 			}
 		}
 		for _, id := range checksandalerts.Names(held) {
@@ -1466,6 +1506,15 @@ func (set IncidentSet) onlyItsReminderChanged(tx *sql.Tx, reporter, id string, c
 	return settled == without || strings.HasPrefix(settled, without+"|"), e
 }
 
+// knownBefore is what the hub knew of a node incident that a
+// destination's set held open before a report: its severity in the set,
+// and the sequence number of the exact finding that the hub held (-1 for
+// none).
+type knownBefore struct {
+	severity             string
+	exactFindingSequence int64
+}
+
 // unixNanoOrZero is t in nanoseconds since 1970, or 0 for the zero time.
 func unixNanoOrZero(t time.Time) int64 {
 	if t.IsZero() {
@@ -1485,8 +1534,8 @@ func unixNanoOrZero(t time.Time) int64 {
 // with an exact finding, a direct send is never the last word: an open
 // incident is marked as joined for the key's next update, so the agent
 // sees the node, and the hub's reminders start; a direct reminder of a
-// node that the set held open before the report, at openBefore, at least
-// as high as the send, marks nothing. When a set-aside entry
+// node that the set held open before the report (openBefore), at least
+// as high as the send and with the send's exact finding, marks nothing. When a set-aside entry
 // covers the incident (reason), the send is added to setAsideSends by its
 // key: the destination gets closed_without_recovery when nothing else of
 // the key is open for it once every report is applied. While
@@ -1495,7 +1544,7 @@ func unixNanoOrZero(t time.Time) int64 {
 // the key's closing waits for it: such a send is not settled yet, and the
 // node keeps carrying it. The record is acknowledged afterwards
 // (IncidentsKnownToTheHub).
-func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason, openBefore string, awaitingReports bool, waiting map[string]bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
+func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason string, openBefore knownBefore, awaitingReports bool, waiting map[string]bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
 	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
 	settled, e := set.directSendSettled(tx, reporter, id, c)
 	if e != nil || settled || r.Forgotten || reason != "" && (awaitingReports || waiting[key]) {
@@ -1538,13 +1587,14 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 			}
 		}
 		// A direct reminder adds nothing that the destination has not had
-		// when it knew the node already, at the severity of the send: from
-		// the hub, whose alert or update named the node (openBefore), or from
-		// an earlier send that the hub settled. The node is no newly
-		// affected member.
+		// when it knew the node already, at the severity of the send and
+		// with its exact finding: from the hub, whose alert or update named
+		// the node (openBefore), or from an earlier send that the hub
+		// settled. The node is no newly affected member. A changed exact
+		// finding that the record carries beside the reminder is news.
 		reminderOnly := false
 		if e == nil && grouped && state == FleetIncidentOpen {
-			reminderOnly = !c.ReminderAcceptedAt.IsZero() && openBefore != "" && config.SeverityRank(config.HighestSeverity(c.AlertSeveritiesSentForIncident)) <= config.SeverityRank(openBefore)
+			reminderOnly = !c.ReminderAcceptedAt.IsZero() && openBefore.severity != "" && config.SeverityRank(config.HighestSeverity(c.AlertSeveritiesSentForIncident)) <= config.SeverityRank(openBefore.severity) && c.ExactFindingSequence <= openBefore.exactFindingSequence
 			if !reminderOnly {
 				reminderOnly, e = set.onlyItsReminderChanged(tx, reporter, id, c)
 			}

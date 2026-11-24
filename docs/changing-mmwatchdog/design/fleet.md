@@ -1557,9 +1557,11 @@ confirmation of a report's records. When the incident is not set aside, the hub 
 because MMHotline may have merged the node's direct warning into another
 node's ([MMHotline in a fleet](#mmhotline-in-a-fleet)). A direct reminder
 marks no node that the key's set already held open, at a severity at
-least as high as the reminder's, before the report: the destination had
-the node already, from the hub or from an earlier direct send, so the
-node is not newly affected. This holds also when the reminder is the
+least as high as the reminder's and with the record's exact finding,
+before the report: the destination had the node already, from the hub or
+from an earlier direct send, so the node is not newly affected. A record
+whose exact finding changed beside the reminder, such as a direct
+`exact_finding_changed` in the same hub outage, marks the node. This holds also when the reminder is the
 node's first direct send of the incident. MMHotline gets no reminders, so for MMHotline such a
 version changes nothing.
 
