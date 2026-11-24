@@ -1459,7 +1459,8 @@ When the check `myapp/http` fails on two nodes, the hub sends:
   alert. While the hub remembers a closed incident, a report sent before
   recovery cannot add the incident again, neither to a set nor to the
   hub's node incidents, which decide whether a closing alert can say "on
-  every node".
+  every node". A direct send that such a report carries settles as
+  closed: it gets its closing alert and makes the node no open member.
 - The sets live in the hub's `state.db`, so a restart of the hub loses none.
   A set belongs to its destination: removing or renaming the destination,
   or a module that no longer states `service_keeps_incidents: true`, starts

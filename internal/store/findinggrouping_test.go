@@ -415,6 +415,35 @@ func TestAReportOlderThanARecoveryOpensNothingAgain(t *testing.T) {
 	if len(got) == 0 || !strings.HasSuffix(got[len(got)-1].Title, "is ok on every node again") {
 		t.Fatalf("the closing alert %+v", got)
 	}
+
+	// The same holds when the stale report carries a direct send that the
+	// hub has not settled, after the key closed: the send settles as
+	// closed, the node is no member of the key, and a later node's
+	// recovery still closes the key with a closing alert that claims no
+	// other node.
+	h = newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn", "sos")})
+	h.arrive(tenOFive, h.alert("app-2", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive.Add(20*time.Minute), h.alert("app-2", "recovered", "warn", versionA, 0, tenOFive.Add(20*time.Minute)))
+	expectKinds(t, h.take("chat"), "failed warn", "recovered warn")
+	stale := carriedTo(shows("app-2", "warn", versionA, 0, tenOFive, tenOFive.Add(19*time.Minute)), "chat", "")
+	h.report(tenOFive.Add(21*time.Minute), map[string]store.ReportedIncidents{"app-2": stale})
+	var open int
+	if e := h.s.DB.QueryRow("SELECT COUNT(*) FROM fleet_incident_set WHERE reporter='app-2' AND state=?", store.FleetIncidentOpen).Scan(&open); e != nil || open != 0 {
+		t.Fatalf("the stale direct send made app-2 an open member: %d %v", open, e)
+	}
+	for _, a := range h.take("chat") {
+		if !checksandalerts.Closes(a.Type) {
+			t.Fatalf("the stale direct send queued %+v", a)
+		}
+	}
+	h.arrive(tenOFive.Add(30*time.Minute), h.alert("app-1", "failed", "warn", versionA, 0, tenOFive.Add(30*time.Minute)))
+	h.arrive(tenOFive.Add(40*time.Minute), h.alert("app-1", "recovered", "warn", versionA, 0, tenOFive.Add(40*time.Minute)))
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	got = h.take("chat")
+	expectKinds(t, got, "failed warn", "recovered warn")
+	if want := "app-1: packages/flaws: " + flaw + " is ok again"; got[1].Title != want {
+		t.Fatalf("the closing alert %q, want %q", got[1].Title, want)
+	}
 }
 
 // Each destination's messages come from its own set, which holds only the

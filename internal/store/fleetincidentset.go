@@ -1031,6 +1031,16 @@ func incidentsOverInASet(tx *sql.Tx, reporter string) (map[string]bool, error) {
 	return over, rows.Err()
 }
 
+// nodeIncidentOpen reports whether fleet_node_incidents holds the
+// reporter's incident id, once reconcileNodeIncidents has applied the
+// reports: the incident is open as far as the hub knows. A report that
+// shows an incident whose closing alert reached the hub first adds none.
+func nodeIncidentOpen(tx *sql.Tx, reporter, id string) (bool, error) {
+	var open bool
+	e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_node_incidents WHERE reporter=? AND incident_id=?)", reporter, id).Scan(&open)
+	return open, e
+}
+
 // reconcileNodeIncidents applies the reports to fleet_node_incidents: each
 // incident that a report shows is recorded with its severity, its
 // eligibility for the hub's reminders, and its exact finding, unless the
@@ -1235,11 +1245,18 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 		for _, id := range checksandalerts.Names(r.Incidents) {
 			// Only an incident whose alerts go to this destination belongs
 			// in its set, with the severities that the destination took. A
-			// set-aside incident is never in a set.
+			// set-aside incident is never in a set, and neither is one that
+			// is over although the report shows it.
 			shown := r.Incidents[id]
 			grouped := checksandalerts.HasExactFinding(shown)
 			sent := severitiesSentTo(name, destinations, shown)
 			if _, ok := held[id]; ok || len(sent) == 0 || !keeps && !grouped || setAside[reporter+"\x00"+id] != "" {
+				continue
+			}
+			if open, e := nodeIncidentOpen(tx, reporter, id); e != nil || !open {
+				if e != nil {
+					return out, e
+				}
 				continue
 			}
 			key, e := add(id, shown, sent, FleetIncidentOpen, grouped)
@@ -1282,8 +1299,12 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 		for _, id := range checksandalerts.Names(carried) {
 			c := carried[id]
 			if e = set.settleDirectSend(tx, destinations[name], reporter, id, c, r, func() (string, error) {
+				// A report sent before the incident's closing alert reached
+				// the hub still shows it: the send settles as closed.
 				state := fleetIncidentClosed
-				if _, shown := r.Incidents[id]; shown {
+				if open, e := nodeIncidentOpen(tx, reporter, id); e != nil {
+					return "", e
+				} else if open {
 					state = FleetIncidentOpen
 				}
 				return add(id, c, c.AlertSeveritiesSentForIncident, state, checksandalerts.HasExactFinding(c))
