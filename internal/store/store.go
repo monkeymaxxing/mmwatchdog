@@ -969,7 +969,10 @@ func (s *Store) Pending() ([]Delivery, error) {
 // destination. The notifications worker waits that delay on the monotonic
 // clock; the outbox keeps the time of the next attempt for status and for
 // the first wait after a start. A permanent refusal drops the delivery
-// with a visible delivery gap.
+// with a visible delivery gap. A failed attempt always returns its delay,
+// also when the bookkeeping fails, such as on a state.db that refuses
+// writes: then the delay counts the alert's own failed attempts, so a
+// failing destination is never retried at once.
 func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 	// Retention can remove an in-flight delivery and SQLite can reuse its sequence.
 	// Only acknowledge or reschedule the event that was actually sent.
@@ -980,26 +983,29 @@ func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 	if errors.As(err, &refused) {
 		return 0, s.refused(d, refused)
 	}
+	delayAfter := func(failures int) time.Duration {
+		var later *checksandalerts.RetryLater
+		if errors.As(err, &later) {
+			return later.After
+		}
+		return DelayAfterFailedAttempts(failures)
+	}
 	tx, e := s.DB.Begin()
 	if e != nil {
-		return 0, e
+		return delayAfter(d.Attempts + 1), e
 	}
 	defer tx.Rollback()
 	var failures int
 	if e = tx.QueryRow("INSERT INTO counters(name,value) VALUES(?,1) ON CONFLICT(name) DO UPDATE SET value=value+1 RETURNING value", failedAttemptsInARow+d.Destination).Scan(&failures); e != nil {
-		return 0, e
+		return delayAfter(d.Attempts + 1), e
 	}
-	delay := DelayAfterFailedAttempts(failures)
-	var later *checksandalerts.RetryLater
-	if errors.As(err, &later) {
-		delay = later.After
-	}
+	delay := delayAfter(failures)
 	msg := err.Error()
 	if len(msg) > 2048 {
 		msg = msg[:2048]
 	}
 	if _, e = tx.Exec("UPDATE outbox SET attempts=attempts+1,next=?,error=? WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", time.Now().Add(delay).UnixNano(), msg, d.Seq, d.Destination, d.Event.ID); e != nil {
-		return 0, e
+		return delay, e
 	}
 	return delay, tx.Commit()
 }

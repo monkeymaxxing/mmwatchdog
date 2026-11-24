@@ -321,3 +321,35 @@ func TestSosKeepsTheAlertThatAnnouncesAnExactFinding(t *testing.T) {
 		t.Fatalf("%+v", got[1])
 	}
 }
+
+// A failed attempt returns its delay also when state.db refuses to record
+// it: the receiver's Retry-After, or the doubling delay of the alert's own
+// failed attempts, never 0, so a failing destination is not retried at
+// once.
+func TestAFailedAttemptKeepsItsDelayWhenTheBookkeepingFails(t *testing.T) {
+	t.Parallel()
+	q := newQueue(t)
+	q.queue("A failed", "failed", "warn", "http", "i-a")
+	if got := q.attempt(refuses); got != "A failed" {
+		t.Fatal(got)
+	}
+	heads, e := q.s.Pending()
+	if e != nil || len(heads) != 1 {
+		t.Fatal(heads, e)
+	}
+	if _, e = q.s.DB.Exec("PRAGMA query_only=ON"); e != nil {
+		t.Fatal(e)
+	}
+	for _, c := range []struct {
+		err  error
+		want time.Duration
+	}{
+		{errors.New("unreachable"), 2 * time.Second},
+		{&checksandalerts.RetryLater{After: time.Minute}, time.Minute},
+	} {
+		delay, e := q.s.Delivered(heads[0], c.err)
+		if e == nil || delay != c.want {
+			t.Fatalf("after %v with state.db read-only: wait %s, %v; want %s and the error", c.err, delay, e, c.want)
+		}
+	}
+}

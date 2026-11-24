@@ -1101,7 +1101,9 @@ destination.
 - **Retries.** A failed attempt is retried after one second, then with the
   delay doubling up to 256 seconds. The delay counts the destination's
   failed attempts in a row, whichever alerts they tried, and starts over
-  when the destination accepts or refuses an alert. Each retry keeps the event ID of the
+  when the destination accepts or refuses an alert. When `state.db` cannot
+  record a failed attempt, the wait counts the alert's own failed attempts,
+  or follows the receiver's `Retry-After`, and is never skipped. Each retry keeps the event ID of the
   alert whose delivery failed, so receivers can deduplicate. Delivery is at
   least once, not exactly once.
 - **Order.** Each destination receives events in order, one delivery at a
