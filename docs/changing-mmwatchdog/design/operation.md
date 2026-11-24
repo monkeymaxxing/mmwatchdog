@@ -867,16 +867,12 @@ manufactures a recovery or a second failure alert.
 layout migrates `state.db` in place the first time it opens it, on every
 node, whatever its role, so no open incident is lost. The migration to
 format 21 (MMWatchdog 0.2.0) records the hub's announced severity of each
-open key, with no exact finding announced. On a joined node it moves the
-record of a direct send that still waits to be delivered to the moment the
-destination accepts it, as 0.2.0 records it: the record keeps only the
-severities that left the queue, so the hub settles the waiting send only
-once the destination has it. MMWatchdog 0.1.x queued a direct send to
-MMHotline without its incident: the migration finds the incident by the
-node's event of the send while the event history holds it, and otherwise
-by the one record of the destination, check, and severity, or of the
-finding that the alert's title names. When no single record fits, the
-record stays whole, and the hub settles that send early, as 0.1.x did.
+open key, with no exact finding announced. On a joined node it keeps the
+records of the node's direct sends as 0.1.x wrote them, when it queued a
+send, and gives the direct sends that still wait in the queue no record
+on acceptance: such a send behaves as in 0.1.x, and the hub can settle it
+before the destination has it. Direct sends queued after the upgrade are
+recorded once the destination accepts them.
 For the three security-update
 checks, whose result changed from one incident to one incident per
 [finding](checks.md#findings), the migration counts the check as changed:
