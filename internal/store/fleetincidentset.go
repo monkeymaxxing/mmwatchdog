@@ -1368,15 +1368,28 @@ func (s *Store) SentWithoutTheHub() ([]IncidentSentWithoutTheHub, error) {
 }
 
 // CarriedToHub forgets the incidents sent without the hub that the hub
-// says its fleet incident sets hold.
-func (s *Store) CarriedToHub(known []IncidentKnownToTheHub) error {
+// says it holds, in its reply to the report that carried reported. A
+// record that changed since that report, such as a raise sent while the
+// reply was on its way, stays for the next report: the hub has not
+// settled that version.
+func (s *Store) CarriedToHub(known []IncidentKnownToTheHub, reported []IncidentSentWithoutTheHub) error {
 	tx, e := s.DB.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
+	versions := map[IncidentKnownToTheHub]IncidentSentWithoutTheHub{}
+	for _, d := range reported {
+		versions[IncidentKnownToTheHub{Destination: d.Destination, Incident: d.Incident}] = d
+	}
 	for _, k := range known {
-		if _, e = tx.Exec("DELETE FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?", k.Destination, k.Incident); e != nil {
+		d, ok := versions[k]
+		if !ok {
+			continue
+		}
+		if _, e = tx.Exec(`DELETE FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?
+ AND alert_severities_sent_for_incident=? AND alert_source=? AND exact_finding_sequence=?`,
+			k.Destination, k.Incident, strings.Join(d.AlertSeveritiesSentForIncident, ","), d.AlertSource, d.ExactFindingSequence); e != nil {
 			return e
 		}
 	}

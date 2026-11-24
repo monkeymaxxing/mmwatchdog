@@ -91,7 +91,7 @@ func (d *Daemon) report(ctx context.Context) error {
 	sendError := d.send(ctx, *code, stateDir, name, &r)
 	e, sent := sendError, sendError == nil
 	if sent && len(d.rep.IncidentsKnownToTheHub) > 0 {
-		d.reportStorage("incidents sent without the hub", d.store.CarriedToHub(d.rep.IncidentsKnownToTheHub))
+		d.reportStorage("incidents sent without the hub", d.store.CarriedToHub(d.rep.IncidentsKnownToTheHub, r.IncidentsSentWithoutTheHub))
 	}
 	if sent {
 		e = d.syncFleetSettings(ctx, *code, stateDir)

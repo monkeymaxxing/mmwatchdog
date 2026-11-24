@@ -37,7 +37,7 @@ func TestFallbackIncidentRecordsWaitForAcknowledgementWithoutAgeOrCountLimit(t *
 	if err != nil || len(records) != 1201 {
 		t.Fatalf("unconfirmed incidents removed: %d, %v", len(records), err)
 	}
-	if err := s.CarriedToHub([]store.IncidentKnownToTheHub{{Destination: "ops", Incident: "0"}}); err != nil {
+	if err := s.CarriedToHub([]store.IncidentKnownToTheHub{{Destination: "ops", Incident: "0"}}, records[:1]); err != nil {
 		t.Fatal(err)
 	}
 	records, err = s.SentWithoutTheHub()

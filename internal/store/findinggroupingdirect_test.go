@@ -330,3 +330,35 @@ func TestARetriedDirectSosThatLandsAfterTheResolutionIsResolved(t *testing.T) {
 		})
 	}
 }
+
+// The hub's reply acknowledges the records that its report carried. A
+// record that changed while the reply was on its way, here by a direct
+// sos after the reported warn, stays for the next report, which the hub
+// settles again.
+func TestAnAcknowledgmentKeepsARecordThatChangedSinceTheReport(t *testing.T) {
+	t.Parallel()
+	destinations := map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()}
+	node := newJoinedNode(t)
+	fallBack(t, node.s, node.alert("app-1", "failed", "warn", versionA, 0, tenOFive), destinations)
+	accept(t, node.s)
+	reported, e := node.s.SentWithoutTheHub()
+	if e != nil || len(reported) != 1 {
+		t.Fatal(reported, e)
+	}
+	fallBack(t, node.s, node.alert("app-1", checksandalerts.FailureIncidentEvents.Raised, "sos", versionA, 0, tenOFive.Add(time.Minute)), destinations)
+	accept(t, node.s)
+	known := []store.IncidentKnownToTheHub{{Destination: "hotline", Incident: "incident-app-1"}}
+	if e = node.s.CarriedToHub(known, reported); e != nil {
+		t.Fatal(e)
+	}
+	records, e := node.s.SentWithoutTheHub()
+	if e != nil || len(records) != 1 || !slices.Equal(records[0].AlertSeveritiesSentForIncident, []string{"warn", "sos"}) {
+		t.Fatalf("the direct sos is no longer carried: %+v %v", records, e)
+	}
+	if e = node.s.CarriedToHub(known, records); e != nil {
+		t.Fatal(e)
+	}
+	if records, e = node.s.SentWithoutTheHub(); e != nil || len(records) != 0 {
+		t.Fatalf("the acknowledged record stays: %+v %v", records, e)
+	}
+}

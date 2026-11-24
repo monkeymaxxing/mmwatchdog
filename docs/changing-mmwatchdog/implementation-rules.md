@@ -2471,9 +2471,14 @@ structure.
     destination list from the hub's modules, never from the joined node's
     module copies.
     The joined node records each failure or raise sent through fallback to
-    a destination whose service keeps incidents. The record in
+    a destination whose service keeps incidents once the destination
+    accepts it: the queued delivery carries the record
+    (`outbox.sent_without_the_hub`), and `Store.Delivered` writes it in the
+    transaction that removes the delivery. The record in
     `incidents_sent_without_the_hub` includes the destination and every
-    severity sent, without age or count expiry.
+    severity sent, without age or count expiry. A reply's acknowledgment
+    removes a record only while it still equals the version that the
+    acknowledged report carried.
 
     The joined node's reports carry the fallback incident records until a
     report reply lists the records in `incidents_known_to_the_hub`.

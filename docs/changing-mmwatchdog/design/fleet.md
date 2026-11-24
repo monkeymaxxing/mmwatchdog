@@ -1472,12 +1472,22 @@ that closes an incident, because another node may still fail.
 
 The joined node retains a record of each incident the joined node sent
 without the hub, with the destination and every severity sent by the
-joined node. The joined node includes the records in reports as
-`incidents_sent_without_the_hub`. The records have no age or count expiry.
-The joined node removes a record only after a report reply confirms that
-the hub's set holds the incident, in `incidents_known_to_the_hub`. So the
-hub, when back, knows the incident and sends the closing alert, even if
-the joined node recovered while the hub was down.
+joined node. The node records a send when the destination accepts it, in
+the same transaction that removes the delivery from the queue; a send
+that waits to be retried is not in the record yet. The joined node
+includes the records in reports as `incidents_sent_without_the_hub`. The
+records have no age or count expiry. The joined node removes a record
+only after a report reply confirms that the hub's set holds the incident,
+in `incidents_known_to_the_hub`, and only when the record has not changed
+since the report that the reply answers. So the hub, when back, knows the
+incident and sends the closing alert, even if the joined node recovered
+while the hub was down.
+
+The hub settles a send that it learns of against the key's state at that
+time. When the hub has already sent the key's closing alert, the send may
+have reached the destination after it, such as a retry that MMHotline
+accepted late, or under another alert source, so the send gets a closing
+alert of its own.
 
 For a key with an exact finding, the joined node keeps such a record for
 every destination, also a chat or a mailbox, and sends no recovery
