@@ -516,6 +516,33 @@ func TestEachDestinationClosesOnlyWhatItCovered(t *testing.T) {
 	expectKinds(t, h.take("chat_b"))
 }
 
+// A node that recovers, fails again, and recovers again before the shared
+// tick is one node ok again in the update, while another node keeps the
+// key open.
+func TestANodeThatRecoversTwiceBeforeTheTickIsOneNodeOkAgain(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive.Add(time.Minute), h.alert("app-2", "failed", "warn", versionA, 0, tenOFive.Add(time.Minute)))
+	expectKinds(t, h.take("chat"), "failed warn")
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	expectKinds(t, h.take("chat"), "finding_nodes_changed warn")
+	h.arrive(tenOFive.Add(3*time.Hour), h.alert("app-2", "recovered", "warn", versionA, 0, tenOFive.Add(3*time.Hour)))
+	again := func(kind string, at time.Time) checksandalerts.Event {
+		alert := h.alert("app-2", kind, "warn", versionA, 0, at)
+		alert.Incident = "incident-app-2-again"
+		return alert
+	}
+	h.arrive(tenOFive.Add(4*time.Hour), again("failed", tenOFive.Add(4*time.Hour)))
+	h.arrive(tenOFive.Add(5*time.Hour), again("recovered", tenOFive.Add(5*time.Hour)))
+	h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+	got := h.take("chat")
+	expectKinds(t, got, "finding_nodes_changed info")
+	if got[0].RecoveredNodeCount != 1 || !slices.Equal(got[0].RecoveredNodes, []string{"app-2"}) || !strings.Contains(got[0].Title, ": 1 node ok again") {
+		t.Fatalf("the update names %d nodes ok again, %v: %q", got[0].RecoveredNodeCount, got[0].RecoveredNodes, got[0].Title)
+	}
+}
+
 // A report never announces: one that arrives before the first alert does
 // not hold it back, and one that shows a covered node makes it growth.
 func TestAReportNeverAnnounces(t *testing.T) {

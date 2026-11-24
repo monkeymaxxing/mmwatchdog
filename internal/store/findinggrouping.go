@@ -533,7 +533,7 @@ func (set IncidentSet) queueUpdate(tx *sql.Tx, at int64, name string, dest check
 	if e = rows.Err(); e != nil {
 		return e
 	}
-	named := pending[:0:0]
+	named, recoveredReporters := pending[:0:0], map[string]bool{}
 	for _, p := range pending {
 		if _, e = tx.Exec("UPDATE fleet_incident_set SET pending_change='' WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(p.reporter, p.incident)...); e != nil {
 			return e
@@ -541,8 +541,14 @@ func (set IncidentSet) queueUpdate(tx *sql.Tx, at int64, name string, dest check
 		// The node's current open membership of the key decides what the
 		// update says of it: a node whose incident recovered and that
 		// failed again in a later incident of the key is affected, never
-		// ok again.
+		// ok again. A node with several recovered incidents of the key,
+		// such as one that recovered, failed again, and recovered again
+		// before the tick, is one node ok again.
 		if p.change == pendingRecovered {
+			if recoveredReporters[p.reporter] {
+				continue
+			}
+			recoveredReporters[p.reporter] = true
 			var failingAgain bool
 			if e = tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_incident_set WHERE "+inSet+" AND incident_key=? AND reporter=? AND state=?)", set.with(key, p.reporter, FleetIncidentOpen)...).Scan(&failingAgain); e != nil {
 				return e
