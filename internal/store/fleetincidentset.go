@@ -779,48 +779,26 @@ type IncidentSentWithoutTheHub struct {
 }
 
 // IncidentKnownToTheHub is an incident that a report carried as sent
-// without the hub and that the hub's fleet incident set of the destination
-// now holds: the node stops carrying it.
+// without the hub and whose record the hub has settled: the node stops
+// carrying it.
 type IncidentKnownToTheHub struct {
 	Destination string `json:"destination"`
 	Incident    string `json:"incident_id"`
 }
 
-// The statements that read a reporter's rows of the sets and of the
-// settled direct sends, for each report that carries direct sends
-// (fleet_incident_set_reporter, fleet_direct_sends_settled_reporter).
-const (
-	setRowsOfReporter      = "SELECT destination, incident_id FROM fleet_incident_set WHERE reporter=?"
-	settledSendsOfReporter = "SELECT destination, incident_id, settled_version FROM fleet_direct_sends_settled WHERE reporter=?"
-)
+// settledSendsOfReporter reads the hub's settled versions of a reporter's
+// direct sends once, for each report that carries direct sends
+// (fleet_direct_sends_settled_reporter): searching for each carried record
+// makes a full report batch take quadratic work.
+const settledSendsOfReporter = "SELECT destination, incident_id, settled_version FROM fleet_direct_sends_settled WHERE reporter=?"
 
-// IncidentsKnownToTheHub lists the incidents among carried that the hub's
-// fleet incident sets hold for reporter, so that the node can stop
-// carrying them.
+// IncidentsKnownToTheHub lists the incidents among carried whose record
+// the hub has settled, in the version that carried shows, so that the node
+// can stop carrying them. The hub settles every direct send to a
+// destination that keeps a fleet incident set, with or without an exact
+// finding, whether or not the incident is in the set, one version of the
+// record at a time (ReconcileIncidentSets).
 func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWithoutTheHub) ([]IncidentKnownToTheHub, error) {
-	// Read this reporter's confirmations once. Searching the incident set
-	// for each carried record makes a full report batch take quadratic work.
-	rows, err := s.DB.Query(setRowsOfReporter, reporter)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
-	}()
-	held := map[IncidentKnownToTheHub]bool{}
-	for rows.Next() {
-		var incident IncidentKnownToTheHub
-		if err := rows.Scan(&incident.Destination, &incident.Incident); err != nil {
-			return nil, err
-		}
-		held[incident] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	// The hub settles the record of a finding with an exact finding by
-	// itself, whether or not the incident is in the destination's set, one
-	// version of the record at a time.
 	settled := map[IncidentKnownToTheHub]string{}
 	settledRows, err := s.DB.Query(settledSendsOfReporter, reporter)
 	if err != nil {
@@ -843,7 +821,7 @@ func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWi
 	known := []IncidentKnownToTheHub{}
 	for _, d := range carried {
 		incident := IncidentKnownToTheHub{Destination: d.Destination, Incident: d.Incident}
-		if d.ExactFinding != "" && settled[incident] == directSendVersion(d.AlertSeveritiesSentForIncident, d.AlertSource, d.ExactFindingSequence) || d.ExactFinding == "" && held[incident] {
+		if settled[incident] == directSendVersion(d.AlertSeveritiesSentForIncident, d.AlertSource, d.ExactFindingSequence) {
 			known = append(known, incident)
 		}
 	}
@@ -1185,30 +1163,13 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 		}
 		for _, id := range checksandalerts.Names(carried) {
 			c := carried[id]
-			if !checksandalerts.HasExactFinding(c) {
-				if _, ok := held[id]; !ok && !r.Forgotten && keeps {
-					key, e := add(id, c, c.AlertSeveritiesSentForIncident, fleetIncidentClosed, false)
-					if e != nil {
-						return out, e
-					}
-					if changed[key] == "" {
-						changed[key] = "recovered"
-					}
-				}
-				if x, ok := held[id]; ok && x.state != fleetIncidentResolved && !r.Forgotten {
-					if e = set.recordMMHotlineSource(tx, destinations[name], checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), hub), c.MMHotlineAlertSource); e != nil {
-						return out, e
-					}
-				}
-				continue
-			}
 			if e = set.settleDirectSend(tx, destinations[name], reporter, id, c, r, func() (string, error) {
 				state := fleetIncidentClosed
 				if _, shown := r.Incidents[id]; shown {
 					state = FleetIncidentOpen
 				}
-				return add(id, c, c.AlertSeveritiesSentForIncident, state, true)
-			}, setAside[reporter+"\x00"+id], awaitingReports, changed, setAsideSends, from, now); e != nil {
+				return add(id, c, c.AlertSeveritiesSentForIncident, state, checksandalerts.HasExactFinding(c))
+			}, keeps, setAside[reporter+"\x00"+id], awaitingReports, changed, setAsideSends, from, now); e != nil {
 				return out, e
 			}
 		}
@@ -1315,25 +1276,30 @@ func directSendVersion(severities []string, alertSource string, exactFindingSequ
 	return strings.Join(lowestFirst(severities), ",") + "|" + alertSource + "|" + strconv.FormatInt(exactFindingSequence, 10)
 }
 
-// settleDirectSend settles, once for each version, the record of a direct send that the
-// reporter's node made to the set's destination without the hub, for a
-// finding with an exact finding (c), whatever the set holds. A direct
-// send is never the last word: an incident that is not set aside joins the
-// set, added by add when the set lacks it, and an open one is marked as
-// joined for the key's next update, so the agent sees the node. When a
-// set-aside entry covers the incident (reason), the send is added to
-// setAsideSends by its key: the destination gets closed_without_recovery
-// when nothing else of the key is open for it once every report is
-// applied. While awaitingReports, another node may hold the key open
-// without the hub knowing, so such a send is not settled yet, and the node
-// keeps carrying it. The record is acknowledged afterwards
-// (IncidentsKnownToTheHub).
-func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), reason string, awaitingReports bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
+// settleDirectSend settles, once for each version, the record of a direct
+// send that the reporter's node made to the set's destination without the
+// hub (c), with or without an exact finding, whatever the set holds. The
+// incident joins the set, added by add when the set lacks it, or again,
+// closed, when the set holds it as resolved: the key's closing alert went
+// out before the hub learned of the send, so the send gets a closing alert
+// of its own. A destination whose service keeps no incidents (keeps false)
+// holds only the incidents of findings with an exact finding. For a finding
+// with an exact finding, a direct send is never the last word: an open
+// incident is marked as joined for the key's next update, so the agent
+// sees the node, and the hub's reminders start. When a set-aside entry
+// covers the incident (reason), the send is added to setAsideSends by its
+// key: the destination gets closed_without_recovery when nothing else of
+// the key is open for it once every report is applied. While
+// awaitingReports, another node may hold the key open without the hub
+// knowing, so such a send is not settled yet, and the node keeps carrying
+// it. The record is acknowledged afterwards (IncidentsKnownToTheHub).
+func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason string, awaitingReports bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
 	version := directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence)
 	var settled bool
 	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=? AND settled_version=?)", set.Destination, reporter, id, version).Scan(&settled); e != nil || settled || r.Forgotten || reason != "" && awaitingReports {
 		return e
 	}
+	grouped := checksandalerts.HasExactFinding(c)
 	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
 	// The key's further alerts and its resolution go under the alert
 	// source that the node sent under (queueMMHotlineAlerts).
@@ -1342,6 +1308,7 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 	case e != nil:
 	case reason != "":
 		setAsideSends[key] = append(setAsideSends[key], setAsideDirectSend{c, reason})
+	case !keeps && !grouped:
 	default:
 		var state int
 		e = tx.QueryRow("SELECT state FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...).Scan(&state)
@@ -1362,13 +1329,13 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 				changed[key] = "recovered"
 			}
 		}
-		if e == nil && state == FleetIncidentOpen {
+		if e == nil && grouped && state == FleetIncidentOpen {
 			e = set.markPending(tx, key, reporter, id, pendingJoined, c.AlertSeverity, from, now)
 		}
 		// The destination got the key from the node, which leaves its
 		// reminders to the hub while the hub is reachable: the hub's
 		// reminders start, unless they run already.
-		if every := remindEvery(dest); e == nil && state == FleetIncidentOpen && every > 0 {
+		if every := remindEvery(dest); e == nil && grouped && state == FleetIncidentOpen && every > 0 {
 			_, e = tx.Exec("UPDATE fleet_incident_keys SET next_reminder_due=? WHERE "+inSet+" AND incident_key=? AND next_reminder_due=0", append([]any{now.Add(every).UnixNano()}, set.with(key)...)...)
 		}
 	}

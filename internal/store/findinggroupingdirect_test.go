@@ -259,20 +259,25 @@ func carrying(t *testing.T, node *store.Store, reporter string, sent time.Time) 
 // learning of it from the next report, resolves it there although it had
 // resolved the key already. The same holds when no report came between
 // the recovery and the landing. A later genuine sos is a new alert, not
-// part of a stale incident.
+// part of a stale incident. All of this holds for a finding with an exact
+// finding and for an ordinary check without one.
 func TestARetriedDirectSosThatLandsAfterTheResolutionIsResolved(t *testing.T) {
 	t.Parallel()
-	for _, reportInBetween := range []bool{true, false} {
-		t.Run(fmt.Sprintf("a report in between: %v", reportInBetween), func(t *testing.T) {
+	for _, c := range []struct {
+		reportInBetween bool
+		exactFinding    string
+	}{{true, versionA}, {false, versionA}, {true, ""}, {false, ""}} {
+		reportInBetween, exactFinding := c.reportInBetween, c.exactFinding
+		t.Run(fmt.Sprintf("a report in between: %v, exact finding %q", reportInBetween, exactFinding), func(t *testing.T) {
 			t.Parallel()
 			destinations := map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()}
 			h := newGroupingHub(t, destinations)
-			h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+			h.arrive(tenOFive, h.alert("app-1", "failed", "warn", exactFinding, 0, tenOFive))
 			expectKinds(t, h.take("hotline"), "failed warn")
 			// The hub is unreachable: the node raises to sos and sends it
 			// directly; MMHotline asks it to retry.
 			node := newJoinedNode(t)
-			raised := h.alert("app-1", checksandalerts.FailureIncidentEvents.Raised, "sos", versionA, 0, tenOFive.Add(time.Hour))
+			raised := h.alert("app-1", checksandalerts.FailureIncidentEvents.Raised, "sos", exactFinding, 0, tenOFive.Add(time.Hour))
 			fallBack(t, node.s, raised, destinations)
 			heads, e := node.s.Pending()
 			if e != nil || len(heads) != 1 {
@@ -287,7 +292,7 @@ func TestARetriedDirectSosThatLandsAfterTheResolutionIsResolved(t *testing.T) {
 			// The node recovers and reaches the hub again: the hub resolves
 			// what it knows.
 			back := tenOFive.Add(2 * time.Hour)
-			h.arrive(back, h.alert("app-1", "recovered", "warn", versionA, 0, back))
+			h.arrive(back, h.alert("app-1", "recovered", "warn", exactFinding, 0, back))
 			got := h.take("hotline")
 			expectKinds(t, got, "recovered resolved-warn")
 			if sourceOf(got[0]) != "source-1" {
@@ -320,7 +325,7 @@ func TestARetriedDirectSosThatLandsAfterTheResolutionIsResolved(t *testing.T) {
 				t.Fatal("the settled record is not acknowledged", known, e)
 			}
 			// A later genuine sos opens anew.
-			again := h.alert("app-1", "failed", "sos", versionA, 0, later.Add(time.Hour))
+			again := h.alert("app-1", "failed", "sos", exactFinding, 0, later.Add(time.Hour))
 			again.Incident = "incident-app-1-again"
 			h.arrive(later.Add(time.Hour), again)
 			got = h.take("hotline")
@@ -415,5 +420,36 @@ func TestASetAsideClosingReopensAnIncidentThatOpenedBeforeIt(t *testing.T) {
 	expectKinds(t, got, "failed warn")
 	if got[0].Node != "app-2" {
 		t.Fatalf("%+v", got[0])
+	}
+}
+
+// The hub acknowledges the record of a direct send of an ordinary check
+// only once it has settled that version of it, not because the incident is
+// in the destination's set already: a raise to sos sent directly in a
+// second hub outage stays carried until a report settles it.
+func TestADirectRaiseOfAnOrdinaryCheckIsAcknowledgedOnlyOnceSettled(t *testing.T) {
+	t.Parallel()
+	destinations := map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()}
+	h := newGroupingHub(t, destinations)
+	h.arrive(tenOFive, failureOf(h, "app-1", "app-1 cannot resolve db.internal", tenOFive))
+	h.arrive(tenOFive.Add(2 * time.Minute))
+	expectKinds(t, h.take("hotline"), "failed warn")
+	node := newJoinedNode(t)
+	raised := failureOf(node, "app-1", "app-1 cannot resolve db.internal", tenOFive.Add(time.Hour))
+	raised.Type, raised.AlertSeverity = checksandalerts.FailureIncidentEvents.Raised, "sos"
+	fallBack(t, node.s, raised, destinations)
+	accept(t, node.s)
+	records, e := node.s.SentWithoutTheHub()
+	if e != nil || len(records) != 1 {
+		t.Fatal(records, e)
+	}
+	if known, e := h.s.IncidentsKnownToTheHub("app-1", records); e != nil || len(known) != 0 {
+		t.Fatal("a direct raise is acknowledged before the hub settled it", known, e)
+	}
+	report := carrying(t, node.s, "app-1", tenOFive.Add(2*time.Hour))
+	report.Incidents = reportOf("app-1", "sos", "-", tenOFive, tenOFive.Add(2*time.Hour)).Incidents
+	h.report(tenOFive.Add(2*time.Hour), map[string]store.ReportedIncidents{"app-1": report})
+	if known, e := h.s.IncidentsKnownToTheHub("app-1", records); e != nil || len(known) != 1 {
+		t.Fatal("the settled raise is not acknowledged", known, e)
 	}
 }

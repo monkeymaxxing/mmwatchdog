@@ -1477,14 +1477,17 @@ the same transaction that removes the delivery from the queue; a send
 that waits to be retried is not in the record yet. The joined node
 includes the records in reports as `incidents_sent_without_the_hub`. The
 records have no age or count expiry. The joined node removes a record
-only after a report reply confirms that the hub's set holds the incident,
+only after a report reply confirms that the hub has settled the record,
 in `incidents_known_to_the_hub`, and only when the record has not changed
-since the report that the reply answers. So the hub, when back, knows the
+since the report that the reply answers. The hub confirms a record only
+once it has settled that version of it: the severities sent, the alert
+source, and the sequence of the exact finding. This holds for every key,
+with or without an exact finding. So the hub, when back, knows the
 incident and sends the closing alert, even if the joined node recovered
 while the hub was down.
 
 The hub settles a send that it learns of against the key's state at that
-time. When the hub has already sent the key's closing alert, the send may
+time, for every key. When the hub has already sent the key's closing alert, the send may
 have reached the destination after it, such as a retry that MMHotline
 accepted late, or under another alert source, so the send gets a closing
 alert of its own.

@@ -2431,7 +2431,10 @@ structure.
     by the set's destination (`severitiesSentTo`, by `GoesTo`).
 
     An unknown incident sent without the hub to the destination gets a
-    closed row.
+    closed row. A resolved row of an incident whose direct send the hub
+    has not settled in the reported version is replaced by a closed row,
+    so the send gets its own closing alert, with or without an exact
+    finding.
     Reported severities that the destination takes raise a row and the
     row's key. A row closes when a newer node report
     no longer shows the incident, or when the node is forgotten.
@@ -2482,9 +2485,10 @@ structure.
 
     The joined node's reports carry the fallback incident records until a
     report reply lists the records in `incidents_known_to_the_hub`.
-    The hub acknowledges fallback incident records from saved incident-set
-    rows, so a hub restart or failed `ReconcileIncidentSets` transaction
-    loses no fallback incident records.
+    The hub acknowledges a fallback incident record only when
+    `fleet_direct_sends_settled` holds the version that the report carried
+    (`directSendVersion`), for every key, so a hub restart or failed
+    `ReconcileIncidentSets` transaction loses no fallback incident records.
 
 ### Planned maintenance
 

@@ -22,7 +22,6 @@ func TestTheHubsFrequentStatementsUseAnIndex(t *testing.T) {
 	defer s.Close()
 	scan := regexp.MustCompile(`\bSCAN (fleet_incident_set|fleet_direct_sends_settled|fleet_node_incidents|fleet_incident_keys|intake)\b`)
 	for name, statement := range map[string]string{
-		"set rows of a reporter":           setRowsOfReporter,
 		"settled sends of a reporter":      settledSendsOfReporter,
 		"failures waiting in the intake":   failuresWaitingInTheIntake,
 		"alerts waiting in the intake":     alertsWaitingInTheIntake,
