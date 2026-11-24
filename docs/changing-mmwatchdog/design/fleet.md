@@ -1734,6 +1734,13 @@ destinations:
   `sender_alert_id`, so an incident that the hub opened under its own
   source before it went away closes too. The hub keeps these sources for
   each destination and key in `state.db`.
+- A joined node's record of a direct send names the ID of the source it
+  went under, also the destination's own. So when the destination's own
+  source changes before the node's report reaches the hub, the closing
+  alert goes under the old source while the destination still has it,
+  such as its second source; otherwise it is a delivery gap and a
+  validation warning, as for a removed second source. A 0.1.x node's
+  record names no source; the hub takes it as the destination's own.
 - Check-ins go on the hub's source only, because MMHotline never expects
   check-ins from a source that has never sent one.
 - A resolution on the second source ends MMHotline's one-hour merge window

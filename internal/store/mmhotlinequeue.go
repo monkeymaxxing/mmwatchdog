@@ -121,15 +121,28 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 // queueWithoutTheHub queues a joined node's direct alert, of the incidents
 // of members, under the destination's alert source for nodes sending
 // without the hub when it has one. Once MMHotline accepts it, it is recorded
-// with that source for the node's reports, which carry it until the hub has
-// heard of it: so the hub can resolve it even if it recovers before the hub
-// returns.
+// with the ID of the source it went under (directSendAlertSource) for the
+// node's reports, which carry it until the hub has heard of it: so the hub
+// can resolve it even if it recovers before the hub returns.
 func queueWithoutTheHub(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, alert checksandalerts.Event, members []checksandalerts.Event, now time.Time) error {
 	alert.MMHotlineAlertSource = dest.MMHotline().NodeAlertSourceID()
 	if e := queueAlerts(tx, at, name, dest, []checksandalerts.Event{alert}); e != nil {
 		return e
 	}
-	return recordOnAcceptance(tx, members, alert.MMHotlineAlertSource)
+	return recordOnAcceptance(tx, members, directSendAlertSource(dest))
+}
+
+// directSendAlertSource is the ID of the MMHotline alert source that a
+// joined node's direct send to the mmhotline destination dest goes under:
+// its source for nodes sending without the hub, or else its own. The
+// record of the send names it even when it is the destination's own, so
+// a later change of the destination's own source cannot move the send's
+// resolution to a source that holds no incident of it.
+func directSendAlertSource(dest checksandalerts.Destination) string {
+	if source := dest.MMHotline().NodeAlertSourceID(); source != "" {
+		return source
+	}
+	return dest.MMHotline().AlertSourceID
 }
 
 // What an alert of a key does to the key's incident in MMHotline, for the
@@ -332,7 +345,11 @@ func MMHotlineKeysUnderRemovedAlertSources(stateDir string, destinations map[str
 }
 
 // recordMMHotlineSource records that the key got an alert under the alert
-// source source ("" for the destination's own) since its last resolution.
+// source source since its last resolution. "" is the destination's own:
+// for the hub's own alerts, and for the direct send of a 0.1.x node,
+// whose record names no source because 0.1.x had only the destination's
+// own; a 0.2.0 node's record always names its source
+// (directSendAlertSource).
 // It is the key's delivery history: a source that a node's report names
 // and that the destination no longer has, such as one removed before the
 // report reached the hub, is recorded too, so that mmwatchdog validate

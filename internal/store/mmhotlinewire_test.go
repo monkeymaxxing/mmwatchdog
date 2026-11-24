@@ -269,19 +269,20 @@ func TestTheFirstLineNamesTheProblemTheSameWayOnEveryNode(t *testing.T) {
 // A joined node delivering without the hub sends under the destination's
 // alert source for nodes sending without the hub, and its record of the
 // direct send, which its reports carry, names that source. Without the
-// block it sends under the destination's own source, as before.
+// block it sends under the destination's own source, as before, and the
+// record names the own source's ID.
 func TestAJoinedNodeSendsWithoutTheHubUnderTheNodeAlertSource(t *testing.T) {
 	t.Parallel()
 	for _, c := range []struct {
-		destination checksandalerts.Destination
-		source      string
-	}{{hotlineWithNodeAlertSource(), nodeAlertSource}, {hotline(), ""}} {
+		destination      checksandalerts.Destination
+		source, recorded string
+	}{{hotlineWithNodeAlertSource(), nodeAlertSource, nodeAlertSource}, {hotline(), "", "source-1"}} {
 		n := newJoinedNode(t)
 		fallBack(t, n.s, failureOf(n, "app-2", "app-2 "+"cannot resolve db.internal", tenOFive), map[string]checksandalerts.Destination{"hotline": c.destination})
 		got := accept(t, n.s)
 		records, e := n.s.SentWithoutTheHub()
-		if e != nil || len(got) != 1 || got[0].MMHotlineAlertSource != c.source || len(records) != 1 || records[0].AlertSource != c.source {
-			t.Fatalf("want the source %q: %+v %+v %v", c.source, got, records, e)
+		if e != nil || len(got) != 1 || got[0].MMHotlineAlertSource != c.source || len(records) != 1 || records[0].AlertSource != c.recorded {
+			t.Fatalf("want the source %q, recorded as %q: %+v %+v %v", c.source, c.recorded, got, records, e)
 		}
 	}
 }
@@ -546,6 +547,63 @@ func TestARemovedNodeAlertSourceWithAnOpenIncidentIsVisible(t *testing.T) {
 			}
 			if open := store.MMHotlineKeysUnderRemovedAlertSources(h.dir, h.destinations); len(open) != 0 {
 				t.Fatal("a resolved key is still named", open)
+			}
+		})
+	}
+}
+
+// A node's direct send under the destination's own alert source records
+// that source's ID. When the destination's own source changes from
+// source-1 to source-2 before the node's report reaches the hub, the
+// resolution goes under source-1 while the destination still has it, here
+// as its source for nodes sending without the hub; otherwise it is a
+// visible delivery gap that mmwatchdog validate names, as for a removed
+// node source, and never goes under source-2, which holds no incident.
+func TestADirectSendUnderTheOwnSourceKeepsThatSourceAfterAChange(t *testing.T) {
+	t.Parallel()
+	ownSource2 := func(nodeSource string) checksandalerts.Destination {
+		d := hotline()
+		p := *d.MMHotline()
+		p.AlertSourceID = "source-2"
+		if nodeSource != "" {
+			p.AlertSourceForNodesSendingWithoutTheHub = &checksandalerts.MMHotlineAlertSource{AlertSourceID: nodeSource, SigningSecretFile: "/etc/mmwatchdog/hotline-old"}
+		}
+		d.Inputs = &p
+		return d
+	}
+	for _, stillConfigured := range []bool{true, false} {
+		t.Run(fmt.Sprintf("source-1 still configured: %v", stillConfigured), func(t *testing.T) {
+			t.Parallel()
+			node := newJoinedNode(t)
+			failed := node.alert("app-1", "failed", "sos", "", 0, tenOFive)
+			fallBack(t, node.s, failed, map[string]checksandalerts.Destination{"hotline": hotline()})
+			expectKinds(t, accept(t, node.s), "failed sos")
+			after := ownSource2("")
+			if stillConfigured {
+				after = ownSource2("source-1")
+			}
+			h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": after})
+			report := carrying(t, node.s, "app-1", tenOFive.Add(time.Minute))
+			report.Incidents = shows("app-1", "sos", "", 0, tenOFive, tenOFive.Add(time.Minute)).Incidents
+			h.report(tenOFive.Add(time.Minute), map[string]store.ReportedIncidents{"app-1": report})
+			expectKinds(t, h.take("hotline"))
+			h.report(tenOFive.Add(time.Hour), map[string]store.ReportedIncidents{"app-1": carrying(t, node.s, "app-1", tenOFive.Add(time.Hour))})
+			got := h.take("hotline")
+			stats, e := h.s.DeliveryStats()
+			if e != nil {
+				t.Fatal(e)
+			}
+			if stillConfigured {
+				expectKinds(t, got, "recovered resolved-sos")
+				// "" would be the destination's own source, source-2 now.
+				if got[0].MMHotlineAlertSource != "source-1" || stats.Gaps != 0 {
+					t.Fatalf("the resolution goes under %q, %+v", got[0].MMHotlineAlertSource, stats)
+				}
+				return
+			}
+			expectKinds(t, got)
+			if stats.Gaps != 1 {
+				t.Fatal("no delivery gap for the resolution that cannot go out", stats)
 			}
 		})
 	}

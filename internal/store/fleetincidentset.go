@@ -658,8 +658,8 @@ func closingTitle(readable string, about checksandalerts.Event, nodes []string, 
 
 // sentWithoutTheHub is what a joined node's direct failure or raise
 // records once its destination accepts it (Store.accepted): the incidents
-// of its members, and the MMHotline alert source that it went under ("" for
-// the destination's own).
+// of its members, and the ID of the MMHotline alert source that it went
+// under (directSendAlertSource), or "" for another destination.
 type sentWithoutTheHub struct {
 	AlertSource string                  `json:"alert_source,omitempty"`
 	Members     []checksandalerts.Event `json:"members"`
@@ -697,8 +697,8 @@ func acceptanceRecord(members []checksandalerts.Event, alertSource string) (stri
 // recordSentWithoutTheHub records, on a joined node, each incident of
 // members whose failure or raise its fallback sent to the destination
 // without the hub and the destination accepted, with every severity sent,
-// and the MMHotline alert source that it sent under ("" for the
-// destination's own).
+// and the ID of the MMHotline alert source that it sent under
+// (directSendAlertSource), or "" for another destination.
 func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksandalerts.Event, alertSource string, now time.Time) error {
 	for _, m := range members {
 		var earlier string
@@ -793,8 +793,11 @@ type IncidentSentWithoutTheHub struct {
 	// hub sends the closing alert.
 	ExactFinding         string `json:"exact_finding,omitempty"`
 	ExactFindingSequence int64  `json:"exact_finding_sequence,omitempty"`
-	// AlertSource is the MMHotline alert source that the direct send used,
-	// or empty for the destination's own.
+	// AlertSource is the ID of the MMHotline alert source that the direct
+	// send used, also when it is the destination's own
+	// (directSendAlertSource); empty for a destination that is no
+	// mmhotline destination, and from a 0.1.x node, whose record names no
+	// source.
 	AlertSource string `json:"alert_source,omitempty"`
 }
 
