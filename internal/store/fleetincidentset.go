@@ -1177,7 +1177,7 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 					state = FleetIncidentOpen
 				}
 				return add(id, c, c.AlertSeveritiesSentForIncident, state, checksandalerts.HasExactFinding(c))
-			}, keeps, setAside[reporter+"\x00"+id], awaitingReports, changed, setAsideSends, from, now); e != nil {
+			}, keeps, setAside[reporter+"\x00"+id], awaitingReports, waiting, changed, setAsideSends, from, now); e != nil {
 				return out, e
 			}
 		}
@@ -1299,16 +1299,18 @@ func directSendVersion(severities []string, alertSource string, exactFindingSequ
 // key: the destination gets closed_without_recovery when nothing else of
 // the key is open for it once every report is applied. While
 // awaitingReports, another node may hold the key open without the hub
-// knowing, so such a send is not settled yet, and the node keeps carrying
-// it. The record is acknowledged afterwards (IncidentsKnownToTheHub).
-func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason string, awaitingReports bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
+// knowing, and while a failure of the key waits in the intake (waiting),
+// the key's closing waits for it: such a send is not settled yet, and the
+// node keeps carrying it. The record is acknowledged afterwards
+// (IncidentsKnownToTheHub).
+func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason string, awaitingReports bool, waiting map[string]bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
+	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
 	version := directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence)
 	var settled bool
-	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=? AND settled_version=?)", set.Destination, reporter, id, version).Scan(&settled); e != nil || settled || r.Forgotten || reason != "" && awaitingReports {
+	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=? AND settled_version=?)", set.Destination, reporter, id, version).Scan(&settled); e != nil || settled || r.Forgotten || reason != "" && (awaitingReports || waiting[key]) {
 		return e
 	}
 	grouped := checksandalerts.HasExactFinding(c)
-	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
 	// The key's further alerts and its resolution go under the alert
 	// source that the node sent under (queueMMHotlineAlerts).
 	e := set.recordMMHotlineSource(tx, dest, key, c.MMHotlineAlertSource)

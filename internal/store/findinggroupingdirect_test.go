@@ -489,3 +489,34 @@ func TestADirectSendThatRetentionRemovedDuringItsAttemptIsRecorded(t *testing.T)
 		t.Fatalf("the later alert is lost: %+v %v", again, e)
 	}
 }
+
+// While a failure of the key still waits in the hub's intake, the hub
+// sends no closing alert for the key, so it does not settle a set-aside
+// direct send yet either: the node keeps carrying the record, and the
+// report after the failure has left the intake settles it, with its
+// closed_without_recovery.
+func TestASetAsideDirectSendWaitsForAFailureInTheIntake(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	waiting := h.alert("app-3", "failed", "warn", versionA, 0, tenOFive.Add(9*time.Minute))
+	if e := h.s.Accept(waiting.Node, waiting, waiting.At); e != nil {
+		t.Fatal(e)
+	}
+	record := store.IncidentSentWithoutTheHub{Destination: "chat", Incident: "incident-app-2", CheckGroup: "packages", Check: "flaws", Finding: flaw, Type: "failed", AlertSeveritiesSentForIncident: []string{"warn"}, ExactFinding: versionA}
+	report := carriedTo(shows("app-2", "warn", versionA, 0, tenOFive, tenOFive.Add(10*time.Minute)), "chat", "")
+	h.report(tenOFive.Add(10*time.Minute), map[string]store.ReportedIncidents{"app-2": report})
+	expectKinds(t, h.take("chat"))
+	if known, e := h.s.IncidentsKnownToTheHub("app-2", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 0 {
+		t.Fatal("the record is acknowledged while its closing waits", known, e)
+	}
+	// The waiting failure is set aside too and leaves the intake.
+	h.arrive(tenOFive.Add(11 * time.Minute))
+	expectKinds(t, h.take("chat"))
+	report.Sent = tenOFive.Add(12 * time.Minute)
+	h.report(report.Sent, map[string]store.ReportedIncidents{"app-2": report})
+	expectKinds(t, h.take("chat"), "closed_without_recovery warn")
+	if known, e := h.s.IncidentsKnownToTheHub("app-2", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 1 {
+		t.Fatal("the settled record is not acknowledged", known, e)
+	}
+}

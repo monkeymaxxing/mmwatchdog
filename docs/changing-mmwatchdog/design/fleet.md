@@ -1503,7 +1503,10 @@ delivery, decides the destination's closing alert, and then confirms the
 record. When the incident is [set aside](#set-a-finding-aside) on the hub,
 and nothing else of the key is open for the destination, the hub queues
 `closed_without_recovery` with `Set aside after investigation: <reason>`.
-The hub decides this once every report of the batch is applied. The
+The hub decides this once every report of the batch is applied. While a
+failure of the key still waits in fleet alert grouping, the hub settles
+no set-aside send of the key and does not confirm its record: a later
+report settles it. The
 severities of the set-aside send count for the key's closing alert, so a
 key that closes in the same batch for another reason gets that one closing
 alert, at the highest severity sent and under each alert source that the
