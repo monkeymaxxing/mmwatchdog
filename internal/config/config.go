@@ -85,6 +85,10 @@ type Config struct {
 	FleetHubRole                      *FleetHubRole                         `yaml:"fleet_hub_role" json:"fleet_hub_role,omitempty"`
 	JoinFleetHub                      *JoinFleetHub                         `yaml:"join_fleet_hub" json:"join_fleet_hub,omitempty"`
 	CheckGroups                       map[string]checksandalerts.CheckGroup `yaml:"-" json:"check_groups"`
+	// SetAsideFindings are the entries of the hub's set_aside_findings.yml
+	// (setaside.go): none on a node without the file, and never on a node
+	// without fleet_hub_role.
+	SetAsideFindings SetAsideFindings `yaml:"-" json:"set_aside_findings,omitempty"`
 	// Modules are the modules that are not core on this node, from the two
 	// module directories. Load sets them.
 	Modules *checksandalerts.ModuleCatalog `json:"-" yaml:"-"`
@@ -357,6 +361,9 @@ func LoadWithModuleDirs(directory string, dirs checksandalerts.ModuleDirs) (*Con
 		// Also an empty file, which the YAML decoder reports as its end.
 		return nil, fmt.Errorf("%s: expected a destinations: mapping; write \"destinations: {}\" to run MMWatchdog with no destination", alerts)
 	}
+	if err := c.readSetAsideFindings(directory); err != nil {
+		return nil, err
+	}
 	groupsDir := filepath.Join(directory, "check_groups")
 	entries, err := os.ReadDir(groupsDir)
 	if err != nil {
@@ -492,6 +499,12 @@ func validateNode(n *yaml.Node, t reflect.Type, modules *checksandalerts.ModuleC
 	if scalarExpected != "" && n.Kind == yaml.ScalarNode {
 		if n.Tag != "!!str" {
 			return bad(scalarExpected)
+		}
+		return nil
+	}
+	if t == reflect.TypeOf(SetAsideDate("")) {
+		if n.Kind != yaml.ScalarNode || (n.Tag != "!!str" && n.Tag != "!!timestamp") || !validSetAsideDate(n.Value) {
+			return bad("a date such as 2026-11-23")
 		}
 		return nil
 	}

@@ -86,12 +86,16 @@ func TestDocumentedConfigurationIsValid(t *testing.T) {
 			if yaml.Unmarshal([]byte(block), &top) != nil || len(top) == 0 {
 				continue
 			}
-			node, groups, alerts := companionNode, companionGroups, ""
+			node, groups, alerts, setAside := companionNode, companionGroups, "", ""
 			switch {
 			case top["check_groups"] != nil:
 				groups = block
 			case top["destinations"] != nil:
 				alerts = block
+			case top["set_aside_findings"] != nil:
+				// Only a hub has the file of set-aside findings.
+				setAside = block
+				node += "fleet_hub_role: {report_every: 30s, alert_after_hub_unreachable_for: 3m, send_alert_without_hub_after_waiting_for: 30s, undelivered_alerts_of_nodes_content_size_limit: 32MiB, keep_measurement_history_of_nodes_for: 7d, measurement_history_of_nodes_size_limit: 1GiB, listen_on_address: '0.0.0.0:8445', address_for_nodes: 'hub.test:8445'}\n"
 			default:
 				settings := true
 				for key := range top {
@@ -114,6 +118,9 @@ func TestDocumentedConfigurationIsValid(t *testing.T) {
 			os.MkdirAll(filepath.Join(dir, "check_groups"), 0700)
 			os.WriteFile(filepath.Join(dir, "mmwatchdog_node_settings.yml"), []byte(node), 0600)
 			os.WriteFile(filepath.Join(dir, "check_groups", "doc.yml"), []byte(groups), 0600)
+			if setAside != "" {
+				os.WriteFile(filepath.Join(dir, config.SetAsideFindingsFile), []byte(setAside), 0600)
+			}
 			// A check that an example names as its cause can be in a check
 			// group of another block of the same document. Such a check
 			// group gets a stand-in with the named checks.
