@@ -376,6 +376,24 @@ func TestAKeyThatAnEntryClosesStartsOver(t *testing.T) {
 	}
 }
 
+// A node whose only open incidents are set aside is in no destination's
+// set, but the hub still holds them: a forget that a restart interrupted is
+// applied to it too (IncidentSetReporters), so removing the entry later
+// opens nothing for the forgotten node.
+func TestAForgottenNodeWithOnlySetAsideIncidentsIsForgotten(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	h.report(tenOFive, map[string]store.ReportedIncidents{"app-1": shows("app-1", "warn", versionA, 0, tenOFive, tenOFive)})
+	reporters, e := h.s.IncidentSetReporters()
+	if e != nil || !slices.Equal(reporters, []string{"app-1"}) {
+		t.Fatal(reporters, e)
+	}
+	h.report(tenOFive.Add(time.Minute), map[string]store.ReportedIncidents{"app-1": {Forgotten: true}})
+	h.setAside(tenOFive.Add(time.Hour))
+	expectKinds(t, h.take("chat"))
+}
+
 // A report sent before a node raised its covered incident to sos, and
 // applied after the raise, never lowers the incident below sos: the entry
 // does not cover it again, so the sos stays open everywhere.

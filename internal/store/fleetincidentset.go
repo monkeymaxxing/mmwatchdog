@@ -1331,9 +1331,10 @@ func (s *Store) CarriedToHub(known []IncidentKnownToTheHub) error {
 }
 
 // IncidentSetReporters names the nodes whose reports keep incidents in the
-// hub's fleet incident sets.
+// hub's fleet incident sets or in fleet_node_incidents, where a node whose
+// only open incidents are set aside has them.
 func (s *Store) IncidentSetReporters() ([]string, error) {
-	rows, e := s.DB.Query("SELECT DISTINCT reporter FROM fleet_incident_set")
+	rows, e := s.DB.Query("SELECT reporter FROM fleet_incident_set UNION SELECT reporter FROM fleet_node_incidents ORDER BY reporter")
 	if e != nil {
 		return nil, e
 	}
