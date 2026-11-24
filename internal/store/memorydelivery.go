@@ -67,9 +67,38 @@ func (s *Store) DeliveriesFromMemory(message checksandalerts.Event, destinations
 		if dest.MMHotline() != nil && from.Role == FallbackSender {
 			alert.MMHotlineAlertSource = dest.MMHotline().NodeAlertSourceID()
 		}
-		deliveries = append(deliveries, Delivery{Event: alert, Destination: name, Target: dest})
+		d := Delivery{Event: alert, Destination: name, Target: dest}
+		if records, alertSource := recordsOnAcceptance(name, dest, message, from); records {
+			// Nothing is written now: the daemon keeps the delivery once the
+			// destination accepts it, and the first commit that succeeds
+			// records it (AlertRoute.AcceptedFromMemory).
+			if b, e := acceptanceRecord([]checksandalerts.Event{message}, alertSource); e == nil {
+				d.sentWithoutTheHub = b
+			}
+		}
+		deliveries = append(deliveries, d)
 	}
 	return deliveries
+}
+
+// recordsOnAcceptance reports whether a joined node's direct send of
+// message to the destination name, once accepted, is recorded for the
+// node's reports, as QueueDirect's fallback records it, and the alert
+// source that the record names: a failure, a raise, or a changed exact
+// finding to an mmhotline destination (queueWithoutTheHub), also a
+// reminder to a destination whose service keeps incidents
+// (queueWithIncidentSet), and to any other destination such an alert of
+// a finding with an exact finding (queueFallbackForExactFinding).
+func recordsOnAcceptance(name string, dest checksandalerts.Destination, message checksandalerts.Event, from QueuedBy) (bool, string) {
+	switch {
+	case from.Role != FallbackSender:
+		return false, ""
+	case dest.MMHotline() != nil:
+		return opensOrChanges(message.Type), directSendAlertSource(dest)
+	case from.keepsIncidents(name, dest):
+		return opensOrChanges(message.Type) || message.Type == "reminder", ""
+	}
+	return opensOrChanges(message.Type) && checksandalerts.HasExactFinding(message), ""
 }
 
 // receivesWithoutWriting is Receives in a transaction that only reads. When

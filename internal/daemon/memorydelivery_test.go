@@ -144,6 +144,52 @@ func TestAJoinedNodeSendsFromMemoryThroughTheHubOrWithoutIt(t *testing.T) {
 	}
 }
 
+// A joined node's direct send from memory that a destination keeping
+// incidents accepts is recorded for the node's reports in the first commit
+// that succeeds, as the outbox's acceptance records it. That commit
+// routes the alert itself to the hub; without the record, the hub would
+// never learn of the direct send and never close the service's incident
+// that it opened.
+func TestADirectSendFromMemoryIsRecordedInTheFirstCommit(t *testing.T) {
+	t.Parallel()
+	dest := captureAlerts(t)
+	_, code, srv := startHubWith(t, map[string]checksandalerts.Destination{"ops": {RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, Inputs: &checksandalerts.Webhook{URL: dest.URL}, TimeLimitPerDeliveryAttempt: "1m"}})
+	node := joinedNode(t, code, "app-1")
+	node.report(context.Background())
+	if node.fleetSettings == nil {
+		t.Fatal("the node has no copy of the fleet settings")
+	}
+	node.fleetSettings.Fleet.SendAlertWithoutHubAfterWaitingFor = "300ms" // below what configuration allows
+	node.fleetSettings.DestinationsWhoseServiceKeepsIncidents = []string{"ops"}
+	srv.Close()
+	failure := failWhileStateDBCannotBeWritten(t, node)
+	runWorker(t, node)
+	if got := dest.wait(t, 1)[0]; got.ID != failure.ID {
+		t.Fatal("the alert from memory", got)
+	}
+	// The worker notes the acceptance once the send has returned.
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		node.mu.Lock()
+		r := node.fromMemory[memoryDeliveryKey{failure.ID, "ops"}]
+		done := r != nil && r.done
+		node.mu.Unlock()
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the delivery from memory does not finish")
+		}
+	}
+	saveAgain(t, node)
+	records, e := node.store.SentWithoutTheHub()
+	if e != nil || len(records) != 1 || records[0].Destination != "ops" || records[0].Incident != failure.Incident {
+		t.Fatal("the first commit does not record the direct send", records, e)
+	}
+	if outboxCount(t, node, config.HubDestination) != 1 {
+		t.Fatal("the commit does not route the alert to the hub")
+	}
+}
+
 // A destination module that panics fails its attempt; the worker goes on.
 func TestADeliveryThatPanicsIsAFailedAttempt(t *testing.T) {
 	t.Parallel()

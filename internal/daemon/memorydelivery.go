@@ -22,7 +22,10 @@ import (
 // attempt fails. The commit that succeeds later puts the same alerts in the
 // outbox, and they go out a second time: a duplicate alert is better than a
 // dropped one, and remembering what went out would need the state.db that
-// cannot be written.
+// cannot be written. Only a joined node's direct send that its destination
+// accepted is kept in memory, until that commit records it for the node's
+// reports (acceptedFromMemory): the hub must learn of it to close what it
+// opened, also when the hub is reachable again before state.db is.
 
 // memoryDeliveryKey names one alert, by its event ID, for one destination,
 // or for the fleet hub (config.HubDestination).
@@ -88,6 +91,9 @@ func (d *Daemon) deliverFromMemory(ctx context.Context, now time.Time, wg *sync.
 				r.attempts++
 				var refused *checksandalerts.MMHotlineRefusal
 				r.done = e == nil || errors.As(e, &refused)
+				if e == nil {
+					d.acceptedFromMemory = append(d.acceptedFromMemory, delivery)
+				}
 				delay := time.Duration(0)
 				if !r.done {
 					delay = store.DelayAfterFailedAttempts(r.attempts)

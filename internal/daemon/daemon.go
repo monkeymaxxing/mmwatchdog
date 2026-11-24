@@ -134,6 +134,11 @@ type Daemon struct {
 	// in pending goes that the notifications worker sends straight from
 	// memory (deliverFromMemory).
 	fromMemory map[memoryDeliveryKey]*memoryDelivery
+	// acceptedFromMemory holds the deliveries from memory that their
+	// destination accepted, until a commit succeeds: it records a joined
+	// node's direct send among them for the node's reports
+	// (store.AlertRoute.AcceptedFromMemory).
+	acceptedFromMemory []store.Delivery
 	// deliveriesFinished counts, by destination, the deliveries that have
 	// finished. The notifications worker reads the queue without d.mu, so a
 	// delivery that finishes after that read can be of a row in what it read.
@@ -549,10 +554,11 @@ func (d *Daemon) record(events []checksandalerts.Event) error {
 	d.pending = boundPending(append(d.pending, events...), d.store.Limits.Load().UndeliveredAlertsBytes)
 	route := d.route()
 	route.DestinationHealth = d.destinationHealthRecords(route)
+	route.AcceptedFromMemory = d.acceptedFromMemory
 	err := d.store.Save(d.snapshot, d.pending, route)
 	d.storage.Report(stateCommit, err)
 	if err == nil {
-		d.pending = nil
+		d.pending, d.acceptedFromMemory = nil, nil
 		d.activateDestinationHealth(route.DestinationHealth)
 	}
 	return err
@@ -563,12 +569,13 @@ func (d *Daemon) record(events []checksandalerts.Event) error {
 // control changes nothing. The caller holds d.mu.
 func (d *Daemon) control(candidate incidents.Snapshot, events []checksandalerts.Event, route store.AlertRoute) error {
 	route.DestinationHealth = d.destinationHealthRecords(route)
+	route.AcceptedFromMemory = d.acceptedFromMemory
 	err := d.store.Save(candidate, append(append([]checksandalerts.Event{}, d.pending...), events...), route)
 	d.storage.Report(stateCommit, err)
 	if err != nil {
 		return err
 	}
-	d.snapshot, d.pending = candidate, nil
+	d.snapshot, d.pending, d.acceptedFromMemory = candidate, nil, nil
 	d.activateDestinationHealth(route.DestinationHealth)
 	return nil
 }

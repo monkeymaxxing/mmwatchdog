@@ -1185,7 +1185,11 @@ destination.
   keeps incidents of its own, on a hub and in a joined node's direct
   delivery: another node's incident may hold the key open. The commit that succeeds later puts the
   same alerts in the outbox, and each destination gets them a second time,
-  with the same event ID.
+  with the same event ID. A joined node's direct send from memory that its
+  destination accepted is kept in memory until that commit, which records
+  it for the node's reports as an accepted delivery from the outbox is
+  recorded, so the hub closes what it opened, also when the hub is
+  reachable again before `state.db` can be written.
 
 On a joined node the hub is one more route with the outbox rules for
 retries, order, independence, bounded queues, reminders, identity, and

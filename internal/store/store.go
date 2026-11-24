@@ -439,6 +439,12 @@ type AlertRoute struct {
 	Destinations                           map[string]checksandalerts.Destination
 	Joined, Hub                            bool
 	DestinationsWhoseServiceKeepsIncidents []string
+	// AcceptedFromMemory are the deliveries that the daemon sent from
+	// memory while state.db could not be written, and that their
+	// destination accepted (DeliveriesFromMemory). The commit records what
+	// a joined node's direct send among them records on acceptance, so the
+	// hub settles it, as for a delivery from the outbox.
+	AcceptedFromMemory []Delivery
 }
 
 // Known lists every destination whose queued deliveries stay valid.
@@ -560,6 +566,11 @@ func (s *Store) Save(snap incidents.Snapshot, events []checksandalerts.Event, ro
 			if e = QueueDirect(tx, event.At.UnixNano(), event, []checksandalerts.Event{event}, route.Destinations, QueuedBy{Role: StandaloneSender, Node: s.Node, FleetIdentity: s.FleetIdentity}); e != nil {
 				return e
 			}
+		}
+	}
+	for _, d := range route.AcceptedFromMemory {
+		if e = recordAcceptance(tx, d); e != nil {
+			return e
 		}
 	}
 	// Only added events and deliveries can exceed the byte limits. Age
@@ -999,16 +1010,24 @@ func (s *Store) accepted(d Delivery) error {
 	if _, e = tx.Exec("DELETE FROM outbox WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID); e != nil {
 		return e
 	}
-	if d.sentWithoutTheHub != "" {
-		var sent sentWithoutTheHub
-		if e = json.Unmarshal([]byte(d.sentWithoutTheHub), &sent); e != nil {
-			return e
-		}
-		if e = recordSentWithoutTheHub(tx, d.Destination, sent.Members, sent.AlertSource, sent.Reminder, time.Now()); e != nil {
-			return e
-		}
+	if e = recordAcceptance(tx, d); e != nil {
+		return e
 	}
 	return tx.Commit()
+}
+
+// recordAcceptance records, in transaction tx, what a joined node's direct
+// send d records once its destination accepted it (recordOnAcceptance), if
+// anything.
+func recordAcceptance(tx *sql.Tx, d Delivery) error {
+	if d.sentWithoutTheHub == "" {
+		return nil
+	}
+	var sent sentWithoutTheHub
+	if e := json.Unmarshal([]byte(d.sentWithoutTheHub), &sent); e != nil {
+		return e
+	}
+	return recordSentWithoutTheHub(tx, d.Destination, sent.Members, sent.AlertSource, sent.Reminder, time.Now())
 }
 
 // DelayAfterFailedAttempts is how long MMWatchdog waits before the next attempt of
