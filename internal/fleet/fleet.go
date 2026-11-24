@@ -1159,14 +1159,18 @@ type FleetNode struct {
 	// NodeGroups are the node groups that the node is in, as its
 	// this_node_is_in_node_groups states them: from its latest saved report,
 	// or from its join before the first one.
-	NodeGroups       []string                `json:"this_node_is_in_node_groups"`
-	Joined           time.Time               `json:"joined_at"`
-	Address          string                  `json:"joined_from_address,omitempty"`
-	LastReport       time.Time               `json:"last_report_received_at,omitempty"`
-	ClockOffset      time.Duration           `json:"clock_offset_ns,omitempty"`
-	Replaced         time.Time               `json:"replaced_silent_node_of_same_name_at,omitempty"`
-	Conflict         *Conflict               `json:"conflict,omitempty"`
-	NodeStatusReport *NodeStatusReport       `json:"report,omitempty"`
+	NodeGroups       []string          `json:"this_node_is_in_node_groups"`
+	Joined           time.Time         `json:"joined_at"`
+	Address          string            `json:"joined_from_address,omitempty"`
+	LastReport       time.Time         `json:"last_report_received_at,omitempty"`
+	ClockOffset      time.Duration     `json:"clock_offset_ns,omitempty"`
+	Replaced         time.Time         `json:"replaced_silent_node_of_same_name_at,omitempty"`
+	Conflict         *Conflict         `json:"conflict,omitempty"`
+	NodeStatusReport *NodeStatusReport `json:"report,omitempty"`
+	// SetAsideFindings are the node's findings that a set-aside entry
+	// covers now (setaside.go). They are not in the report's summary, and
+	// do not count for the exit code.
+	SetAsideFindings []SetAsideFindingOfNode `json:"set_aside_findings,omitempty"`
 	Events           []checksandalerts.Event `json:"events,omitempty"`
 }
 
@@ -1184,12 +1188,24 @@ type Fleet struct {
 	// MeasurementHistoryOfNodes says how much measurement history of the
 	// joined nodes the hub keeps and how far back it reaches now.
 	MeasurementHistoryOfNodes store.MeasurementHistoryOfNodesStatus `json:"measurement_history_of_nodes"`
+	// SetAsideFindingCount is how many set-aside entries cover a finding of
+	// the nodes shown now, and NodesWithSetAsideFindings on how many nodes.
+	SetAsideFindingCount      int `json:"set_aside_finding_count"`
+	NodesWithSetAsideFindings int `json:"nodes_with_set_aside_findings"`
 }
 
 // View describes one node. A reporting node exits with its own code, a
-// waiting one with 0, and a silent one with 1. The caller holds h.mu.
+// waiting one with 0, and a silent one with 1. A finding below sos that a
+// set-aside entry covers needs no attention: it leaves the report's
+// summary and the node's exit code, and is listed apart. The caller holds
+// h.mu.
 func (h *Hub) View(name string, m *member, now time.Time) FleetNode {
 	s := FleetNode{Name: name, State: h.State(m, now), Hub: name == h.Name, OutageAlerter: slices.Contains(h.OutageAlerters, name), PreferOutageAlerter: m.Preferred, Joined: m.Joined, Address: m.Address, LastReport: m.Received, Replaced: m.Replaced, Conflict: m.Conflict, NodeStatusReport: m.NodeStatusReport}
+	if s.SetAsideFindings = setAsideOnNode(m.NodeStatusReport, h.setAsideFindings()); len(s.SetAsideFindings) > 0 {
+		shown := *m.NodeStatusReport
+		shown.Summary = withoutSetAsideFindings(m.NodeStatusReport, s.SetAsideFindings)
+		s.NodeStatusReport = &shown
+	}
 	s.NodeGroups = append([]string{}, m.fleetSettings().ThisNodeIsInNodeGroups...)
 	if m.Offset > clockOffsetShown || m.Offset < -clockOffsetShown {
 		s.ClockOffset = m.Offset
@@ -1199,7 +1215,7 @@ func (h *Hub) View(name string, m *member, now time.Time) FleetNode {
 		s.ExitCode = 1
 	case s.State == "reporting":
 		//nolint:nilaway // View callers hold the hub mutex and pass existing allocated members; only their saved report may be nil.
-		if report := m.NodeStatusReport; report == nil {
+		if report := s.NodeStatusReport; report == nil {
 			s.ExitCode = 3 // its reports arrive but none could be saved
 		} else {
 			s.ExitCode = report.Summary.ExitCode
@@ -1235,7 +1251,7 @@ func (h *Hub) FleetOfNodeGroup(now time.Time, nodeGroup string) (Fleet, error) {
 	defer h.Mu.Unlock()
 	f := Fleet{Address: h.Address, OutageAlerters: append([]string{}, h.OutageAlerters...), NodeGroup: nodeGroup, Nodes: []FleetNode{}, RefusedJoins: h.Refused, StorageError: strings.Join(h.Storage.Problems(), "; ")}
 	f.MeasurementHistoryOfNodes = history
-	nodeGroups := map[string]bool{}
+	nodeGroups, setAside := map[string]bool{}, map[string]bool{}
 	for _, name := range checksandalerts.Names(h.Nodes) {
 		s := h.View(name, h.Nodes[name], now)
 		for _, group := range s.NodeGroups {
@@ -1243,6 +1259,12 @@ func (h *Hub) FleetOfNodeGroup(now time.Time, nodeGroup string) (Fleet, error) {
 		}
 		if nodeGroup != "" && !slices.Contains(s.NodeGroups, nodeGroup) {
 			continue
+		}
+		if len(s.SetAsideFindings) > 0 {
+			f.NodesWithSetAsideFindings++
+			for _, a := range s.SetAsideFindings {
+				setAside[a.Check+"\n"+a.Finding+"\n"+a.ExactFinding] = true
+			}
 		}
 		if s.NodeStatusReport != nil {
 			brief := *s.NodeStatusReport
@@ -1252,6 +1274,7 @@ func (h *Hub) FleetOfNodeGroup(now time.Time, nodeGroup string) (Fleet, error) {
 		f.ExitCode = incidents.HealthExitCode(f.ExitCode, s.ExitCode)
 		f.Nodes = append(f.Nodes, s)
 	}
+	f.SetAsideFindingCount = len(setAside)
 	if nodeGroup != "" && !nodeGroups[nodeGroup] {
 		if len(nodeGroups) == 0 {
 			return Fleet{}, fmt.Errorf("no node is in node group %q, because no node in the fleet states a node group. Each node states its node groups with this_node_is_in_node_groups in the node's own mmwatchdog_node_settings.yml", nodeGroup)

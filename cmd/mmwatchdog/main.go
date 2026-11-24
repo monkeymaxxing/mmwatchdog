@@ -90,6 +90,8 @@ func usage() {
   mmwatchdog fleet --node-group NODE_GROUP [--json]
   mmwatchdog fleet readings NODE CHECK_GROUP [CHECK] [--last DURATION | --since TIME [--until TIME]] [--config-dir DIR] [--json | --chart]
   mmwatchdog fleet readings --node-group NODE_GROUP CHECK_GROUP CHECK [--last DURATION | --since TIME [--until TIME]] [--config-dir DIR] [--json | --chart]
+  mmwatchdog fleet findings CHECK_GROUP/CHECK [--finding ID] [--json]
+  mmwatchdog fleet set-aside-findings [--json]
   mmwatchdog fleet join-code [--json]
   mmwatchdog fleet rotate-join-code [--json]
   mmwatchdog fleet forget NODE [--json]
@@ -194,8 +196,10 @@ func run(args []string) (result error) {
 		f.StringVar(&eventSince, "since", "", "show events from the RFC 3339 time given by --since")
 		f.StringVar(&eventUntil, "until", "", "show events through the RFC 3339 time given by --until; requires --since")
 	}
+	var finding string
 	if command == "fleet" {
 		f.StringVar(&nodeGroup, "node-group", "", "show only nodes in the node group named by --node-group")
+		f.StringVar(&finding, "finding", "", "with fleet findings, list only the finding whose id --finding gives")
 	}
 	if command == "describe-module" {
 		f.BoolVar(&referenceOnly, "reference-only", false, "print only the module's inputs, measurements, and examples, without its page")
@@ -250,7 +254,8 @@ func run(args []string) (result error) {
 	if len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
 		name, rest = rest[0], rest[1:]
 	}
-	if command == "fleet" && name == "forget" && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
+	// fleet forget names a node, and fleet findings a check.
+	if command == "fleet" && (name == "forget" || name == "findings") && len(rest) > 0 && !strings.HasPrefix(rest[0], "-") {
 		node, rest = rest[0], rest[1:]
 	}
 	if e := f.Parse(rest); e != nil {
@@ -312,7 +317,7 @@ func run(args []string) (result error) {
 			return err
 		}
 		if visited(f, "last") || visited(f, "since") || visited(f, "until") {
-			if command == "fleet" && (name == "" || name == "forget" || name == "join-code" || name == "rotate-join-code" || nodeGroup != "") {
+			if command == "fleet" && (name == "" || name == "forget" || name == "join-code" || name == "rotate-join-code" || name == "findings" || name == "set-aside-findings" || nodeGroup != "") {
 				return fmt.Errorf("event time options require mmwatchdog fleet NODE; name the node whose events you want")
 			}
 			eventQuery = neturl.Values{"since": {since.Format(time.RFC3339Nano)}, "until": {until.Format(time.RFC3339Nano)}}.Encode()
@@ -405,6 +410,30 @@ func run(args []string) (result error) {
 			if nodeGroup == "" {
 				return fmt.Errorf("--node-group requires the name of a node group")
 			}
+		}
+		if visited(f, "finding") && name != "findings" {
+			return fmt.Errorf("--finding is a flag of mmwatchdog fleet findings")
+		}
+		if name == "findings" {
+			group, check, _ := strings.Cut(node, "/")
+			if !checksandalerts.NamePattern.MatchString(group) || !checksandalerts.NamePattern.MatchString(check) {
+				return fmt.Errorf("fleet findings requires CHECK_GROUP/CHECK, such as installed_packages/known_exploited_flaws")
+			}
+			if visited(f, "finding") && !checksandalerts.ValidFindingID(finding) {
+				return fmt.Errorf("--finding requires the id of a finding, as mmwatchdog fleet findings shows it")
+			}
+			b, e := request(ctx, socket, "GET", "/fleet/findings?"+neturl.Values{"check": {node}, "finding": {finding}}.Encode(), nil)
+			if e != nil {
+				return e
+			}
+			return printFindings(b, asJSON)
+		}
+		if name == "set-aside-findings" {
+			b, e := request(ctx, socket, "GET", "/fleet/set-aside-findings", nil)
+			if e != nil {
+				return e
+			}
+			return printSetAsideFindings(b, asJSON)
 		}
 		if name == "forget" {
 			if node == "" {

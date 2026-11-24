@@ -67,4 +67,30 @@ func TestAReloadAppliesSetAsideFindings(t *testing.T) {
 	if n := hub.hub.SetAsideFindings.Load(); n == nil || len(*n) != 1 {
 		t.Fatal("the fleet views do not have the entry")
 	}
+	status, body := fleetCommand(t, hub, "GET", "/fleet/set-aside-findings")
+	if status != 200 || !strings.Contains(body, `"reason":"Needs musl without PAM"`) || !strings.Contains(body, `"matches_no_node_now":true`) {
+		t.Fatal(status, body)
+	}
+	if status, body = fleetCommand(t, hub, "GET", "/fleet/findings?check=packages%2Fflaws"); status != 200 || !strings.Contains(body, `"check":"packages/flaws","findings":[]`) {
+		t.Fatal(status, body)
+	}
+}
+
+// Only the hub answers the two commands of set-aside findings.
+func TestSetAsideFindingCommandsRunOnTheHub(t *testing.T) {
+	t.Parallel()
+	p, _ := daemonConfig(t)
+	node, e := NewDaemon(p)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { node.Close() })
+	for path, want := range map[string]string{
+		"/fleet/findings?check=packages%2Fflaws": "fleet findings runs on the hub; this node has no fleet_hub_role setting",
+		"/fleet/set-aside-findings":              "fleet set-aside-findings runs on the hub; this node has no fleet_hub_role setting",
+	} {
+		if status, body := fleetCommand(t, node, "GET", path); status != 400 || !strings.Contains(body, want) {
+			t.Error(path, status, body)
+		}
+	}
 }
