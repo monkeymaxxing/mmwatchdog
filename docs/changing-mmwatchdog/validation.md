@@ -6,35 +6,30 @@ results.
 
 ## Current build
 
-The release checks for 0.1.3 (2026-11-18), with Go 1.27.4 and the MMX code
-released with MMWatchdog. The checks ran on the commit with the release's
-last product change; the later commits change only the text of the README
-and the guides, such as the version they name:
+The release checks for 0.2.0 (2026-11-24), with Go 1.27.4 and the MMX code
+released with MMWatchdog. Most checks ran on 9ac34d3. The later commits
+before the release change no behavior: a672f8b makes ten places clear to
+NilAway, two of them by restructuring a loop, which a new test pins on the
+old and the new code; 3ee299c makes the fleet suite wait for a status
+report; and the last commit changes only text, such as the version that
+the README and the guides name. The checks that name a commit ran again
+on it; 3ee299c changes only a test of the suites, so the Go checks of
+a672f8b hold for it:
 
 | Run or check | Result |
 | --- | --- |
-| Static analysis, `scripts/static-analysis.sh` | Reports nothing |
-| Go tests, also with the race detector, on a Mac | All passed. The new test of `mmwatchdog events CHECK_GROUP/CHECK` fails on the code before the fix |
-| Every suite on every [target distribution](testing.md#every-target-distribution), AMD64, Incus on the test servers | All passed on all nine |
-| ARM64, Hetzner `cax11` servers | `native`, `deployment`, and `node` passed on Debian 13; `native` and `deployment` passed on Ubuntu 26.04. On Ubuntu 26.04 the `node` suite's Ubuntu Pro step again ran longer than its time limit; see below |
-| [Fuzz tests](testing.md#fuzz-tests-for-a-release), 10 minutes each on the AMD64 test servers | All passed, with no failing input: `FuzzCheckGroupConfigurationFile`, 103,617 inputs; `FuzzNodeSettingsFile`, 302,438; `FuzzModuleDescription`, 905,256; `FuzzExecutableModuleOutput`, 6,305,455; `FuzzStarlarkModuleResult`, 1,518,059; `FuzzJoinRequestOnTheHub`, 1,714,209; `FuzzNodeStatusReportOnTheHub`, 859,523; `FuzzMMHotlineReceipt`, 2,581,408 |
-| `deployment` and `native` again on Debian 13 and Ubuntu 24.04 with MMX 0.2.0 as released, which adds a wait for apt's locks after the MMX code of the runs above | Passed |
-| Release archives from a fresh clone, with `scripts/release.py 0.1.3 --output-dir out` | Both archives and `SHA256SUMS` built, and the checksum check passed |
-| Newcomer walk-through: a stand-in person follows the README with their own coding agent, interactive Claude Code in auto mode, to email alerts from one server | Passed on the README of this release: the person reached the goal, failure and recovery emails arrived, with no step stuck or wrong. Four earlier runs that day found the steps fixed in this release |
+| Static analysis, `scripts/static-analysis.sh`, on a672f8b | Reports nothing |
+| Go tests, also with the race detector, on a Mac, on a672f8b | All passed |
+| Every suite on every [target distribution](testing.md#every-target-distribution), AMD64, Incus on the test servers | All passed on eight of the nine. On Rocky Linux 9 the fleet suite read the set-aside listing before the peer's status report arrived; the suite now waits for it (3ee299c) |
+| `native` and `fleet` on Rocky Linux 9, Debian 13 and Ubuntu 26.04, on 3ee299c | All passed |
+| ARM64, Hetzner `cax11` servers | `native`, `deployment`, and `node` passed on Debian 13 and Ubuntu 26.04. The `node` suite's Ubuntu Pro step, which ran out of time for 0.1.3, finished within its limit |
+| [Fuzz tests](testing.md#fuzz-tests-for-a-release), 10 minutes each on an AMD64 test server, four at a time | All passed, with no failing input: `FuzzCheckGroupConfigurationFile`, 28,122 inputs; `FuzzNodeSettingsFile`, 148,184; `FuzzModuleDescription`, 308,364; `FuzzExecutableModuleOutput`, 2,159,622; `FuzzStarlarkModuleResult`, 1,008,613; `FuzzJoinRequestOnTheHub`, 981,207; `FuzzNodeStatusReportOnTheHub`, 388,186; `FuzzMMHotlineReceipt`, 1,968,286. The code that a672f8b restructured is on no fuzzed path |
+| [`TestRealServiceMMHotline`](testing.md#real-services-before-a-release), on a Mac against MMHotline 0.7.0 on loopback, with a test alert source and no sending service | Passed: MMHotline accepted the signed `info` alert, opened an incident for the `sos`, and resolved it. No phone was paged |
+| Release archives from a fresh clone of 3ee299c, with `scripts/release.py 0.2.0 --output-dir out` | Both archives and `SHA256SUMS` built, and the checksum check passed |
 
-`TestRealServiceMMHotline` ran for 0.1.1; 0.1.3 does not change the
-`mmhotline` destination.
-
-The Ubuntu Pro client on ARM64: `pro security-status --format json` took
-37 to 43 seconds on a Hetzner `cax11` server (2 ARM64 cores, Ubuntu 26.04,
-156 waiting updates), as root and as the account `mmwatchdog`, with and
-without network access, and also two runs at once. On a fresh `cax11`
-server, `mmwatchdog check-now --without-daemon` ran
-`ubuntu_pro_security_fixes` in 43 seconds and reported `ok`. Inside the
-`node` suite on the same kind of server, the same run did not end within
-4 minutes; the cause is not found. The real alert destinations
-(Slack, Telegram, Discord, and Pushover) were not run again: the four
-modules have not changed since the run under
+Not run for 0.2.0: the newcomer walk-through, last passed on the README of
+0.1.3, and the real Slack, Telegram, Discord, and Pushover services: the
+four modules have not changed since the run under
 [real alert destinations](#real-alert-destinations).
 
 A server that systemd does not run (2026-11-14): on an Alpine Linux 3.22
