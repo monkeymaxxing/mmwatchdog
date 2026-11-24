@@ -9,16 +9,20 @@ import (
 	"mmwatchdog/internal/checksandalerts"
 )
 
-// The order of each destination's queue in the outbox. A destination gets
-// its alerts oldest first, except that an sos alert of an incident goes
-// ahead of every alert below sos of other keys. Within its own key it goes
-// ahead only of an alert below sos that has had a failed attempt and waits
-// to be retried, so an alert stuck behind a refusal never holds it back,
-// while an incident's opening, not attempted yet, still reaches a healthy
-// destination before its raise. It never removes another queued alert.
-// Within one key a resolution and what follows it keep their order, and a
-// notice keeps its place. The rules are in the design of grouping by exact
-// finding, "Queue order".
+// The order of each destination's queue in the outbox, one rule
+// (Store.Pending). The queue holds a line of deliveries for each fleet
+// incident key, and one line of the deliveries without a key, such as
+// notices, which so keep their place among themselves. A line's head is
+// its oldest delivery, except that an sos alert of an incident may pass
+// deliveries of its own key that have had a failed attempt and wait to be
+// retried: never one that was not attempted yet, so an incident's opening
+// reaches the destination before its raise, and never a closing alert, so
+// a resolution and what follows it keep their order. Of the heads of its
+// lines, the destination gets an sos head first, else a head that does not
+// wait to be retried, else the oldest: an alert that keeps failing holds
+// back no other key, and so no other key's sos. Nothing is removed. The
+// wait before the next attempt stays destination-wide. The rule is in the
+// design of alert delivery, "An sos goes first".
 
 // outboxOrderOf says where a queued delivery stands: urgent for an sos
 // alert of an incident that does not close it, key for its fleet incident
