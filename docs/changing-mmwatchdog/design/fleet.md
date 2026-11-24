@@ -1457,7 +1457,9 @@ When the check `myapp/http` fails on two nodes, the hub sends:
   key has nothing open.
 - The hub remembers a closed incident for up to a day after the closing
   alert. While the hub remembers a closed incident, a report sent before
-  recovery cannot add the incident again.
+  recovery cannot add the incident again, neither to a set nor to the
+  hub's node incidents, which decide whether a closing alert can say "on
+  every node".
 - The sets live in the hub's `state.db`, so a restart of the hub loses none.
   A set belongs to its destination: removing or renaming the destination,
   or a module that no longer states `service_keeps_incidents: true`, starts

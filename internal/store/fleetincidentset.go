@@ -1009,12 +1009,36 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 	return tx.Commit()
 }
 
+// incidentsOverInASet are the reporter's incidents, by ID, that a
+// destination's fleet incident set holds as over: their closing alert
+// reached the hub.
+func incidentsOverInASet(tx *sql.Tx, reporter string) (map[string]bool, error) {
+	rows, e := tx.Query("SELECT DISTINCT incident_id FROM fleet_incident_set WHERE reporter=? AND state!=?", reporter, FleetIncidentOpen)
+	if e != nil {
+		return nil, e
+	}
+	defer func() {
+		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+	}()
+	over := map[string]bool{}
+	for rows.Next() {
+		var id string
+		if e = rows.Scan(&id); e != nil {
+			return nil, e
+		}
+		over[id] = true
+	}
+	return over, rows.Err()
+}
+
 // reconcileNodeIncidents applies the reports to fleet_node_incidents: each
 // incident that a report shows is recorded with its severity, its
 // eligibility for the hub's reminders, and its exact finding, unless the
 // hub holds a newer one (exact_finding_sequence), whichever path it came
-// by. An incident that a newer report no longer shows, and each incident of
-// a forgotten node, is removed. Whether a set-aside entry of setAside
+// by, but not one that a destination's set holds as over: the report was
+// sent before its closing alert reached the hub. An incident that a newer
+// report no longer shows, and each incident of a forgotten node, is
+// removed. Whether a set-aside entry of setAside
 // covers each reported incident is settled (settleCoverage). It returns
 // the set-aside reason of each reported incident that an entry covers, by
 // reporter and incident ID (reporter, a zero byte, the ID), and the
@@ -1045,6 +1069,10 @@ func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hu
 		if e = rows.Err(); e != nil {
 			return nil, nil, e
 		}
+		over, e := incidentsOverInASet(tx, reporter)
+		if e != nil {
+			return nil, nil, e
+		}
 		for _, id := range checksandalerts.Names(heldRows) {
 			if _, shown := r.Incidents[id]; shown || !r.Forgotten && heldRows[id].opened >= r.Sent.UnixNano() {
 				continue
@@ -1056,6 +1084,11 @@ func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hu
 		for _, id := range checksandalerts.Names(r.Incidents) {
 			m := r.Incidents[id]
 			held, known := heldRows[id]
+			// A report sent before the incident's closing alert reached
+			// the hub shows it open still. An incident never opens again.
+			if !known && over[id] {
+				continue
+			}
 			if !known {
 				opened := m.At
 				if opened.IsZero() {

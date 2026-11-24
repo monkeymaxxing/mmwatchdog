@@ -398,6 +398,25 @@ func TestThePendingChangesGoOutBeforeTheClosingAlert(t *testing.T) {
 	expectKinds(t, h.take("chat"), "failed warn")
 }
 
+// A report that a node sent before its recovery, and that the hub applies
+// after the recovery's alert, does not make the node's closed incident
+// open again: the key's closing alert still says "on every node". An
+// incident ID never opens again once closed.
+func TestAReportOlderThanARecoveryOpensNothingAgain(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn", "sos")})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive.Add(time.Minute), h.alert("app-2", "failed", "warn", versionA, 0, tenOFive.Add(time.Minute)))
+	h.take("chat")
+	h.arrive(tenOFive.Add(20*time.Minute), h.alert("app-2", "recovered", "warn", versionA, 0, tenOFive.Add(20*time.Minute)))
+	h.report(tenOFive.Add(21*time.Minute), map[string]store.ReportedIncidents{"app-2": shows("app-2", "warn", versionA, 0, tenOFive.Add(time.Minute), tenOFive.Add(19*time.Minute))})
+	h.arrive(tenOFive.Add(30*time.Minute), h.alert("app-1", "recovered", "warn", versionA, 0, tenOFive.Add(30*time.Minute)))
+	got := h.take("chat")
+	if len(got) == 0 || !strings.HasSuffix(got[len(got)-1].Title, "is ok on every node again") {
+		t.Fatalf("the closing alert %+v", got)
+	}
+}
+
 // Each destination's messages come from its own set, which holds only the
 // incidents routed to it, and a closing alert claims recovery only for the
 // nodes it covered while another node still has the key open. A node
