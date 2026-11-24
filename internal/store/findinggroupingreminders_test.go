@@ -59,3 +59,21 @@ func TestOneReminderPerDestinationAndKeyWhileAMemberIsEligible(t *testing.T) {
 	// MMHotline got the growth update of 12:00, and no reminder.
 	expectKinds(t, h.take("hotline"), "finding_nodes_changed warn")
 }
+
+// A key that the destination got only from a node sending without the hub,
+// during a hub outage, gets the hub's reminders once the hub settles the
+// direct send: the node stops its own reminders while the hub is reachable.
+func TestADirectSendStartsTheHubsReminders(t *testing.T) {
+	t.Parallel()
+	chat := chatTaking("https://chat.example.com", "warn")
+	chat.RemindEvery = "1h"
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chat})
+	at := tenOFive.Add(10 * time.Minute)
+	h.report(at, map[string]store.ReportedIncidents{"app-1": carriedTo(shows("app-1", "warn", versionA, 0, tenOFive, at), "chat", "")})
+	h.tick(at.Add(time.Hour))
+	got := h.take("chat")
+	expectKinds(t, got, "reminder warn")
+	if got[0].Node != "app-1" {
+		t.Fatal(got[0].Node)
+	}
+}

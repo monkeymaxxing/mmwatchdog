@@ -1276,6 +1276,12 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 		if e == nil && state == FleetIncidentOpen {
 			e = set.markPending(tx, key, reporter, id, pendingJoined, c.AlertSeverity, from, now)
 		}
+		// The destination got the key from the node, which leaves its
+		// reminders to the hub while the hub is reachable: the hub's
+		// reminders start, unless they run already.
+		if every := remindEvery(dest); e == nil && state == FleetIncidentOpen && every > 0 {
+			_, e = tx.Exec("UPDATE fleet_incident_keys SET next_reminder_due=? WHERE "+inSet+" AND incident_key=? AND next_reminder_due=0", append([]any{now.Add(every).UnixNano()}, set.with(key)...)...)
+		}
 	}
 	if e != nil {
 		return e
