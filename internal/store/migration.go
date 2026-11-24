@@ -49,6 +49,7 @@ func migrateStateDatabase(path string) error {
 		`ALTER TABLE incidents_sent_without_the_hub ADD COLUMN exact_finding TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE incidents_sent_without_the_hub ADD COLUMN exact_finding_sequence INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE incidents_sent_without_the_hub ADD COLUMN alert_source TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE incidents_sent_without_the_hub ADD COLUMN reminder_accepted_at INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE fleet_incident_keys ADD COLUMN announced_alert_severity TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE fleet_incident_keys ADD COLUMN announced_exact_findings TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE fleet_incident_keys ADD COLUMN next_update_due INTEGER NOT NULL DEFAULT 0`,

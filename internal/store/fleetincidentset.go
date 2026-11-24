@@ -473,10 +473,11 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 	var changed map[string]string
 	var closedBy map[string][]checksandalerts.Event
 	switch {
-	case opensOrChanges(message.Type) && from.Role == FallbackSender:
+	case (opensOrChanges(message.Type) || message.Type == "reminder") && from.Role == FallbackSender:
 		// Reports carry it until the hub has heard of it, so the hub sends
 		// the closing alert, even when the incident closes before the hub is
-		// back.
+		// back. A reminder can open the service's incident again, also after
+		// the hub's closing alert, so it is recorded too.
 		if e := queueEvent(tx, at, name, dest, message); e != nil {
 			return e
 		}
@@ -656,22 +657,24 @@ func closingTitle(readable string, about checksandalerts.Event, nodes []string, 
 	return []checksandalerts.TitlePart{{Text: about.AboutCheck() + " is ok again" + covered}}, was
 }
 
-// sentWithoutTheHub is what a joined node's direct failure or raise
-// records once its destination accepts it (Store.accepted): the incidents
-// of its members, and the ID of the MMHotline alert source that it went
-// under (directSendAlertSource), or "" for another destination.
+// sentWithoutTheHub is what a joined node's direct failure, raise, or
+// reminder records once its destination accepts it (Store.accepted): the
+// incidents of its members, the ID of the MMHotline alert source that it
+// went under (directSendAlertSource) or "" for another destination, and
+// whether it is a reminder.
 type sentWithoutTheHub struct {
 	AlertSource string                  `json:"alert_source,omitempty"`
 	Members     []checksandalerts.Event `json:"members"`
+	Reminder    bool                    `json:"reminder,omitempty"`
 }
 
 // recordOnAcceptance makes the delivery that transaction tx queued last, a
-// joined node's direct failure or raise of the incidents of members, record
-// them for the node's reports once its destination accepts it. A delivery
-// that waits to be retried is not in the record, so the hub settles only
-// what the destination took: a retry that lands after the hub closed the
-// key then gets its own closing alert. One that leaves the outbox
-// undelivered needs none.
+// joined node's direct failure, raise, or reminder of the incidents of
+// members, record them for the node's reports once its destination
+// accepts it. A delivery that waits to be retried is not in the record, so
+// the hub settles only what the destination took: a retry that lands after
+// the hub closed the key then gets its own closing alert. One that leaves
+// the outbox undelivered needs none.
 func recordOnAcceptance(tx *sql.Tx, members []checksandalerts.Event, alertSource string) error {
 	b, e := acceptanceRecord(members, alertSource)
 	if e != nil {
@@ -682,12 +685,20 @@ func recordOnAcceptance(tx *sql.Tx, members []checksandalerts.Event, alertSource
 }
 
 // acceptanceRecord is the outbox's sent_without_the_hub of a joined node's
-// direct failure or raise of the incidents of members, sent under
-// alertSource.
+// direct failure, raise, or reminder of the incidents of members, sent
+// under alertSource. A reminder's members are recorded as the kind of
+// their incident.
 func acceptanceRecord(members []checksandalerts.Event, alertSource string) (string, error) {
 	sent := sentWithoutTheHub{AlertSource: alertSource}
 	for _, m := range members {
-		sent.Members = append(sent.Members, checksandalerts.Event{Incident: m.Incident, CheckGroup: m.CheckGroup, Check: m.Check, Finding: m.Finding, Type: m.Type, AlertSeverity: m.AlertSeverity,
+		kind := m.Type
+		if m.Type == "reminder" {
+			sent.Reminder, kind = true, checksandalerts.FailureIncidentEvents.Failed
+			if checksandalerts.ReminderIsAboutCannotCheck(m) {
+				kind = "cannot_check"
+			}
+		}
+		sent.Members = append(sent.Members, checksandalerts.Event{Incident: m.Incident, CheckGroup: m.CheckGroup, Check: m.Check, Finding: m.Finding, Type: kind, AlertSeverity: m.AlertSeverity,
 			ExactFinding: m.ExactFinding, ExactFindingSequence: m.ExactFindingSequence})
 	}
 	b, e := json.Marshal(sent)
@@ -695,11 +706,19 @@ func acceptanceRecord(members []checksandalerts.Event, alertSource string) (stri
 }
 
 // recordSentWithoutTheHub records, on a joined node, each incident of
-// members whose failure or raise its fallback sent to the destination
-// without the hub and the destination accepted, with every severity sent,
-// and the ID of the MMHotline alert source that it sent under
-// (directSendAlertSource), or "" for another destination.
-func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksandalerts.Event, alertSource string, now time.Time) error {
+// members whose failure, raise, or reminder its fallback sent to the
+// destination without the hub and the destination accepted, with every
+// severity sent, and the ID of the MMHotline alert source that it sent
+// under (directSendAlertSource), or "" for another destination. A
+// reminder also records when it was accepted: a reminder can open the
+// service's incident again after the hub's closing alert, and the new time
+// makes a new version of the record, which the hub settles with a closing
+// alert of its own (directSendVersion).
+func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksandalerts.Event, alertSource string, reminder bool, now time.Time) error {
+	reminderAcceptedAt := int64(0)
+	if reminder {
+		reminderAcceptedAt = now.UnixNano()
+	}
 	for _, m := range members {
 		var earlier string
 		e := tx.QueryRow("SELECT alert_severities_sent_for_incident FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?", destination, m.Incident).Scan(&earlier)
@@ -707,10 +726,11 @@ func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksand
 			return e
 		}
 		sent := strings.Join(lowestFirst(append(strings.Split(earlier, ","), m.AlertSeverity)), ",")
-		if _, e = tx.Exec(`INSERT INTO incidents_sent_without_the_hub(destination,incident_id,check_group,check_name,finding,kind,alert_severities_sent_for_incident,at,exact_finding,exact_finding_sequence,alert_source) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+		if _, e = tx.Exec(`INSERT INTO incidents_sent_without_the_hub(destination,incident_id,check_group,check_name,finding,kind,alert_severities_sent_for_incident,at,exact_finding,exact_finding_sequence,alert_source,reminder_accepted_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
  ON CONFLICT(destination,incident_id) DO UPDATE SET alert_severities_sent_for_incident=excluded.alert_severities_sent_for_incident, alert_source=excluded.alert_source,
- exact_finding=CASE WHEN excluded.exact_finding_sequence>=exact_finding_sequence THEN excluded.exact_finding ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,excluded.exact_finding_sequence)`,
-			destination, m.Incident, m.CheckGroup, m.Check, m.Finding, checksandalerts.IncidentKind(m.Type), sent, now.UnixNano(), m.ExactFinding, m.ExactFindingSequence, alertSource); e != nil {
+ exact_finding=CASE WHEN excluded.exact_finding_sequence>=exact_finding_sequence THEN excluded.exact_finding ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,excluded.exact_finding_sequence),
+ reminder_accepted_at=MAX(reminder_accepted_at,excluded.reminder_accepted_at)`,
+			destination, m.Incident, m.CheckGroup, m.Check, m.Finding, checksandalerts.IncidentKind(m.Type), sent, now.UnixNano(), m.ExactFinding, m.ExactFindingSequence, alertSource, reminderAcceptedAt); e != nil {
 			return e
 		}
 	}
@@ -799,6 +819,20 @@ type IncidentSentWithoutTheHub struct {
 	// mmhotline destination, and from a 0.1.x node, whose record names no
 	// source.
 	AlertSource string `json:"alert_source,omitempty"`
+	// ReminderAcceptedAt is when the destination accepted the node's latest
+	// direct reminder of the incident, or zero. A reminder can open a
+	// service's incident again after the hub's closing alert; its time makes
+	// a new version of the record, which the hub settles with a closing
+	// alert of its own.
+	ReminderAcceptedAt time.Time `json:"reminder_accepted_at,omitzero"`
+}
+
+// Carried is the record d of reporter's node as the hub reads it from the
+// node's report (ReportedIncidents.SentWithoutTheHub): described as the
+// alert that announced the incident, with the highest severity sent.
+func (d IncidentSentWithoutTheHub) Carried(reporter string) checksandalerts.Event {
+	return checksandalerts.Event{Node: reporter, CheckGroup: d.CheckGroup, Check: d.Check, Finding: d.Finding, Type: d.Type, Incident: d.Incident, AlertSeverity: config.HighestSeverity(d.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: d.AlertSeveritiesSentForIncident,
+		ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence, MMHotlineAlertSource: d.AlertSource, ReminderAcceptedAt: d.ReminderAcceptedAt}
 }
 
 // IncidentKnownToTheHub is an incident that a report carried as sent
@@ -844,7 +878,7 @@ func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWi
 	known := []IncidentKnownToTheHub{}
 	for _, d := range carried {
 		incident := IncidentKnownToTheHub{Destination: d.Destination, Incident: d.Incident}
-		if settled[incident] == directSendVersion(d.AlertSeveritiesSentForIncident, d.AlertSource, d.ExactFindingSequence) {
+		if settled[incident] == directSendVersion(d.Carried(reporter)) {
 			known = append(known, incident)
 		}
 	}
@@ -1311,13 +1345,27 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 }
 
 // directSendVersion names one version of a node's record of a direct
-// send: the severities that the node sent of the incident, the MMHotline
-// alert source it sent under, and the sequence of its exact finding. A
-// later direct send of the same incident, such as a raise in another hub
-// outage, makes a new version, which the hub settles again before it
-// acknowledges the record.
-func directSendVersion(severities []string, alertSource string, exactFindingSequence int64) string {
-	return strings.Join(lowestFirst(severities), ",") + "|" + alertSource + "|" + strconv.FormatInt(exactFindingSequence, 10)
+// send (c, as a report carries it): the severities that the node sent of
+// the incident, the MMHotline alert source it sent under, the sequence of
+// its exact finding, and when the destination accepted its latest direct
+// reminder. A later direct send of
+// the same incident, such as a raise in another hub outage or a reminder,
+// makes a new version, which the hub settles again before it acknowledges
+// the record.
+func directSendVersion(c checksandalerts.Event) string {
+	version := strings.Join(lowestFirst(c.AlertSeveritiesSentForIncident), ",") + "|" + c.MMHotlineAlertSource + "|" + strconv.FormatInt(c.ExactFindingSequence, 10)
+	if !c.ReminderAcceptedAt.IsZero() {
+		version += "|" + strconv.FormatInt(c.ReminderAcceptedAt.UnixNano(), 10)
+	}
+	return version
+}
+
+// unixNanoOrZero is t in nanoseconds since 1970, or 0 for the zero time.
+func unixNanoOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.UnixNano()
 }
 
 // settleDirectSend settles, once for each version, the record of a direct
@@ -1388,7 +1436,7 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 		return e
 	}
 	_, e = tx.Exec("INSERT INTO fleet_direct_sends_settled(destination,reporter,incident_id,settled,settled_version) VALUES(?,?,?,?,?) ON CONFLICT(destination,reporter,incident_id) DO UPDATE SET settled=excluded.settled, settled_version=excluded.settled_version",
-		set.Destination, reporter, id, now.UnixNano(), directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence))
+		set.Destination, reporter, id, now.UnixNano(), directSendVersion(c))
 	return e
 }
 
@@ -1398,7 +1446,7 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 func (set IncidentSet) directSendSettled(tx *sql.Tx, reporter, id string, c checksandalerts.Event) (bool, error) {
 	var settled bool
 	e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=? AND settled_version=?)",
-		set.Destination, reporter, id, directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence)).Scan(&settled)
+		set.Destination, reporter, id, directSendVersion(c)).Scan(&settled)
 	return settled, e
 }
 
@@ -1406,7 +1454,7 @@ func (set IncidentSet) directSendSettled(tx *sql.Tx, reporter, id string, c chec
 // hub to a destination that keeps a fleet incident set, and that no
 // report reply has named as known to the hub yet.
 func (s *Store) SentWithoutTheHub() ([]IncidentSentWithoutTheHub, error) {
-	rows, e := s.DB.Query("SELECT destination, incident_id, check_group, check_name, finding, kind, alert_severities_sent_for_incident, exact_finding, exact_finding_sequence, alert_source FROM incidents_sent_without_the_hub ORDER BY at")
+	rows, e := s.DB.Query("SELECT destination, incident_id, check_group, check_name, finding, kind, alert_severities_sent_for_incident, exact_finding, exact_finding_sequence, alert_source, reminder_accepted_at FROM incidents_sent_without_the_hub ORDER BY at")
 	if e != nil {
 		return nil, e
 	}
@@ -1417,10 +1465,14 @@ func (s *Store) SentWithoutTheHub() ([]IncidentSentWithoutTheHub, error) {
 	for rows.Next() {
 		var d IncidentSentWithoutTheHub
 		var sent string
-		if e = rows.Scan(&d.Destination, &d.Incident, &d.CheckGroup, &d.Check, &d.Finding, &d.Type, &sent, &d.ExactFinding, &d.ExactFindingSequence, &d.AlertSource); e != nil {
+		var reminderAcceptedAt int64
+		if e = rows.Scan(&d.Destination, &d.Incident, &d.CheckGroup, &d.Check, &d.Finding, &d.Type, &sent, &d.ExactFinding, &d.ExactFindingSequence, &d.AlertSource, &reminderAcceptedAt); e != nil {
 			return nil, e
 		}
 		d.AlertSeveritiesSentForIncident = strings.Split(sent, ",")
+		if reminderAcceptedAt != 0 {
+			d.ReminderAcceptedAt = time.Unix(0, reminderAcceptedAt).UTC()
+		}
 		out = append(out, d)
 	}
 	return out, rows.Err()
@@ -1447,8 +1499,8 @@ func (s *Store) CarriedToHub(known []IncidentKnownToTheHub, reported []IncidentS
 			continue
 		}
 		if _, e = tx.Exec(`DELETE FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?
- AND alert_severities_sent_for_incident=? AND alert_source=? AND exact_finding_sequence=?`,
-			k.Destination, k.Incident, strings.Join(d.AlertSeveritiesSentForIncident, ","), d.AlertSource, d.ExactFindingSequence); e != nil {
+ AND alert_severities_sent_for_incident=? AND alert_source=? AND exact_finding_sequence=? AND reminder_accepted_at=?`,
+			k.Destination, k.Incident, strings.Join(d.AlertSeveritiesSentForIncident, ","), d.AlertSource, d.ExactFindingSequence, unixNanoOrZero(d.ReminderAcceptedAt)); e != nil {
 			return e
 		}
 	}

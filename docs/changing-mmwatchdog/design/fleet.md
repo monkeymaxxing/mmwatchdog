@@ -1481,7 +1481,12 @@ only after a report reply confirms that the hub has settled the record,
 in `incidents_known_to_the_hub`, and only when the record has not changed
 since the report that the reply answers. The hub confirms a record only
 once it has settled that version of it: the severities sent, the alert
-source, and the sequence of the exact finding. This holds for every key,
+source, the sequence of the exact finding, and when the destination
+accepted the node's latest direct reminder. A reminder is recorded like a
+failure, because it can open the service's incident again, such as
+Pushover's repeats, also after the hub's closing alert; the time of its
+acceptance makes a new version even at a severity already recorded. This
+holds for every key,
 with or without an exact finding. So the hub, when back, knows the
 incident and sends the closing alert, even if the joined node recovered
 while the hub was down.

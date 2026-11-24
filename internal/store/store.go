@@ -81,7 +81,7 @@ const stateTables = `
  CREATE INDEX IF NOT EXISTS fleet_incident_set_reporter ON fleet_incident_set(reporter);
  CREATE INDEX IF NOT EXISTS fleet_incident_set_resolved ON fleet_incident_set(state,changed);
  CREATE TABLE IF NOT EXISTS incidents_sent_without_the_hub (destination TEXT NOT NULL, incident_id TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, kind TEXT NOT NULL, alert_severities_sent_for_incident TEXT NOT NULL, at INTEGER NOT NULL,
-  exact_finding TEXT NOT NULL DEFAULT '', exact_finding_sequence INTEGER NOT NULL DEFAULT 0, alert_source TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,incident_id));
+  exact_finding TEXT NOT NULL DEFAULT '', exact_finding_sequence INTEGER NOT NULL DEFAULT 0, alert_source TEXT NOT NULL DEFAULT '', reminder_accepted_at INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(destination,incident_id));
  CREATE TABLE IF NOT EXISTS fleet_incident_keys (destination TEXT NOT NULL, alert_source TEXT NOT NULL, incident_key TEXT NOT NULL, alert_severities_sent TEXT NOT NULL, last_closing_alert_at INTEGER NOT NULL,
   announced_alert_severity TEXT NOT NULL DEFAULT '', announced_exact_findings TEXT NOT NULL DEFAULT '[]', next_update_due INTEGER NOT NULL DEFAULT 0, next_reminder_due INTEGER NOT NULL DEFAULT 0, mmhotline_alert_sources_sent TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,alert_source,incident_key));
  CREATE INDEX IF NOT EXISTS fleet_incident_keys_update ON fleet_incident_keys(next_update_due);
@@ -1004,7 +1004,7 @@ func (s *Store) accepted(d Delivery) error {
 		if e = json.Unmarshal([]byte(d.sentWithoutTheHub), &sent); e != nil {
 			return e
 		}
-		if e = recordSentWithoutTheHub(tx, d.Destination, sent.Members, sent.AlertSource, time.Now()); e != nil {
+		if e = recordSentWithoutTheHub(tx, d.Destination, sent.Members, sent.AlertSource, sent.Reminder, time.Now()); e != nil {
 			return e
 		}
 	}

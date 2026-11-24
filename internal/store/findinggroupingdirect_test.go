@@ -246,8 +246,7 @@ func carrying(t *testing.T, node *store.Store, reporter string, sent time.Time) 
 		if r.SentWithoutTheHub[d.Destination] == nil {
 			r.SentWithoutTheHub[d.Destination] = map[string]checksandalerts.Event{}
 		}
-		r.SentWithoutTheHub[d.Destination][d.Incident] = checksandalerts.Event{Node: reporter, CheckGroup: d.CheckGroup, Check: d.Check, Finding: d.Finding, Type: d.Type, Incident: d.Incident,
-			AlertSeverity: config.HighestSeverity(d.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: d.AlertSeveritiesSentForIncident, ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence, MMHotlineAlertSource: d.AlertSource}
+		r.SentWithoutTheHub[d.Destination][d.Incident] = d.Carried(reporter)
 	}
 	return r
 }

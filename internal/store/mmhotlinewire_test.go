@@ -352,6 +352,74 @@ func TestAServiceThatKeepsIncidentsGetsTheHubsOwnKey(t *testing.T) {
 	}
 }
 
+// A joined node's direct reminder to a service that keeps incidents is
+// recorded once the service accepts it, like a failure: a reminder that
+// lands after the hub's closing alert opened the service's incident again,
+// such as Pushover's repeats, and the hub sends it a closing alert of its
+// own. The record of an earlier send that the hub already settled has the
+// same severity, so the reminder's acceptance makes a new version.
+func TestADirectReminderAcceptedAfterTheHubsClosingGetsItsOwnClosing(t *testing.T) {
+	t.Parallel()
+	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "1h", AlertSeverities: testhelpers.AllSeverities}
+	destinations := map[string]checksandalerts.Destination{"pager": pager}
+	node := newJoinedNode(t)
+	direct := func(alert checksandalerts.Event) {
+		t.Helper()
+		tx, e := node.s.DB.Begin()
+		if e != nil {
+			t.Fatal(e)
+		}
+		defer tx.Rollback()
+		if e = store.QueueDirect(tx, alert.At.UnixNano(), alert, []checksandalerts.Event{alert}, destinations, store.QueuedBy{Role: store.FallbackSender, Node: alert.Node, FleetIdentity: groupingFleet, DestinationsWhoseServiceKeepsIncidents: []string{"pager"}}); e != nil {
+			t.Fatal(e)
+		}
+		if e = tx.Commit(); e != nil {
+			t.Fatal(e)
+		}
+	}
+	h := newGroupingHub(t, destinations)
+	failure := failureOf(node, "app-1", "app-1 cannot resolve db.internal", tenOFive)
+	direct(failure)
+	expectKinds(t, accept(t, node.s), "failed warn")
+	// The hub settles the failure, and its reply acknowledges the record.
+	at := tenOFive.Add(10 * time.Minute)
+	report := carrying(t, node.s, "app-1", at)
+	report.Incidents = reportOf("app-1", "warn", "-", tenOFive, at).Incidents
+	h.report(at, map[string]store.ReportedIncidents{"app-1": report})
+	expectKinds(t, h.take("pager"))
+	records, e := node.s.SentWithoutTheHub()
+	if e != nil {
+		t.Fatal(e)
+	}
+	known, e := h.s.IncidentsKnownToTheHub("app-1", records)
+	if e == nil {
+		e = node.s.CarriedToHub(known, records)
+	}
+	if e != nil || len(known) != 1 {
+		t.Fatal(known, e)
+	}
+	// A reminder queued while the hub was away waits to be retried; the
+	// node recovers, and the hub closes the service's incident.
+	reminder := failure
+	reminder.ID, reminder.Type, reminder.Destination, reminder.At = failure.ID+"-reminder", "reminder", "pager", tenOFive.Add(time.Hour)
+	direct(reminder)
+	heads, e := node.s.Pending()
+	if e != nil || len(heads) != 1 {
+		t.Fatal(heads, e)
+	}
+	if _, e = node.s.Delivered(heads[0], &checksandalerts.RetryLater{After: time.Minute}); e != nil {
+		t.Fatal(e)
+	}
+	h.report(at.Add(time.Hour), map[string]store.ReportedIncidents{"app-1": {Sent: at.Add(time.Hour)}})
+	expectKinds(t, h.take("pager"), "recovered warn")
+	// The reminder lands, and the service repeats it until it gets a
+	// closing alert.
+	expectKinds(t, accept(t, node.s), "reminder warn")
+	later := at.Add(2 * time.Hour)
+	h.report(later, map[string]store.ReportedIncidents{"app-1": carrying(t, node.s, "app-1", later)})
+	expectKinds(t, h.take("pager"), "recovered warn")
+}
+
 // An alert queued under the node alert source, when the destination no
 // longer has that source, is cancelled with the destination's other
 // changes, never sent under the destination's own source, where its

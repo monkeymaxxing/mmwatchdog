@@ -102,9 +102,14 @@ type Event struct {
 	// MMHotlineAlertSource is, on a queued mmhotline delivery, the alert
 	// source that it sends under (MMHotlineDestination.AlertSourceNamed),
 	// and on the record of a direct send that a node's report carries, the
-	// alert source that the node sent under; "" is the destination's own.
+	// ID of the alert source that the node sent under, or "" for the
+	// destination's own on a queued delivery and from a 0.1.x node.
 	MMHotlineAlertSource string `json:"mmhotline_alert_source,omitempty"`
-	Notify               bool   `json:"-"`
+	// ReminderAcceptedAt is, on the record of a direct send that a node's
+	// report carries, when the destination accepted the node's latest direct
+	// reminder of the incident, or zero.
+	ReminderAcceptedAt time.Time `json:"-"`
+	Notify             bool      `json:"-"`
 }
 
 // AboutCheck names what a check's alert is about, for people: the check as

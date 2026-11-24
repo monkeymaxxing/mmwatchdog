@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"mmwatchdog/internal/checksandalerts"
-	"mmwatchdog/internal/config"
 	"mmwatchdog/internal/incidents"
 	"mmwatchdog/internal/store"
 )
@@ -35,8 +34,7 @@ func announcedIncidents(reporter string, r *NodeStatusReport) store.ReportedInci
 		if found.SentWithoutTheHub[d.Destination] == nil {
 			found.SentWithoutTheHub[d.Destination] = map[string]checksandalerts.Event{}
 		}
-		found.SentWithoutTheHub[d.Destination][d.Incident] = checksandalerts.Event{Node: reporter, CheckGroup: d.CheckGroup, Check: d.Check, Finding: d.Finding, Type: d.Type, Incident: d.Incident, AlertSeverity: config.HighestSeverity(d.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: d.AlertSeveritiesSentForIncident,
-			ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence, MMHotlineAlertSource: d.AlertSource}
+		found.SentWithoutTheHub[d.Destination][d.Incident] = d.Carried(reporter)
 	}
 	for key, c := range r.Checks {
 		group, check, _ := strings.Cut(key, "/")
