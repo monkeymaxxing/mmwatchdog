@@ -105,6 +105,25 @@ func TestOnlyANodesReminderThatTheHubsReminderCoversIsDropped(t *testing.T) {
 	}
 }
 
+// A node that raised its incident to sos during a hub outage sends its sos
+// reminder before its next report: the hub's own reminder of the key is
+// still at warn, so the node's sos reminder goes on.
+func TestAnSosReminderOfAnIncidentTheHubHoldsAtWarnGoesOut(t *testing.T) {
+	t.Parallel()
+	chat := chatTaking("https://chat.example.com", "warn", "sos")
+	chat.RemindEvery = "1h"
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chat})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	expectKinds(t, h.take("chat"), "failed warn")
+	reminder := h.alert("app-1", "reminder", "sos", versionA, 0, tenOFive.Add(time.Hour))
+	reminder.Destination = "chat"
+	h.arrive(tenOFive.Add(time.Hour), reminder)
+	got := h.take("chat")
+	if len(got) == 0 || got[0].Type != "reminder" || got[0].AlertSeverity != "sos" {
+		t.Fatalf("the node's sos reminder did not go out: %+v", got)
+	}
+}
+
 // A key that the destination got only from a node sending without the hub,
 // during a hub outage, gets the hub's reminders once the hub settles the
 // direct send: the node stops its own reminders while the hub is reachable.

@@ -99,7 +99,9 @@ func queueIntake(tx *sql.Tx, node string, event checksandalerts.Event, b []byte,
 // hubRemindsOf reports a node's reminder that the hub's own reminder
 // covers: the set of the destination that the reminder names holds the
 // node's incident open, grouped by exact finding, and the hub keeps a
-// reminder schedule of its key for that destination. Any other reminder,
+// reminder schedule of its key for that destination, at the reminder's
+// severity: an sos reminder of an incident the hub holds at warn, such as
+// one raised during a hub outage, goes on. Any other reminder,
 // such as one of an incident without an exact finding routed to a
 // destination where only other nodes' incidents of the key have one, goes
 // on.
@@ -110,8 +112,9 @@ func hubRemindsOf(tx *sql.Tx, node string, event checksandalerts.Event) (bool, e
 	var covered bool
 	e := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM fleet_incident_set s JOIN fleet_incident_keys k
  ON k.destination=s.destination AND k.alert_source=s.alert_source AND k.incident_key=s.incident_key
- WHERE s.destination=? AND s.reporter=? AND s.incident_id=? AND s.state=? AND s.grouped_by_exact_finding=1 AND k.next_reminder_due!=0)`,
-		event.Destination, node, event.Incident, FleetIncidentOpen).Scan(&covered)
+ WHERE s.destination=? AND s.reporter=? AND s.incident_id=? AND s.state=? AND s.grouped_by_exact_finding=1 AND k.next_reminder_due!=0
+ AND (?!='sos' OR s.alert_severity='sos'))`,
+		event.Destination, node, event.Incident, FleetIncidentOpen, event.AlertSeverity).Scan(&covered)
 	return covered, e
 }
 
