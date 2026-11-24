@@ -1569,6 +1569,12 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 		if e == nil && state != fleetIncidentResolved {
 			e = set.countSeverities(tx, reporter, id, key, severity, c.AlertSeveritiesSentForIncident)
 		}
+		// A send with an exact finding of an incident that the set holds
+		// without one, such as one opened before the node knew exact
+		// findings, groups its membership: the hub's reminders cover it.
+		if e == nil && grouped && state == FleetIncidentOpen {
+			_, e = tx.Exec("UPDATE fleet_incident_set SET grouped_by_exact_finding=1 WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...)
+		}
 		// The key's closing alert went out before the hub learned of this
 		// send, which may have reached the destination after it, or under
 		// another alert source: the send needs a closing alert of its own.

@@ -168,3 +168,28 @@ func TestTheHubsReminderNamesOnlyGroupedMembers(t *testing.T) {
 		t.Fatalf("the reminders are of %s and of %s %v", got[0].Node, got[1].Node, got[1].Nodes)
 	}
 }
+
+// An incident that the hub announced without an exact finding, before its
+// node knew one, gets the hub's reminders once the hub settles the node's
+// direct send of its first exact finding, made during a hub outage: the
+// node leaves the reminders of an incident with an exact finding to the
+// hub while the hub is reachable.
+func TestADirectSendOfAFirstExactFindingGroupsAnOpenMembership(t *testing.T) {
+	t.Parallel()
+	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "1h", AlertSeverities: testhelpers.AllSeverities}
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"pager": pager})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", "", 0, tenOFive))
+	expectKinds(t, h.take("pager"), "failed warn")
+	back := tenOFive.Add(10 * time.Minute)
+	h.report(back, map[string]store.ReportedIncidents{"app-1": carriedTo(shows("app-1", "warn", versionA, 0, tenOFive, back), "pager", "")})
+	h.take("pager")
+	for interval := 1; interval <= 2; interval++ {
+		at := back.Add(time.Duration(interval) * time.Hour)
+		h.report(at.Add(-time.Minute), map[string]store.ReportedIncidents{"app-1": shows("app-1", "warn", versionA, 0, tenOFive, at.Add(-time.Minute))})
+		h.tick(at)
+		got := slices.DeleteFunc(h.take("pager"), func(a checksandalerts.Event) bool { return a.Type != "reminder" })
+		if len(got) != 1 || got[0].Node != "app-1" {
+			t.Fatalf("interval %d: reminders %q", interval, kinds(got))
+		}
+	}
+}

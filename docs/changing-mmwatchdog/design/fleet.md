@@ -1563,7 +1563,10 @@ from an earlier direct send, so the node is not newly affected. A record
 whose exact finding changed beside the reminder, such as a direct
 `exact_finding_changed` in the same hub outage, marks the node. This holds also when the reminder is the
 node's first direct send of the incident. MMHotline gets no reminders, so for MMHotline such a
-version changes nothing.
+version changes nothing. A settled send with an exact finding groups the
+node's open incident in the set by exact finding, also an incident that
+the set held without one, such as one that opened before its node knew
+the exact finding: the hub's reminders cover it from then on.
 
 A report carries as many unconfirmed records as fit its request size;
 remaining records follow after earlier records are confirmed.
