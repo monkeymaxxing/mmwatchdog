@@ -354,6 +354,28 @@ func TestAFailureArrivingAfterANewerReportNamesTheNewerExactFinding(t *testing.T
 	expectKinds(t, h.take("chat"))
 }
 
+// A key that an entry closes starts over: a node that recovered before the
+// closing is not named as ok again in an update after the key opens again.
+func TestAKeyThatAnEntryClosesStartsOver(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive, h.alert("app-2", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive.Add(time.Minute), h.alert("app-2", "recovered", "warn", versionA, 0, tenOFive.Add(time.Minute)))
+	expectKinds(t, h.take("chat"), "failed warn")
+	h.setAside(tenOFive.Add(time.Hour), entryFor(versionA, reasonNoPAM))
+	expectKinds(t, h.take("chat"), "closed_without_recovery warn")
+	h.arrive(tenOFive.Add(2*time.Hour), h.alert("db-1", "failed", "warn", versionB, 0, tenOFive.Add(2*time.Hour)))
+	h.arrive(tenOFive.Add(2*time.Hour), h.alert("db-2", "failed", "warn", versionB, 0, tenOFive.Add(2*time.Hour)))
+	expectKinds(t, h.take("chat"), "failed warn")
+	h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+	got := h.take("chat")
+	expectKinds(t, got, "finding_nodes_changed warn")
+	if got[0].RecoveredNodeCount != 0 || !slices.Equal(got[0].Nodes, []string{"db-2"}) {
+		t.Fatalf("%+v %+v", got[0].Nodes, got[0].RecoveredNodes)
+	}
+}
+
 // A report sent before a node raised its covered incident to sos, and
 // applied after the raise, never lowers the incident below sos: the entry
 // does not cover it again, so the sos stays open everywhere.

@@ -246,7 +246,9 @@ func (set IncidentSet) closeSetAside(tx *sql.Tx, at int64, name string, dest che
 	if _, e = tx.Exec(`UPDATE fleet_incident_keys SET alert_severities_sent='', last_closing_alert_at=?, announced_alert_severity='', announced_exact_findings='[]', next_update_due=0, next_reminder_due=0 WHERE `+inSet+` AND incident_key=?`, append([]any{now.UnixNano()}, set.with(key)...)...); e != nil {
 		return e
 	}
-	if _, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=? WHERE "+inSet+" AND incident_key=? AND state=?", append([]any{fleetIncidentResolved, now.UnixNano()}, set.with(key, fleetIncidentClosed)...)...); e != nil {
+	// The closed rows' pending changes belong to the key that closes; an
+	// update of the key that opens again names none of them.
+	if _, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=?, pending_change='' WHERE "+inSet+" AND incident_key=? AND state=?", append([]any{fleetIncidentResolved, now.UnixNano()}, set.with(key, fleetIncidentClosed)...)...); e != nil {
 		return e
 	}
 	if len(sent) == 0 {
