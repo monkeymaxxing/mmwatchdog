@@ -34,9 +34,15 @@ func failedUnitsCheck(severity checksandalerts.AlertSeveritySettings) *incidents
 // unitsObservation is what the check observes when systemd lists units as
 // failed, each with the result exit-code, or lists none.
 // failedUnit is the finding of one unit that systemd reports as failed, as
-// an every_systemd_unit check reports it.
+// an every_systemd_unit check reports it: its exact finding is the unit and
+// systemd's result, such as "backup.service exit-code", when systemd gave
+// the result.
 func failedUnit(unit, systemdResult string) checksandalerts.Finding {
-	return checksandalerts.Finding{ID: unit, Message: primitives.FailedUnitMessage(unit, systemdResult)}
+	finding := checksandalerts.Finding{ID: unit, Message: primitives.FailedUnitMessage(unit, systemdResult)}
+	if systemdResult != "" {
+		finding.ExactFinding = unit + " " + systemdResult
+	}
+	return finding
 }
 
 func unitsObservation(at time.Time, units ...string) checksandalerts.Observation {

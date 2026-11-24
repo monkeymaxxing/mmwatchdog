@@ -416,7 +416,7 @@ func TestAFailingFilesystemThatIsUnmountedStaysFailed(t *testing.T) {
 	// /var and /srv are unmounted: /var stays failed, /srv leaves silently.
 	testhelpers.KernelFiles(t, map[string]string{"proc/self/mountinfo": mountinfo("8:1", "/", "ext4", "/dev/sda1")})
 	kernelFilesystems(t, map[string]primitives.FilesystemCounts{"/": used(40)})
-	want := []checksandalerts.Finding{{ID: "/var", Message: "the filesystem at /var is no longer mounted"}}
+	want := []checksandalerts.Finding{{ID: "/var", Message: "the filesystem at /var is no longer mounted", ExactFinding: "/var unreadable"}}
 	for range 2 {
 		if o := run(); o.Status != "failed" || !reflect.DeepEqual(o.Findings, want) {
 			t.Fatal(o)
@@ -641,9 +641,9 @@ func TestEveryDiskAndNetworkFilesystemCheck(t *testing.T) {
 	check.AlertSeverity = "warn"
 	o := runUntilOnlyNFSWaits(check, 1)
 	want := []checksandalerts.Finding{
-		{ID: "/mnt/nfs", Message: "the filesystem does not answer: the filesystem at /mnt/nfs gave no answer within the time limit of the run"},
-		{ID: "/srv/data", Message: "/srv/data is mounted read-only; space_used_percent is 20 (fails above 90); inodes_used_percent is 50 (fails above 90)"},
-		{ID: "/var", Message: "/var: space_used_percent is 95 (fails above 90); inodes_used_percent is 50 (fails above 90)"},
+		{ID: "/mnt/nfs", Message: "the filesystem does not answer: the filesystem at /mnt/nfs gave no answer within the time limit of the run", ExactFinding: "/mnt/nfs unreadable"},
+		{ID: "/srv/data", Message: "/srv/data is mounted read-only; space_used_percent is 20 (fails above 90); inodes_used_percent is 50 (fails above 90)", ExactFinding: "/srv/data read-only"},
+		{ID: "/var", Message: "/var: space_used_percent is 95 (fails above 90); inodes_used_percent is 50 (fails above 90)", ExactFinding: "/var space"},
 	}
 	if o.Status != "failed" || o.Message != "3 filesystems fail: /mnt/nfs, /srv/data, /var (not counting 1 in filesystems_to_ignore: /boot/efi)" || !reflect.DeepEqual(o.Findings, want) || o.Measurements != nil {
 		t.Fatalf("%s %q\n%+v", o.Status, o.Message, o.Findings)
@@ -670,7 +670,7 @@ func TestEveryDiskAndNetworkFilesystemCheck(t *testing.T) {
 	kernelFilesystems(t, map[string]primitives.FilesystemCounts{"/": inodesFull, "/mnt/btrfs": noInodes})
 	check.Inputs = &checksandalerts.EveryDiskAndNetworkFilesystem{FilesystemsToIgnore: []string{}}
 	if o := checksandalerts.ObserveCheck(context.Background(), check); o.Status != "failed" || len(o.Findings) != 1 ||
-		o.Findings[0] != (checksandalerts.Finding{ID: "/", Message: "/: space_used_percent is 10 (fails above 90); inodes_used_percent is 99 (fails above 90)"}) || !strings.HasPrefix(o.Message, "1 filesystem fails: /") {
+		o.Findings[0] != (checksandalerts.Finding{ID: "/", Message: "/: space_used_percent is 10 (fails above 90); inodes_used_percent is 99 (fails above 90)", ExactFinding: "/ inodes"}) || !strings.HasPrefix(o.Message, "1 filesystem fails: /") {
 		t.Fatal(o)
 	}
 	// Without a limit, the check still fails for a read-only filesystem.
@@ -716,7 +716,8 @@ func TestEveryDiskAndNetworkFilesystemCheck(t *testing.T) {
 	o = checksandalerts.ObserveCheck(context.Background(), check)
 	primitives.AskKernelAboutFilesystem = real
 	if o.Status != "failed" || o.Message != "3 filesystems fail: /home/alice/remote, /mnt/nfs, /mnt/share" || len(o.Findings) != 3 ||
-		!strings.Contains(o.Findings[0].Message, "permission denied") || !strings.HasPrefix(o.Findings[1].Message, "the filesystem at /mnt/nfs gives an error in place of its size: ") || !strings.HasPrefix(o.Findings[2].Message, "the filesystem at /mnt/share gives an error in place of its size: ") {
+		!strings.Contains(o.Findings[0].Message, "permission denied") || !strings.HasPrefix(o.Findings[1].Message, "the filesystem at /mnt/nfs gives an error in place of its size: ") || !strings.HasPrefix(o.Findings[2].Message, "the filesystem at /mnt/share gives an error in place of its size: ") ||
+		o.Findings[0].ExactFinding != "/home/alice/remote unreadable" || o.Findings[1].ExactFinding != "/mnt/nfs unreadable" {
 		t.Fatalf("%s %q %+v", o.Status, o.Message, o.Findings)
 	}
 

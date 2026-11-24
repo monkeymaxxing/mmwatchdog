@@ -72,6 +72,15 @@ func namedOrUnnamed(prettyName string) string {
 	return prettyName
 }
 
+// releaseOfTheNode names the node's release at the start of an exact
+// finding of a package check: ID and VERSION_ID of /etc/os-release, such as
+// "debian 13" or "rocky 9.4". Two nodes of different releases can have the
+// same versions of a package and still need different fixes.
+func releaseOfTheNode() string {
+	release := primitives.NodeOSRelease()
+	return strings.TrimSpace(release["ID"] + " " + release["VERSION_ID"])
+}
+
 // hasNonemptyPackageLists requires actual package data, not a cache directory
 // or repository index. List timestamps cannot prove a successful refresh.
 func hasNonemptyPackageLists(paths ...string) bool {

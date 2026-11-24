@@ -94,7 +94,15 @@ func (n *EverySystemdUnit) Run(ctx context.Context, _ *CheckRun) Observation {
 		case known && state.activeState != "" && state.activeState != "failed":
 			// The unit left the failed state between the two questions.
 		default:
-			failed = append(failed, Finding{ID: unit, Message: primitives.FailedUnitMessage(unit, state.result)})
+			finding := Finding{ID: unit, Message: primitives.FailedUnitMessage(unit, state.result)}
+			// The exact finding is the unit and how it failed, such as
+			// "backup.service exit-code": the same unit failing in another
+			// way is another problem. A unit whose result systemd did not
+			// give has none, rather than one that changes back and forth.
+			if state.result != "" {
+				finding.ExactFinding = FitExactFinding(unit + " " + state.result)
+			}
+			failed = append(failed, finding)
 		}
 	}
 	o := Result("ok", "no failed systemd units")

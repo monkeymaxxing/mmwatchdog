@@ -1,6 +1,7 @@
 package checksandalerts
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -74,18 +75,23 @@ func (n *UbuntuProSecurityFixes) Run(ctx context.Context, _ *CheckRun) Observati
 	if !*status.Summary.UA.Attached && !hasNonemptyPackageLists("/var/lib/ubuntu-advantage/apt-esm/var/lib/apt/lists/*_Packages") {
 		return Result("unknown", "the Ubuntu Pro client has no lists of ESM fixes in /var/lib/ubuntu-advantage/apt-esm, so MMWatchdog cannot know which fixes only Ubuntu Pro delivers: run apt-get update as root, which starts the Ubuntu Pro client's esm-cache.service")
 	}
-	inventory, err := run("dpkg-query", "--show", "--showformat=${db:Status-Status}\t${Package}\t${source:Package}\n")
+	inventory, err := run("dpkg-query", "--show", "--showformat=${db:Status-Status}\t${Package}\t${source:Package}\t${source:Version}\n")
 	if err != nil {
 		return Result("unknown", "MMWatchdog cannot read installed packages with dpkg-query: "+err.Error())
 	}
 	if inventory.ExitCode != 0 {
 		return Result("unknown", "MMWatchdog cannot read installed packages with dpkg-query: "+primitives.Clip(strings.TrimSpace(inventory.StandardError), 300))
 	}
-	sources := map[string]string{}
+	// The source package of each installed binary package, and the lowest
+	// installed version of each source package.
+	sources, installedVersions := map[string]string{}, map[string]string{}
 	for _, line := range strings.Split(inventory.StandardOutput, "\n") {
 		fields := strings.Split(line, "\t")
-		if len(fields) == 3 && fields[0] == "installed" && fields[2] != "" {
+		if len(fields) == 4 && fields[0] == "installed" && fields[2] != "" {
 			sources[fields[1]] = fields[2]
+			if old, found := installedVersions[fields[2]]; !found || primitives.CompareDebianVersions(fields[3], old) < 0 {
+				installedVersions[fields[2]] = fields[3]
+			}
 		}
 	}
 	// Source -> service -> binary -> fixed version. Keeping services separate
@@ -116,8 +122,15 @@ func (n *UbuntuProSecurityFixes) Run(ctx context.Context, _ *CheckRun) Observati
 		return observation
 	}
 	observation = Result("failed", countOf(len(names), "source package has", "source packages have")+" a security fix that this node misses because only Ubuntu Pro delivers it: "+shownNames(names))
+	releaseName := releaseOfTheNode()
 	for _, source := range names {
 		messages := []string{}
+		// The exact finding: the release, the source package, its installed
+		// version, and each service with the fixed versions it delivers,
+		// such as "ubuntu 24.04 python-wheel 0.42.0-2; esm-apps fixed
+		// version: 0.42.0-2ubuntu0.1~esm1".
+		installed := cmp.Or(installedVersions[source], "installed version unknown")
+		exact := []string{releaseName + " " + source + " " + installed}
 		for _, service := range []string{"esm-apps", "esm-infra"} {
 			binaries := fixes[source][service]
 			if len(binaries) == 0 {
@@ -125,6 +138,7 @@ func (n *UbuntuProSecurityFixes) Run(ctx context.Context, _ *CheckRun) Observati
 			}
 			packages := slices.Sorted(maps.Keys(binaries))
 			versions := uniqueSorted(slices.Collect(maps.Values(binaries)))
+			exact = append(exact, service+" fixed version: "+strings.Join(versions, ", "))
 			detail := "version " + versions[0] + " of the installed package"
 			if len(versions) > 1 {
 				for i, binary := range packages {
@@ -142,7 +156,7 @@ func (n *UbuntuProSecurityFixes) Run(ctx context.Context, _ *CheckRun) Observati
 			}
 			messages = append(messages, source+" has a security fix that this node misses because only Ubuntu Pro's "+label+" delivers it: "+detail)
 		}
-		observation.Findings = append(observation.Findings, Finding{ID: source, Message: strings.Join(messages, "; ")})
+		observation.Findings = append(observation.Findings, Finding{ID: source, Message: strings.Join(messages, "; "), ExactFinding: FitExactFinding(strings.Join(exact, "; "))})
 	}
 	return observation
 }
