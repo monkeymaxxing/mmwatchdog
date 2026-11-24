@@ -252,6 +252,101 @@ func TestAFailureOfTheOldReceiverAfterAReloadLeavesTheNewOneAlone(t *testing.T) 
 	}
 }
 
+// A signed answer that MMHotline gives to an alert after a reload
+// cancelled it records nothing and goes nowhere, by the rule that the
+// reload cancelled it by: a 429 from an alert source for nodes sending
+// without the hub that the reload removed puts no wait on the destination,
+// and a 400 from an alert source that the reload replaced passes the alert
+// on to no other destination.
+func TestASignedAnswerToAnAlertThatAReloadCancelledRecordsNothing(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name   string
+		reload func(*checksandalerts.MMHotlineDestination)
+		answer error
+	}{
+		{"a 429 from a removed alert source for nodes", func(p *checksandalerts.MMHotlineDestination) { p.AlertSourceForNodesSendingWithoutTheHub = nil }, &checksandalerts.RetryLater{After: time.Hour}},
+		{"a 400 from a replaced alert source", func(p *checksandalerts.MMHotlineDestination) { p.AlertSourceID = "another_source" }, &checksandalerts.MMHotlineRefusal{Status: http.StatusBadRequest}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			path, cfg := daemonConfig(t)
+			destinations := func(reload func(*checksandalerts.MMHotlineDestination)) map[string]checksandalerts.Destination {
+				out := mmhotlineDestinations(t)
+				p := out[mmhotlineDestinationName].MMHotline()
+				p.AlertSourceForNodesSendingWithoutTheHub = &checksandalerts.MMHotlineAlertSource{AlertSourceID: "mmwatchdog_nodes", SigningSecretFile: p.SigningSecretFile}
+				if reload != nil {
+					reload(p)
+				}
+				out["pager"] = checksandalerts.Destination{RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, Inputs: &checksandalerts.Webhook{URL: "http://127.0.0.1:9/pager"}, TimeLimitPerDeliveryAttempt: "1m"}
+				return out
+			}
+			cfg.Alerts.Destinations = destinations(nil)
+			writeConfig(t, path, cfg)
+			d, e := newDaemon(path, time.Now)
+			if e != nil {
+				t.Fatal(e)
+			}
+			t.Cleanup(func() { d.Close() })
+			alert := func() {
+				t.Helper()
+				d.mu.Lock()
+				defer d.mu.Unlock()
+				if e := d.record([]checksandalerts.Event{{AlertSeverity: "sos", ID: incidents.ID(), CheckGroup: "app", Check: "shell", Type: "failed", At: d.now(), Message: "the test's alert", Notify: true}}); e != nil {
+					t.Fatal(e)
+				}
+			}
+			alert()
+			// The alert was queued under the alert source for nodes, as a
+			// joined node's direct send is.
+			if _, e = d.store.DB.Exec("UPDATE outbox SET event=json_set(event,'$.mmhotline_alert_source','mmwatchdog_nodes') WHERE destination=?", mmhotlineDestinationName); e != nil {
+				t.Fatal(e)
+			}
+			heads, e := d.store.Pending()
+			if e != nil {
+				t.Fatal(e)
+			}
+			var head store.Delivery
+			for _, h := range heads {
+				if h.Destination == mmhotlineDestinationName {
+					head = h
+				}
+			}
+			if head.Event.MMHotlineAlertSource != "mmwatchdog_nodes" {
+				t.Fatalf("no alert queued under the alert source for nodes: %+v", heads)
+			}
+			cfg.Alerts.Destinations = destinations(c.reload)
+			writeConfig(t, path, cfg)
+			if _, e = d.reload(); e != nil {
+				t.Fatal(e)
+			}
+			queuedForPager := func() int {
+				t.Helper()
+				var n int
+				if e := d.store.DB.QueryRow("SELECT COUNT(*) FROM outbox WHERE destination='pager'").Scan(&n); e != nil {
+					t.Fatal(e)
+				}
+				return n
+			}
+			before := queuedForPager()
+			d.mu.Lock()
+			d.attemptFinished(head, head.Event, c.answer)
+			d.mu.Unlock()
+			if after := queuedForPager(); after != before {
+				t.Fatal("the cancelled alert went on to pager", before, after)
+			}
+			var failures int
+			if e = d.store.DB.QueryRow("SELECT COUNT(*) FROM counters WHERE name LIKE 'failed_attempts_in_a_row:%'").Scan(&failures); e != nil || failures != 0 {
+				t.Fatal("the old alert source's answer counts for the destination", failures, e)
+			}
+			alert()
+			if !headIsDue(t, d, mmhotlineDestinationName) {
+				t.Fatal("the destination waits for the old alert source's answer")
+			}
+		})
+	}
+}
+
 // A report that reaches the hub ends what failed alert attempts to the hub
 // left: an attempt that failed before the node joined, or while the hub
 // was down, makes the next alert neither wait out the failures' delay nor

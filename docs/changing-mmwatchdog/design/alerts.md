@@ -1105,7 +1105,11 @@ destination.
   new fleet settings replace the destination with another receiver, such
   as another address or credential. A failure that the old receiver
   answers after the replacement, such as an HTTP `429` with a long
-  `Retry-After`, records nothing for the new receiver. When `state.db` cannot
+  `Retry-After`, records nothing for the new receiver, and an MMHotline
+  `400` passes the cancelled alert on to no other destination. The same
+  holds for an answer under an MMHotline alert source that the reload
+  removed or replaced, by the rule by which the reload cancelled the
+  alert. When `state.db` cannot
   record a failed attempt, the wait counts the alert's own failed attempts,
   or follows the receiver's `Retry-After`, and is never skipped. Each retry keeps the event ID of the
   alert whose delivery failed, so receivers can deduplicate. Delivery is at

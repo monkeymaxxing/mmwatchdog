@@ -66,33 +66,44 @@ func (d *Daemon) sender(delivery store.Delivery) (checksandalerts.NotificationSe
 
 // activeTarget is the destination that the active route has under the
 // delivery's name, when it is still the one that the delivery captured
-// (checksandalerts.SameDestination): a reload has not removed or replaced
-// it. The caller holds d.mu.
+// (checksandalerts.SameDestination) and, for an mmhotline destination,
+// still has the alert source that the alert was queued under: a reload has
+// not removed or replaced either, the rule by which a reload cancels
+// queued alerts (store.CancelDeliveries). The caller holds d.mu.
 func (d *Daemon) activeTarget(delivery store.Delivery) (checksandalerts.Destination, bool) {
 	route := d.route()
 	if route.Joined && delivery.Destination == config.HubDestination {
 		return checksandalerts.Destination{}, true
 	}
 	current, exists := route.Destinations[delivery.Destination]
-	return current, exists && checksandalerts.SameDestination(delivery.Target, current)
+	if !exists || !checksandalerts.SameDestination(delivery.Target, current) {
+		return current, false
+	}
+	if p := current.MMHotline(); p != nil {
+		_, _, known := p.AlertSourceNamed(delivery.Event.MMHotlineAlertSource)
+		return current, known
+	}
+	return current, true
 }
 
 // attemptFinished records the end of an attempt to deliver the alert event,
 // as delivery: what the destination answered, the wait before the next
-// attempt, and the journal line. A failure to reach a destination that a
-// reload replaced while the attempt was under way belongs to the old
+// attempt, and the journal line. A failure of any kind, also a permanent
+// refusal, from a destination or an MMHotline alert source that a reload
+// removed or replaced while the attempt was under way belongs to the old
 // receiver: the reload cancelled the alert and started the new receiver's
 // failed attempts and wait over (clearChanged), so the failure records
-// nothing for the new one. The caller holds d.mu.
+// nothing for the new one, and the cancelled alert goes to no other
+// destination. The caller holds d.mu.
 func (d *Daemon) attemptFinished(delivery store.Delivery, event checksandalerts.Event, e error) {
-	var refused *checksandalerts.MMHotlineRefusal
-	if _, current := d.activeTarget(delivery); e != nil && !errors.As(e, &refused) && !current {
+	if _, current := d.activeTarget(delivery); e != nil && !current {
 		log.Printf("could not deliver the alert %q to alert destination %s, which a reload has replaced since; the alert goes no further: %v", cmp.Or(event.TitleWithAlertSeverity, event.Title, event.Message), delivery.Destination, e)
 		return
 	}
 	delay, bookkeeping := d.store.Delivered(delivery, e)
 	var passedTo []string
-	if refused != nil && bookkeeping == nil {
+	var refused *checksandalerts.MMHotlineRefusal
+	if errors.As(e, &refused) && bookkeeping == nil {
 		passedTo = d.passOnRefusedAlert(delivery.Destination, event, refused, d.now())
 	}
 	log.Print(deliveryLine(delivery.Destination, event, e, delay, passedTo))
