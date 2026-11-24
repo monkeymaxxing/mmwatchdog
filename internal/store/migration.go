@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"mmwatchdog/internal/checksandalerts"
+	"mmwatchdog/internal/config"
 )
 
 // migrateStateDatabase moves state.db at path from the previous format to
@@ -89,57 +90,166 @@ func migrateStateDatabase(path string) error {
 // recordQueuedDirectSendsOnAcceptance moves a joined node's records of
 // direct sends that still wait in the outbox to their acceptance. Format 20
 // recorded a direct failure or raise to a destination that keeps
-// incidents when it was queued; this format records it once the
-// destination accepts it (recordOnAcceptance). A queued delivery of an
-// incident that has such a record gets the record of its acceptance, and
-// the record keeps only the severities that left the outbox, so that the
-// hub settles a send only once the destination has it. A severity goes out
-// once for each incident, so a severity that waits in the outbox was not
-// accepted yet. A record left with no severity is removed: the delivery's
-// acceptance writes it again.
+// incidents, or to an mmhotline destination, when it was queued; this
+// format records it once the destination accepts it (recordOnAcceptance).
+// A queued direct send gets the record of its acceptance, and the
+// incident's format-20 record keeps only the severities that left the
+// outbox, so that the hub settles a send only once the destination has it.
+// A severity goes out once for each incident, so a severity that waits in
+// the outbox was not accepted yet. A record left with no severity is
+// removed: the delivery's acceptance writes it again.
+//
+// Format 20 queued a direct send to a destination that keeps incidents as
+// the node's own event, with its incident. An MMHotline direct send it
+// queued as MMHotline's alert, without the incident: the alert's ID is the
+// ID of the node's event, which names the incident while the event
+// history holds it. Otherwise the incident is the one format-20 record of
+// the destination, check, kind, and severity, or of those that the alert's
+// title names by its finding. When none or several remain, the record
+// stays whole, and the hub settles the send before it lands, as in format
+// 20.
 func recordQueuedDirectSendsOnAcceptance(tx *sql.Tx) error {
-	rows, e := tx.Query(`SELECT o.seq, o.destination, o.event, r.alert_severities_sent_for_incident FROM outbox o JOIN incidents_sent_without_the_hub r
- ON r.destination=o.destination AND r.incident_id=json_extract(CAST(o.event AS TEXT),'$.incident_id') ORDER BY o.seq`)
+	type record struct {
+		incident, checkGroup, check, finding, kind string
+		sent                                       []string
+	}
+	recorded := map[string][]record{}
+	rows, e := tx.Query("SELECT destination, incident_id, check_group, check_name, finding, kind, alert_severities_sent_for_incident FROM incidents_sent_without_the_hub")
 	if e != nil {
 		return e
 	}
-	type queued struct {
-		seq                    int64
-		destination, incident  string
-		record, severity, sent string
+	for rows.Next() {
+		var destination, sent string
+		var r record
+		if e = rows.Scan(&destination, &r.incident, &r.checkGroup, &r.check, &r.finding, &r.kind, &sent); e != nil {
+			_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+			return e
+		}
+		r.sent = strings.Split(sent, ",")
+		recorded[destination] = append(recorded[destination], r)
 	}
-	all := []queued{}
+	_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+	if e = rows.Err(); e != nil {
+		return e
+	}
+	type queued struct {
+		seq         int64
+		destination string
+		event       checksandalerts.Event
+		alertSource string
+	}
+	all, eventIDs := []queued{}, []any{}
+	if rows, e = tx.Query("SELECT seq, destination, event, target FROM outbox WHERE destination!=? ORDER BY seq", config.HubDestination); e != nil {
+		return e
+	}
 	for rows.Next() {
 		var q queued
-		var b []byte
-		var event checksandalerts.Event
-		if e = rows.Scan(&q.seq, &q.destination, &b, &q.sent); e == nil {
-			e = json.Unmarshal(b, &event)
+		var b, w []byte
+		var target storedDestination
+		if e = rows.Scan(&q.seq, &q.destination, &b, &w); e == nil {
+			e = json.Unmarshal(b, &q.event)
 		}
-		if e == nil && opensOrChanges(event.Type) {
-			q.incident, q.severity = event.Incident, event.AlertSeverity
-			q.record, e = acceptanceRecord([]checksandalerts.Event{event}, event.MMHotlineAlertSource)
-			all = append(all, q)
+		if e == nil && q.event.MMHotlineAlert != nil {
+			e = json.Unmarshal(w, &target)
 		}
 		if e != nil {
 			_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
 			return e
+		}
+		a := q.event.MMHotlineAlert
+		switch {
+		case !opensOrChanges(q.event.Type):
+		case a == nil:
+			all = append(all, q)
+		// Only a node's direct send ends with these words; a hub's or a
+		// standalone node's MMHotline alert is no direct send.
+		case strings.HasSuffix(a.Message, "\n"+(QueuedBy{Role: FallbackSender, Node: q.event.Node}).SentBy()) && target.destination().MMHotline() != nil:
+			q.alertSource = target.destination().MMHotline().AlertSourceID
+			all = append(all, q)
+			eventIDs = append(eventIDs, q.event.ID)
 		}
 	}
 	_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
 	if e = rows.Err(); e != nil {
 		return e
 	}
-	accepted := map[[2]string][]string{}
-	for _, q := range all {
-		if _, e = tx.Exec("UPDATE outbox SET sent_without_the_hub=? WHERE seq=?", q.record, q.seq); e != nil {
+	// The node's events of the MMHotline direct sends, by ID.
+	events := map[string]checksandalerts.Event{}
+	if len(eventIDs) > 0 {
+		if rows, e = tx.Query("SELECT data FROM events WHERE json_extract(CAST(data AS TEXT),'$.id') IN (?"+strings.Repeat(",?", len(eventIDs)-1)+")", eventIDs...); e != nil {
 			return e
 		}
-		id := [2]string{q.destination, q.incident}
-		if _, seen := accepted[id]; !seen {
-			accepted[id] = strings.Split(q.sent, ",")
+		for rows.Next() {
+			var b []byte
+			var event checksandalerts.Event
+			if e = rows.Scan(&b); e == nil {
+				e = json.Unmarshal(b, &event)
+			}
+			if e != nil {
+				_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+				return e
+			}
+			events[event.ID] = event
 		}
-		accepted[id] = slices.DeleteFunc(accepted[id], func(s string) bool { return s == q.severity })
+		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+		if e = rows.Err(); e != nil {
+			return e
+		}
+	}
+	// incidentOf is the incident of a queued direct send, or nil when it is
+	// not known.
+	incidentOf := func(q queued) *checksandalerts.Event {
+		a := q.event.MMHotlineAlert
+		if a == nil {
+			for _, r := range recorded[q.destination] {
+				if r.incident == q.event.Incident {
+					return &q.event
+				}
+			}
+			return nil
+		}
+		if event, ok := events[q.event.ID]; ok && event.Incident != "" {
+			event.AlertSeverity = a.Severity
+			return &event
+		}
+		var matches []record
+		for _, r := range recorded[q.destination] {
+			if r.checkGroup == q.event.CheckGroup && r.check == q.event.Check && r.kind == checksandalerts.IncidentKind(q.event.Type) && slices.Contains(r.sent, a.Severity) {
+				matches = append(matches, r)
+			}
+		}
+		if len(matches) > 1 {
+			matches = slices.DeleteFunc(matches, func(r record) bool { return r.finding == "" || !strings.Contains(a.Title, r.finding) })
+		}
+		if len(matches) != 1 {
+			return nil
+		}
+		r := matches[0]
+		return &checksandalerts.Event{Incident: r.incident, CheckGroup: r.checkGroup, Check: r.check, Finding: r.finding, Type: q.event.Type, AlertSeverity: a.Severity}
+	}
+	accepted := map[[2]string][]string{}
+	for _, q := range all {
+		incident := incidentOf(q)
+		if incident == nil {
+			continue
+		}
+		b, e := acceptanceRecord([]checksandalerts.Event{*incident}, q.alertSource)
+		if e == nil {
+			_, e = tx.Exec("UPDATE outbox SET sent_without_the_hub=? WHERE seq=?", b, q.seq)
+		}
+		if e != nil {
+			return e
+		}
+		for _, r := range recorded[q.destination] {
+			if r.incident != incident.Incident {
+				continue
+			}
+			id := [2]string{q.destination, r.incident}
+			if _, seen := accepted[id]; !seen {
+				accepted[id] = r.sent
+			}
+			accepted[id] = slices.DeleteFunc(accepted[id], func(s string) bool { return s == incident.AlertSeverity })
+		}
 	}
 	for id, severities := range accepted {
 		if len(severities) == 0 {

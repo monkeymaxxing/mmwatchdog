@@ -871,7 +871,13 @@ open key, with no exact finding announced. On a joined node it moves the
 record of a direct send that still waits to be delivered to the moment the
 destination accepts it, as 0.2.0 records it: the record keeps only the
 severities that left the queue, so the hub settles the waiting send only
-once the destination has it. For the three security-update
+once the destination has it. MMWatchdog 0.1.x queued a direct send to
+MMHotline without its incident: the migration finds the incident by the
+node's event of the send while the event history holds it, and otherwise
+by the one record of the destination, check, and severity, or of the
+finding that the alert's title names. When no single record fits, the
+record stays whole, and the hub settles that send early, as 0.1.x did.
+For the three security-update
 checks, whose result changed from one incident to one incident per
 [finding](checks.md#findings), the migration counts the check as changed:
 its old single incident closes once with `closed_without_recovery`, and

@@ -3,9 +3,11 @@ package store_test
 import (
 	"database/sql"
 	"encoding/json"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -146,15 +148,16 @@ func TestFormat20MigratesInPlaceOnEveryRole(t *testing.T) {
 	})
 	t.Run("joined node", func(t *testing.T) {
 		t.Parallel()
-		// 0.1.x recorded a direct send when it queued it. MMHotline took
-		// the warning of i-2, and its raise to sos still waits to be
-		// retried.
+		// 0.1.x recorded a direct send when it queued it. Pushover, a
+		// service that keeps incidents, took the warning of i-2, and its
+		// raise to sos still waits to be retried; 0.1.x queued such an
+		// alert as the node's own event.
 		raise, _ := json.Marshal(checksandalerts.Event{ID: "e-2", Incident: "i-2", Node: "app-1", CheckGroup: "app", Check: "dns", Type: checksandalerts.FailureIncidentEvents.Raised, AlertSeverity: "sos", FleetIncidentKey: "fedcba9876543210fedcba9876543210", At: time.Unix(200, 0)})
 		dir := format20Database(t, `
  INSERT INTO incidents_sent_without_the_hub VALUES('pager','i-1','app','http','','failed','warn,sos',1);
- INSERT INTO incidents_sent_without_the_hub VALUES('hotline','i-2','app','dns','','failed','warn,sos',2);
+ INSERT INTO incidents_sent_without_the_hub VALUES('pushover','i-2','app','dns','','failed','warn,sos',2);
  INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(1,1,'hub',?,'{}');
- INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(2,2,'hotline','`+string(raise)+`','{}')`, sosFailure)
+ INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(2,2,'pushover','`+string(raise)+`','{}')`, sosFailure)
 		s := openMigrated(t, dir)
 		records, e := s.SentWithoutTheHub()
 		if e != nil || len(records) != 2 || records[0].Incident != "i-1" || len(records[0].AlertSeveritiesSentForIncident) != 2 {
@@ -166,7 +169,7 @@ func TestFormat20MigratesInPlaceOnEveryRole(t *testing.T) {
 			t.Fatal("the record of the waiting raise", records[1])
 		}
 		ds, e := s.Pending()
-		if e != nil || len(ds) != 2 || ds[0].Destination != "hub" || ds[1].Destination != "hotline" {
+		if e != nil || len(ds) != 2 || ds[0].Destination != "hub" || ds[1].Destination != "pushover" {
 			t.Fatal("a queued alert is lost", ds, e)
 		}
 		if _, e = s.Delivered(ds[1], nil); e != nil {
@@ -188,4 +191,107 @@ func TestFormat20MigratesInPlaceOnEveryRole(t *testing.T) {
 			t.Fatal(announced, e)
 		}
 	})
+}
+
+// joinedNode013 is state.db in format 20 with the rows that a 0.1.3 joined
+// node wrote for its direct MMHotline sends (testdata), keeping the
+// lines that keep accepts.
+func joinedNode013(t *testing.T, keep func(line string) bool) string {
+	t.Helper()
+	b, e := os.ReadFile(filepath.Join("testdata", "joined_node_0.1.3_direct_mmhotline_raises_waiting.sql"))
+	if e != nil {
+		t.Fatal(e)
+	}
+	kept := []string{}
+	for _, line := range strings.Split(string(b), "\n") {
+		if strings.HasPrefix(line, "INSERT") && keep(line) {
+			kept = append(kept, line)
+		}
+	}
+	return format20Database(t, strings.Join(kept, "\n"))
+}
+
+// resolutionsByFinding names the severity of each MMHotline resolution in
+// got by the finding of its key, anacron.service or cron.service.
+func resolutionsByFinding(t *testing.T, got []checksandalerts.Event) map[string]string {
+	t.Helper()
+	out := map[string]string{}
+	for _, a := range got {
+		finding := "cron.service"
+		if strings.Contains(a.MMHotlineAlert.Title, "anacron.service") {
+			finding = "anacron.service"
+		}
+		if sourceOf(a) != "source-1" || out[finding] != "" {
+			t.Fatalf("a resolution under %s, or a second one of %s: %+v", sourceOf(a), finding, got)
+		}
+		out[finding] = a.MMHotlineAlert.Severity
+	}
+	return out
+}
+
+// A 0.1.3 joined node's direct MMHotline raise to sos that still waits in
+// the outbox at the upgrade is recorded only once MMHotline accepts it,
+// with the rows as 0.1.3 wrote them: the hub cannot settle the sos early,
+// and a retry that lands after the hub's closing gets a closing of its
+// own. The migration finds the incident of the raise by its event in the
+// event history, or else by the 0.1.x record of the direct send, with the
+// finding from the alert's title only when that names one finding;
+// otherwise it keeps the 0.1.x record whole. A raise whose record 0.1.x
+// already cleared is recorded on acceptance too.
+func TestFormat20RecordsAWaitingDirectMMHotlineRaiseOnAcceptance(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		name string
+		keep func(line string) bool
+		// recordedAtMigration are the severities that each incident's
+		// record holds after the migration.
+		recordedAtMigration map[string][]string
+		// closedEarly and closedOnAcceptance are the resolutions that the
+		// hub sends from the report before and after the retries land.
+		closedEarly, closedOnAcceptance map[string]string
+	}{
+		{"with the events", func(string) bool { return true },
+			map[string][]string{"i-anacron.service": {"warn"}, "i-cron.service": {"warn"}},
+			map[string]string{"anacron.service": "resolved-warn", "cron.service": "resolved-warn"},
+			map[string]string{"anacron.service": "resolved-sos", "cron.service": "resolved-sos"}},
+		// anacron.service's title names cron.service too: its record stays
+		// whole, and the hub settles its sos early, as 0.1.3 did.
+		{"without the events", func(line string) bool { return !strings.HasPrefix(line, "INSERT INTO events") },
+			map[string][]string{"i-anacron.service": {"warn", "sos"}, "i-cron.service": {"warn"}},
+			map[string]string{"anacron.service": "resolved-sos", "cron.service": "resolved-warn"},
+			map[string]string{"cron.service": "resolved-sos"}},
+		{"after 0.1.3 cleared the records", func(line string) bool { return !strings.HasPrefix(line, "INSERT INTO incidents_sent_without_the_hub") },
+			map[string][]string{},
+			map[string]string{},
+			map[string]string{"anacron.service": "resolved-sos", "cron.service": "resolved-sos"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			node := openMigrated(t, joinedNode013(t, c.keep))
+			records, e := node.SentWithoutTheHub()
+			if e != nil {
+				t.Fatal(e)
+			}
+			recorded := map[string][]string{}
+			for _, r := range records {
+				recorded[r.Incident] = r.AlertSeveritiesSentForIncident
+			}
+			if !maps.EqualFunc(recorded, c.recordedAtMigration, slices.Equal) {
+				t.Fatalf("recorded at the migration %v, want %v", recorded, c.recordedAtMigration)
+			}
+			h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline()})
+			// The node has recovered when it reaches the hub again.
+			h.report(tenOFive, map[string]store.ReportedIncidents{"app-1": carrying(t, node, "app-1", tenOFive)})
+			if got := resolutionsByFinding(t, h.take("hotline")); !maps.Equal(got, c.closedEarly) {
+				t.Fatalf("the hub closed %v, want %v", got, c.closedEarly)
+			}
+			// The retries land in MMHotline after the hub's closing.
+			expectKinds(t, accept(t, node), checksandalerts.FailureIncidentEvents.Raised+" sos", checksandalerts.FailureIncidentEvents.Raised+" sos")
+			later := tenOFive.Add(time.Minute)
+			h.report(later, map[string]store.ReportedIncidents{"app-1": carrying(t, node, "app-1", later)})
+			if got := resolutionsByFinding(t, h.take("hotline")); !maps.Equal(got, c.closedOnAcceptance) {
+				t.Fatalf("after the retries the hub closed %v, want %v", got, c.closedOnAcceptance)
+			}
+		})
+	}
 }
