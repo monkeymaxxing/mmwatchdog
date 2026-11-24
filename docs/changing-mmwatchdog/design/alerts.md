@@ -1103,7 +1103,9 @@ destination.
   failed attempts in a row, whichever alerts they tried, and starts over
   when the destination accepts or refuses an alert, or when a reload or
   new fleet settings replace the destination with another receiver, such
-  as another address or credential. When `state.db` cannot
+  as another address or credential. A failure that the old receiver
+  answers after the replacement, such as an HTTP `429` with a long
+  `Retry-After`, records nothing for the new receiver. When `state.db` cannot
   record a failed attempt, the wait counts the alert's own failed attempts,
   or follows the receiver's `Retry-After`, and is never skipped. Each retry keeps the event ID of the
   alert whose delivery failed, so receivers can deduplicate. Delivery is at

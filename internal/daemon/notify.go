@@ -47,11 +47,8 @@ func (d *Daemon) sender(delivery store.Delivery) (checksandalerts.NotificationSe
 	if route.Joined && delivery.Destination == config.HubDestination {
 		return fleet.HubSender{Code: *d.joinCode, Path: filepath.Join(d.config.StateDir, fleet.CredentialFile), Node: d.store.Node}, true
 	}
-	current, exists := route.Destinations[delivery.Destination]
-	if !exists || !checksandalerts.SameDestination(delivery.Target, current) {
-		return nil, false
-	}
-	if current.Inputs == nil {
+	current, exists := d.activeTarget(delivery)
+	if !exists || current.Inputs == nil {
 		return nil, false
 	}
 	d.syncMMHotlineDestinations()
@@ -65,6 +62,49 @@ func (d *Daemon) sender(delivery store.Delivery) (checksandalerts.NotificationSe
 		maps.Copy(of.FileContents, d.fleetSettings.FileContentsByDestination[delivery.Destination])
 	}
 	return current.Inputs.Sender(of), true
+}
+
+// activeTarget is the destination that the active route has under the
+// delivery's name, when it is still the one that the delivery captured
+// (checksandalerts.SameDestination): a reload has not removed or replaced
+// it. The caller holds d.mu.
+func (d *Daemon) activeTarget(delivery store.Delivery) (checksandalerts.Destination, bool) {
+	route := d.route()
+	if route.Joined && delivery.Destination == config.HubDestination {
+		return checksandalerts.Destination{}, true
+	}
+	current, exists := route.Destinations[delivery.Destination]
+	return current, exists && checksandalerts.SameDestination(delivery.Target, current)
+}
+
+// attemptFinished records the end of an attempt to deliver the alert event,
+// as delivery: what the destination answered, the wait before the next
+// attempt, and the journal line. A failure to reach a destination that a
+// reload replaced while the attempt was under way belongs to the old
+// receiver: the reload cancelled the alert and started the new receiver's
+// failed attempts and wait over (clearChanged), so the failure records
+// nothing for the new one. The caller holds d.mu.
+func (d *Daemon) attemptFinished(delivery store.Delivery, event checksandalerts.Event, e error) {
+	var refused *checksandalerts.MMHotlineRefusal
+	if _, current := d.activeTarget(delivery); e != nil && !errors.As(e, &refused) && !current {
+		log.Printf("could not deliver the alert %q to alert destination %s, which a reload has replaced since; the alert goes no further: %v", cmp.Or(event.TitleWithAlertSeverity, event.Title, event.Message), delivery.Destination, e)
+		return
+	}
+	delay, bookkeeping := d.store.Delivered(delivery, e)
+	var passedTo []string
+	if refused != nil && bookkeeping == nil {
+		passedTo = d.passOnRefusedAlert(delivery.Destination, event, refused, d.now())
+	}
+	log.Print(deliveryLine(delivery.Destination, event, e, delay, passedTo))
+	d.storage.Report("notification bookkeeping "+delivery.Destination, bookkeeping)
+	d.afterAttempt(delivery, delay)
+	d.noticeAttempted(delivery, e)
+	if e == nil && bookkeeping == nil {
+		d.destinationSucceeded(delivery.Destination, delivery.Target, d.now(), "delivered an alert")
+	}
+	if delivery.Destination == config.HubDestination {
+		d.latestHubAttemptError = e
+	}
 }
 
 // deliveryLine is the journal line of one attempt to deliver an alert:
@@ -259,21 +299,7 @@ func (d *Daemon) notifications(ctx context.Context) {
 					// An attempt that the stop cut short after the grace time is
 					// not a failed attempt of the destination: it stays unrecorded.
 					if !cutShort {
-						delay, bookkeeping := d.store.Delivered(delivery, e)
-						var passedTo []string
-						if refused := (*checksandalerts.MMHotlineRefusal)(nil); errors.As(e, &refused) && bookkeeping == nil {
-							passedTo = d.passOnRefusedAlert(delivery.Destination, event, refused, d.now())
-						}
-						log.Print(deliveryLine(delivery.Destination, event, e, delay, passedTo))
-						d.storage.Report("notification bookkeeping "+delivery.Destination, bookkeeping)
-						d.afterAttempt(delivery, delay)
-						d.noticeAttempted(delivery, e)
-						if e == nil && bookkeeping == nil {
-							d.destinationSucceeded(delivery.Destination, delivery.Target, d.now(), "delivered an alert")
-						}
-						if delivery.Destination == config.HubDestination {
-							d.latestHubAttemptError = e
-						}
+						d.attemptFinished(delivery, event, e)
 					}
 					d.deliveriesFinished[delivery.Destination]++
 					delete(d.deliveries, delivery.Destination)

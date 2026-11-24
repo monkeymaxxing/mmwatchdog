@@ -3,6 +3,8 @@ package daemon
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -177,6 +179,76 @@ func TestAReloadThatChangesADestinationStartsItsWaitOver(t *testing.T) {
 	}
 	if delay := failOnce(t, d, "ops", errors.New("unreachable")); delay != time.Second {
 		t.Fatalf("the new receiver's first failure waits %s, want 1s", delay)
+	}
+}
+
+// A failure that the old receiver answers just after a reload replaced
+// the destination records nothing for the new receiver: no failed attempt
+// in a row and no wait hold back its next alert.
+func TestAFailureOfTheOldReceiverAfterAReloadLeavesTheNewOneAlone(t *testing.T) {
+	t.Parallel()
+	release, answered := make(chan struct{}), make(chan struct{})
+	old := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		<-release
+		w.Header().Set("Retry-After", "3600")
+		w.WriteHeader(http.StatusTooManyRequests)
+	}))
+	t.Cleanup(old.Close)
+	path, c := daemonConfig(t)
+	ops := func(url string) map[string]checksandalerts.Destination {
+		return map[string]checksandalerts.Destination{"ops": {RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, Inputs: &checksandalerts.Webhook{URL: url}, TimeLimitPerDeliveryAttempt: "1m"}}
+	}
+	c.Alerts.Destinations = ops(old.URL)
+	writeConfig(t, path, c)
+	d, e := newDaemon(path, time.Now)
+	if e != nil {
+		t.Fatal(e)
+	}
+	t.Cleanup(func() { d.Close() })
+	alert := func() {
+		t.Helper()
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		if e := d.record([]checksandalerts.Event{{AlertSeverity: "warn", ID: incidents.ID(), CheckGroup: "app", Check: "shell", Type: "failed", At: d.now(), Message: "the test's alert", Notify: true}}); e != nil {
+			t.Fatal(e)
+		}
+	}
+	alert()
+	heads, e := d.store.Pending()
+	if e != nil || len(heads) != 1 {
+		t.Fatal(heads, e)
+	}
+	d.mu.Lock()
+	sender, ok := d.sender(heads[0])
+	d.mu.Unlock()
+	if !ok {
+		t.Fatal("no sender")
+	}
+	var attemptError error
+	go func() {
+		attemptError = send(context.Background(), sender, heads[0].Event)
+		close(answered)
+	}()
+	c.Alerts.Destinations = ops("http://127.0.0.1:9/new")
+	writeConfig(t, path, c)
+	if _, e = d.reload(); e != nil {
+		t.Fatal(e)
+	}
+	close(release)
+	<-answered
+	if attemptError == nil {
+		t.Fatal("the old receiver accepted the alert")
+	}
+	d.mu.Lock()
+	d.attemptFinished(heads[0], heads[0].Event, attemptError)
+	d.mu.Unlock()
+	var failures int
+	if e = d.store.DB.QueryRow("SELECT COUNT(*) FROM counters WHERE name LIKE 'failed_attempts_in_a_row:%'").Scan(&failures); e != nil || failures != 0 {
+		t.Fatal("the old receiver's failure counts for the new one", failures, e)
+	}
+	alert()
+	if !headIsDue(t, d, "ops") {
+		t.Fatal("the new receiver waits for the old receiver's failure")
 	}
 }
 
