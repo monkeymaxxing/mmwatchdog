@@ -369,7 +369,9 @@ func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, d
 		}
 	}
 	// The node's own exact_finding_changed of this exact finding, when it
-	// arrives after the report that brought it, has nothing new to say.
+	// arrives after the report that brought it, has nothing new to say to a
+	// destination that still holds this announcement or has the node in a
+	// pending update (groupedOpening).
 	for _, c := range members {
 		if _, e = tx.Exec("UPDATE fleet_node_incidents SET exact_finding_sequence_named=exact_finding_sequence WHERE reporter=? AND incident_id=?", c.reporter, c.incident); e != nil {
 			return e

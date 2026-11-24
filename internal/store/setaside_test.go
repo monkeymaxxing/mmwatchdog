@@ -332,6 +332,35 @@ func TestAnExactFindingChangeThatTheOpeningNamedIsNotGrowth(t *testing.T) {
 	expectKinds(t, h.take("chat"))
 }
 
+// When the outbox's size limit drops the opening that named the node's
+// exact finding before the destination got it, the node's own
+// exact_finding_changed of that exact finding still tells the destination
+// which exact finding the node has: it goes out at once.
+func TestAnExactFindingChangeCountsWhereTheOpeningThatNamedItWasDropped(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	expectKinds(t, h.take("chat"))
+	at := tenOFive.Add(time.Hour)
+	h.report(at, map[string]store.ReportedIncidents{"app-1": shows("app-1", "warn", versionB, 1, tenOFive, at)})
+	limits := *h.s.Limits.Load()
+	small := limits
+	small.UndeliveredAlertsBytes = 1
+	h.s.SetLimits(small)
+	if e := h.s.Prune(at); e != nil {
+		t.Fatal(e)
+	}
+	h.s.SetLimits(limits)
+	expectKinds(t, h.take("chat"))
+	h.arrive(at.Add(time.Second), h.alert("app-1", checksandalerts.ExactFindingChanged, "warn", versionB, 1, at.Add(time.Second)))
+	got := h.take("chat")
+	expectKinds(t, got, checksandalerts.ExactFindingChanged+" warn")
+	if got[0].ExactFinding != versionB {
+		t.Fatal(got[0].ExactFinding)
+	}
+}
+
 // A node's failure that reaches the hub after the node's report of a newer
 // exact finding goes out with the exact finding that the hub holds: the
 // report's newer one, not the set-aside one that the failure carried.

@@ -72,8 +72,9 @@ func opensOrChanges(eventType string) bool {
 // exact finding: every member that counts has an exact finding, the one
 // that the hub holds, newer than the alert's when a report brought it. An
 // exact_finding_changed older than the exact finding the hub holds does
-// not count, nor one that an opening after a set aside named already
-// (fleet_node_incidents.exact_finding_sequence_named). Neither does an alert of an incident that a set-aside entry
+// not count; one that an opening after a set aside named already counts
+// only for a destination where that opening's news is gone
+// (groupedOpening). Neither does an alert of an incident that a set-aside entry
 // of from covers (fleet_node_incidents.set_aside_entry), nor one that a
 // set-aside entry no longer covers below sos: it returns the changes of
 // coverage, which the destinations' sets apply instead
@@ -92,8 +93,8 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 			continue
 		}
 		var exactFinding, severity, setAside string
-		var sequence, named int64
-		e := tx.QueryRow("SELECT exact_finding, exact_finding_sequence, alert_severity, set_aside_entry, exact_finding_sequence_named FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", m.Node, m.Incident).Scan(&exactFinding, &sequence, &severity, &setAside, &named)
+		var sequence int64
+		e := tx.QueryRow("SELECT exact_finding, exact_finding_sequence, alert_severity, set_aside_entry FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", m.Node, m.Incident).Scan(&exactFinding, &sequence, &severity, &setAside)
 		known := e == nil
 		if e != nil && e != sql.ErrNoRows {
 			return nil, false, nil, e
@@ -114,9 +115,8 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 			}
 			kept, grouped = append(kept, m), grouped && checksandalerts.HasExactFinding(m)
 			continue
-		case known && message.Type == checksandalerts.ExactFindingChanged && (m.ExactFindingSequence < sequence || m.ExactFindingSequence <= named):
-			// An older exact finding, or one that the opening after a set
-			// aside named already, from the node's report.
+		case known && message.Type == checksandalerts.ExactFindingChanged && m.ExactFindingSequence < sequence:
+			// An older exact finding than the node's report brought.
 			continue
 		case known:
 			if m.ExactFindingSequence >= sequence {
@@ -322,6 +322,22 @@ func (set IncidentSet) groupedOpening(tx *sql.Tx, at int64, name string, dest ch
 	a, e := set.announcement(tx, key)
 	if e != nil {
 		return e
+	}
+	// The node's own exact_finding_changed of an exact finding that an
+	// opening after a set aside named already (openNoLongerSetAside) has
+	// nothing new for a destination that still holds that announcement,
+	// or that has the node in a pending update. Where the opening left the
+	// outbox undelivered, the announcement is gone, and it goes out.
+	if m.Type == checksandalerts.ExactFindingChanged {
+		var named int64
+		var pending string
+		if e = tx.QueryRow(`SELECT n.exact_finding_sequence_named, s.pending_change FROM fleet_node_incidents n JOIN fleet_incident_set s ON s.reporter=n.reporter AND s.incident_id=n.incident_id
+ WHERE n.reporter=? AND n.incident_id=? AND s.destination=? AND s.alert_source=?`, m.Node, m.Incident, set.Destination, set.AlertSource).Scan(&named, &pending); e != nil && e != sql.ErrNoRows {
+			return e
+		}
+		if e == nil && m.ExactFindingSequence <= named && (pending != "" || a.covers(m.AlertSeverity, m.ExactFinding)) {
+			return nil
+		}
 	}
 	if a.covers(m.AlertSeverity, m.ExactFinding) {
 		return set.markPending(tx, key, m.Node, m.Incident, change, m.AlertSeverity, from, now)
