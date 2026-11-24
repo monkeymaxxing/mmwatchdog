@@ -676,11 +676,12 @@ install them with `mmx run join_hub --inventory hub_members`.
   - **`state_database_size_limit`**, `128MiB` by default, bounds the hub's
     `state.db`, which holds one row for each open incident of each node,
     so that the hub can send one alert per exact finding. Each open node
-    incident takes about BYTES_PER_OPEN_INCIDENT bytes, as measured with
+    incident takes about 2.4 KB with three destinations, as measured with
     5,000 simulated nodes. Add the open incidents that the fleet can have
     at once to the limit that the hub needs already: for 5,000 nodes with
     up to 40 open findings each, such as packages with a waiting security
-    update, add 200,000 × BYTES_PER_OPEN_INCIDENT bytes. A changed
+    update, add 200,000 × 2.4 KB, about 480 MB, so set
+    `state_database_size_limit: 768MiB` or more. A changed
     `state_database_size_limit` takes effect at the next restart of
     MMWatchdog, which `mmx run hub_and_standalone` does
     ([storage limits](../reference/configuration-files.md#storage-limits)).
