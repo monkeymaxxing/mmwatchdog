@@ -69,10 +69,11 @@ func opensOrChanges(eventType string) bool {
 // that the hub sends, standing for members: an alert that opens, raises, or
 // changes a node incident records it, and one that closes it removes it.
 // It returns the members that count and whether the message is grouped by
-// exact finding: every member that counts has an exact finding, as the
-// alert carries it or, for a closing alert, as the hub held it. An
+// exact finding: every member that counts has an exact finding, the one
+// that the hub holds, newer than the alert's when a report brought it. An
 // exact_finding_changed older than the exact finding the hub holds does
-// not count. Neither does an alert of an incident that a set-aside entry
+// not count, nor one that an opening after a set aside named already
+// (fleet_node_incidents.exact_finding_sequence_named). Neither does an alert of an incident that a set-aside entry
 // of from covers (fleet_node_incidents.set_aside_entry), nor one that a
 // set-aside entry no longer covers below sos: it returns the changes of
 // coverage, which the destinations' sets apply instead
@@ -91,8 +92,8 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 			continue
 		}
 		var exactFinding, severity, setAside string
-		var sequence int64
-		e := tx.QueryRow("SELECT exact_finding, exact_finding_sequence, alert_severity, set_aside_entry FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", m.Node, m.Incident).Scan(&exactFinding, &sequence, &severity, &setAside)
+		var sequence, named int64
+		e := tx.QueryRow("SELECT exact_finding, exact_finding_sequence, alert_severity, set_aside_entry, exact_finding_sequence_named FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", m.Node, m.Incident).Scan(&exactFinding, &sequence, &severity, &setAside, &named)
 		known := e == nil
 		if e != nil && e != sql.ErrNoRows {
 			return nil, false, nil, e
@@ -113,12 +114,17 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 			}
 			kept, grouped = append(kept, m), grouped && checksandalerts.HasExactFinding(m)
 			continue
-		case known && message.Type == checksandalerts.ExactFindingChanged && m.ExactFindingSequence < sequence:
+		case known && message.Type == checksandalerts.ExactFindingChanged && (m.ExactFindingSequence < sequence || m.ExactFindingSequence <= named):
+			// An older exact finding, or one that the opening after a set
+			// aside named already, from the node's report.
 			continue
 		case known:
 			if m.ExactFindingSequence >= sequence {
 				exactFinding, sequence = m.ExactFinding, m.ExactFindingSequence
 			}
+			// The alert stands for the exact finding that the hub holds,
+			// which a newer report may have brought.
+			m.ExactFinding, m.ExactFindingSequence = exactFinding, sequence
 			_, e = tx.Exec("UPDATE fleet_node_incidents SET exact_finding=?, exact_finding_sequence=?, alert_severity=? WHERE reporter=? AND incident_id=?", exactFinding, sequence, config.HigherSeverity(severity, m.AlertSeverity), m.Node, m.Incident)
 		default:
 			_, e = tx.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible,send_alerts_only_to_destinations) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)`,

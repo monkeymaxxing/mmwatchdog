@@ -42,8 +42,10 @@ const stateFormat = 21
 //
 // Grouping by exact finding on the hub (findinggrouping.go) keeps:
 // fleet_node_incidents, one row for each open incident of a node that the
-// hub knows, with the set-aside entry that covers it, if any, and the
-// destinations that its check names (setaside.go); in fleet_incident_set, for every destination, the membership
+// hub knows, with the set-aside entry that covers it, if any, the
+// destinations that its check names (setaside.go), and the sequence of the
+// exact finding that an opening after a set aside named
+// (exact_finding_sequence_named, -1 for none); in fleet_incident_set, for every destination, the membership
 // row of each node incident, marked grouped_by_exact_finding, and its
 // pending_change for the next finding_nodes_changed update; in
 // fleet_direct_sends_settled, the direct sends of nodes that the hub has
@@ -81,7 +83,8 @@ const stateTables = `
  CREATE INDEX IF NOT EXISTS fleet_incident_keys_update ON fleet_incident_keys(next_update_due);
  CREATE INDEX IF NOT EXISTS fleet_incident_keys_reminder ON fleet_incident_keys(next_reminder_due);
  CREATE TABLE IF NOT EXISTS fleet_node_incidents (reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, node TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL,
-  exact_finding TEXT NOT NULL, exact_finding_sequence INTEGER NOT NULL, alert_severity TEXT NOT NULL, opened INTEGER NOT NULL, reminder_eligible INTEGER NOT NULL, set_aside_entry TEXT NOT NULL DEFAULT '', set_aside_reason TEXT NOT NULL DEFAULT '', send_alerts_only_to_destinations TEXT NOT NULL DEFAULT '', PRIMARY KEY(reporter,incident_id));
+  exact_finding TEXT NOT NULL, exact_finding_sequence INTEGER NOT NULL, alert_severity TEXT NOT NULL, opened INTEGER NOT NULL, reminder_eligible INTEGER NOT NULL, set_aside_entry TEXT NOT NULL DEFAULT '', set_aside_reason TEXT NOT NULL DEFAULT '', send_alerts_only_to_destinations TEXT NOT NULL DEFAULT '',
+  exact_finding_sequence_named INTEGER NOT NULL DEFAULT -1, PRIMARY KEY(reporter,incident_id));
  CREATE INDEX IF NOT EXISTS fleet_node_incidents_key ON fleet_node_incidents(incident_key,exact_finding);
  CREATE TABLE IF NOT EXISTS fleet_direct_sends_settled (destination TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, settled INTEGER NOT NULL, PRIMARY KEY(destination,reporter,incident_id));
  CREATE TABLE IF NOT EXISTS incident_alert_destinations (incident_id TEXT NOT NULL, destination TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(incident_id,destination));

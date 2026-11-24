@@ -316,6 +316,13 @@ func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, d
 			return e
 		}
 	}
+	// The node's own exact_finding_changed of this exact finding, when it
+	// arrives after the report that brought it, has nothing new to say.
+	for _, c := range members {
+		if _, e = tx.Exec("UPDATE fleet_node_incidents SET exact_finding_sequence_named=exact_finding_sequence WHERE reporter=? AND incident_id=?", c.reporter, c.incident); e != nil {
+			return e
+		}
+	}
 	if len(exactFindings) == 0 {
 		return nil
 	}

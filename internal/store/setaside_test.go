@@ -310,6 +310,50 @@ func TestTheOpeningAfterRemovingEntriesNamesEveryExactFinding(t *testing.T) {
 	}
 }
 
+// A node's report that its exact finding moved off an entry opens the key
+// with the new exact finding. The node's own exact_finding_changed with
+// that same sequence number, arriving after the report, has nothing new to
+// say: the next update does not name the node again.
+func TestAnExactFindingChangeThatTheOpeningNamedIsNotGrowth(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	expectKinds(t, h.take("chat"))
+	at := tenOFive.Add(time.Hour)
+	h.report(at, map[string]store.ReportedIncidents{"app-1": shows("app-1", "warn", versionB, 1, tenOFive, at)})
+	got := h.take("chat")
+	expectKinds(t, got, "failed warn")
+	if got[0].ExactFinding != versionB {
+		t.Fatal(got[0].ExactFinding)
+	}
+	h.arrive(at.Add(time.Second), h.alert("app-1", checksandalerts.ExactFindingChanged, "warn", versionB, 1, at.Add(time.Second)))
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	expectKinds(t, h.take("chat"))
+}
+
+// A node's failure that reaches the hub after the node's report of a newer
+// exact finding goes out with the exact finding that the hub holds: the
+// report's newer one, not the set-aside one that the failure carried.
+func TestAFailureArrivingAfterANewerReportNamesTheNewerExactFinding(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	h.report(tenOFive.Add(time.Hour), map[string]store.ReportedIncidents{"app-1": shows("app-1", "warn", versionB, 1, tenOFive, tenOFive.Add(time.Hour))})
+	expectKinds(t, h.take("chat"))
+	h.arrive(tenOFive.Add(time.Hour), h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	got := h.take("chat")
+	expectKinds(t, got, "failed warn")
+	if got[0].ExactFinding != versionB {
+		t.Fatal("the failure names", got[0].ExactFinding)
+	}
+	// And versionA, set aside, was never announced: another node with it
+	// sends nothing.
+	h.arrive(tenOFive.Add(2*time.Hour), h.alert("db-1", "failed", "warn", versionA, 0, tenOFive.Add(2*time.Hour)))
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	expectKinds(t, h.take("chat"))
+}
+
 // A report sent before a node raised its covered incident to sos, and
 // applied after the raise, never lowers the incident below sos: the entry
 // does not cover it again, so the sos stays open everywhere.
