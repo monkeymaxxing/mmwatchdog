@@ -123,7 +123,13 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 				exactFinding, sequence = m.ExactFinding, m.ExactFindingSequence
 			}
 			// The alert stands for the exact finding that the hub holds,
-			// which a newer report may have brought.
+			// which a newer report may have brought. Its text then names that
+			// one first, and says that the rest is from the earlier one.
+			if exactFinding != m.ExactFinding {
+				m.Message = exactFinding + "\nThe rest of this alert is from an earlier run, when the exact finding was: " + m.ExactFinding + "\n" + m.Message
+				m.ExactFinding = exactFinding
+				m.WriteAlertTexts([]checksandalerts.Event{m}, hub)
+			}
 			m.ExactFinding, m.ExactFindingSequence = exactFinding, sequence
 			_, e = tx.Exec("UPDATE fleet_node_incidents SET exact_finding=?, exact_finding_sequence=?, alert_severity=? WHERE reporter=? AND incident_id=?", exactFinding, sequence, config.HigherSeverity(severity, m.AlertSeverity), m.Node, m.Incident)
 		default:

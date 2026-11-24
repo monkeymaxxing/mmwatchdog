@@ -311,8 +311,43 @@ func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, d
 		}
 		byExactFinding[c.exactFinding] = append(byExactFinding[c.exactFinding], c)
 	}
-	// The exact findings that the alert names, each with its nodes.
+	// opening is the alert that names the exact findings named, without
+	// their blocks.
+	opening := func(named []string) checksandalerts.Event {
+		events, reasons, highest := []checksandalerts.Event{}, []string{}, ""
+		for _, exactFinding := range named {
+			for _, c := range byExactFinding[exactFinding] {
+				events = append(events, checksandalerts.Event{ID: incidents.ID(), Type: "failed", Incident: c.incident, Node: c.reporter, CheckGroup: c.checkGroup, Check: c.check, Finding: c.finding,
+					ExactFinding: c.exactFinding, AlertSeverity: c.severity, SendAlertsOnlyToDestinations: c.sendAlertsOnlyToDestinations, At: time.Unix(0, c.opened).UTC()})
+				if !slices.Contains(reasons, c.reason) {
+					reasons = append(reasons, c.reason)
+				}
+				highest = config.HigherSeverity(highest, c.severity)
+			}
+		}
+		slices.SortFunc(events, func(a, b checksandalerts.Event) int { return strings.Compare(a.Node, b.Node) })
+		note := "an earlier exact finding was set aside: " + strings.Join(reasons, "; ")
+		alert := events[0]
+		if len(events) == 1 {
+			alert.Message = alert.ExactFinding + "; " + note
+		} else {
+			alert = Combine(events, hub)
+			alert.ExactFinding = named[0]
+			alert.Message += "; " + note
+		}
+		alert.AlertSeverity = highest
+		alert.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
+		alert.WriteAlertTexts(events, hub)
+		return alert
+	}
+	// The exact findings that the alert names, each with its nodes, inside
+	// the bound of the whole message: the alert's own text, as long as it is
+	// with every exact finding named, the first line that MMHotline gets in
+	// front of it, and the line that says who sent it come first.
 	blocks, budget := []string{}, UpdateMessageLimit
+	if len(exactFindings) > 0 {
+		budget -= len(opening(exactFindings).Body) + checksandalerts.ExactFindingLimit + len(from.SentBy()) + 2
+	}
 	for i, exactFinding := range exactFindings {
 		nodes := []string{}
 		for _, c := range byExactFinding[exactFinding] {
@@ -343,37 +378,20 @@ func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, d
 	if len(exactFindings) == 0 {
 		return nil
 	}
-	events, reasons, highest := []checksandalerts.Event{}, []string{}, ""
 	for _, exactFinding := range exactFindings {
 		for _, c := range byExactFinding[exactFinding] {
-			events = append(events, checksandalerts.Event{ID: incidents.ID(), Type: "failed", Incident: c.incident, Node: c.reporter, CheckGroup: c.checkGroup, Check: c.check, Finding: c.finding,
-				ExactFinding: c.exactFinding, AlertSeverity: c.severity, SendAlertsOnlyToDestinations: c.sendAlertsOnlyToDestinations, At: time.Unix(0, c.opened).UTC()})
-			if !slices.Contains(reasons, c.reason) {
-				reasons = append(reasons, c.reason)
-			}
-			highest = config.HigherSeverity(highest, c.severity)
 			if e = set.announce(tx, key, c.severity, c.exactFinding, remindEvery(dest), now); e != nil {
 				return e
 			}
 		}
 	}
-	slices.SortFunc(events, func(a, b checksandalerts.Event) int { return strings.Compare(a.Node, b.Node) })
-	note := "an earlier exact finding was set aside: " + strings.Join(reasons, "; ")
-	alert := events[0]
-	if len(events) == 1 {
-		alert.Message = alert.ExactFinding + "; " + note
-	} else {
-		alert = Combine(events, hub)
-		alert.ExactFinding = exactFindings[0]
-		alert.Message += "; " + note
-	}
-	alert.AlertSeverity = highest
-	alert.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
-	alert.WriteAlertTexts(events, hub)
-	if len(exactFindings) > 1 {
+	alert := opening(exactFindings)
+	// An alert of several nodes names each exact finding with its nodes,
+	// also a single one: its own text names none.
+	if alert.NodeCount > 1 || len(exactFindings) > 1 {
 		alert.Body = strings.Join(append([]string{alert.Body}, blocks...), "\n")
 	}
-	if e = set.recordSent(tx, key, highest); e != nil {
+	if e = set.recordSent(tx, key, alert.AlertSeverity); e != nil {
 		return e
 	}
 	return queueToDestination(tx, at, name, dest, key, alert, from, key)

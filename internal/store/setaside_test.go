@@ -347,6 +347,11 @@ func TestAFailureArrivingAfterANewerReportNamesTheNewerExactFinding(t *testing.T
 	if got[0].ExactFinding != versionB {
 		t.Fatal("the failure names", got[0].ExactFinding)
 	}
+	// Its text names the newer exact finding first, and says that the rest
+	// is from the earlier one.
+	if first, _, _ := strings.Cut(got[0].Body, "\n"); !strings.Contains(first, versionB) || !strings.Contains(got[0].Body, "earlier") || !strings.Contains(got[0].Body, versionA) {
+		t.Fatalf("the failure's body %q", got[0].Body)
+	}
 	// And versionA, set aside, was never announced: another node with it
 	// sends nothing.
 	h.arrive(tenOFive.Add(2*time.Hour), h.alert("db-1", "failed", "warn", versionA, 0, tenOFive.Add(2*time.Hour)))
@@ -436,5 +441,64 @@ func TestASetAsideClosingEndsThePendingChangesOfTheKey(t *testing.T) {
 	expectKinds(t, got, "finding_nodes_changed warn")
 	if strings.Contains(got[0].MMHotlineAlert.Message, "app-1") {
 		t.Fatalf("the update names app-1: %q", got[0].MMHotlineAlert.Message)
+	}
+}
+
+// The one opening for the incidents that set-aside entries no longer
+// cover names an exact finding only when MMHotline gets its line whole:
+// the alert's own text, with every node's name and every entry's reason,
+// counts toward the bound. An exact finding that does not fit goes in the
+// next update, so each one reaches MMHotline.
+func TestTheOpeningAfterASetAsideNamesOnlyWhatFits(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline()})
+	versions := []string{versionA, versionB, versionC}
+	entries := []config.SetAsideFinding{}
+	for i, v := range versions {
+		entries = append(entries, entryFor(v, fmt.Sprintf("reason %d: %s", i, strings.Repeat("r", 4000))))
+	}
+	h.setAside(tenOFive, entries...)
+	at := tenOFive.Add(time.Minute)
+	reports := map[string]store.ReportedIncidents{}
+	for i, v := range versions {
+		for n := range 20 {
+			node := fmt.Sprintf("app-%d-%02d-%s", i, n, strings.Repeat("x", 200))
+			reports[node] = shows(node, "warn", v, 0, tenOFive, at)
+		}
+	}
+	h.report(at, reports)
+	expectKinds(t, h.take("hotline"))
+	h.setAside(at.Add(time.Minute))
+	sent := []string{}
+	for _, a := range h.take("hotline") {
+		sent = append(sent, wire(t, a)["message"])
+	}
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	for _, a := range h.take("hotline") {
+		sent = append(sent, wire(t, a)["message"])
+	}
+	all := strings.Join(sent, "\n")
+	for _, v := range versions {
+		if !strings.Contains(all, v) {
+			t.Fatalf("MMHotline never got %q", v)
+		}
+	}
+}
+
+// The one opening for several nodes that set-aside entries no longer cover
+// names their exact finding in its body, also when they share one, so a
+// chat shows which exact finding it announces.
+func TestTheOpeningAfterASetAsideNamesItsExactFinding(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	at := tenOFive.Add(time.Minute)
+	h.report(at, map[string]store.ReportedIncidents{"app-1": shows("app-1", "warn", versionA, 0, tenOFive, at), "app-2": shows("app-2", "warn", versionA, 0, tenOFive, at)})
+	expectKinds(t, h.take("chat"))
+	h.setAside(at.Add(time.Minute))
+	got := h.take("chat")
+	expectKinds(t, got, "failed warn")
+	if !strings.Contains(got[0].Body, versionA) || !strings.Contains(got[0].Body, reasonNoPAM) {
+		t.Fatalf("the opening's body %q", got[0].Body)
 	}
 }
