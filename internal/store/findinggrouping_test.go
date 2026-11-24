@@ -446,6 +446,24 @@ func TestAReportOlderThanARecoveryOpensNothingAgain(t *testing.T) {
 	}
 }
 
+// A node's opening that reaches the hub after its own raise, which the
+// hub announced at sos, is older news: the node is not newly affected, and
+// no update names it as added, which would page again.
+func TestAnOpeningAfterItsOwnRaiseAddsNoNode(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn", "sos")})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	expectKinds(t, h.take("chat"), "failed warn")
+	opening := h.alert("app-2", "failed", "warn", versionA, 0, tenOFive.Add(time.Minute))
+	raise := h.alert("app-2", checksandalerts.FailureIncidentEvents.Raised, "sos", versionA, 0, tenOFive.Add(2*time.Minute))
+	h.arrive(tenOFive.Add(3*time.Minute), raise)
+	expectKinds(t, h.take("chat"), checksandalerts.FailureIncidentEvents.Raised+" sos")
+	h.arrive(tenOFive.Add(4*time.Minute), opening)
+	h.tick(tenOFive.Add(5 * time.Minute))
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	expectKinds(t, h.take("chat"))
+}
+
 // Each destination's messages come from its own set, which holds only the
 // incidents routed to it, and a closing alert claims recovery only for the
 // nodes it covered while another node still has the key open. A node

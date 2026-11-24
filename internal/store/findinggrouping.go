@@ -294,7 +294,9 @@ func queueGrouped(tx *sql.Tx, at int64, name string, dest checksandalerts.Destin
 // announced one, or an exact finding not announced before), at its own
 // severity. Otherwise it is covered growth: the node's membership row is
 // marked for the key's next update. An incident that the set holds as
-// closed or resolved is over already and changes nothing.
+// closed or resolved is over already and changes nothing, and so is an
+// opening below the severity that the set holds the incident at: it
+// arrived after its own raise.
 func (set IncidentSet) groupedOpening(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, m checksandalerts.Event, from QueuedBy, now time.Time) error {
 	hub := from.hub()
 	key := checksandalerts.ReadableFleetIncidentKey(m, "failed", hub)
@@ -312,6 +314,11 @@ func (set IncidentSet) groupedOpening(tx *sql.Tx, at int64, name string, dest ch
 			set.with(m.Node, m.Incident, key, m.CheckGroup, m.Check, m.Finding, checksandalerts.AlertNode(m, hub), m.At.UnixNano(), m.AlertSeverity, FleetIncidentOpen, now.UnixNano())...)
 	case e != nil:
 	case state != FleetIncidentOpen:
+		return nil
+	case m.Type == "failed" && config.SeverityRank(severity) > config.SeverityRank(m.AlertSeverity):
+		// The node's opening arrives after a later alert of its own
+		// incident, such as its raise, that the set holds already: it
+		// is older news, and the member keeps its state.
 		return nil
 	default:
 		_, e = tx.Exec("UPDATE fleet_incident_set SET alert_severity=?, grouped_by_exact_finding=1 WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{config.HigherSeverity(severity, m.AlertSeverity)}, set.with(m.Node, m.Incident)...)...)

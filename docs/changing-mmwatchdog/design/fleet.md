@@ -831,6 +831,9 @@ For one destination and one key:
      12:00, and 18:00 UTC. Every key's updates go out together, so
      MMHotline's triage agent can cover them in one run.
    - The update lists the nodes that joined, changed, or are ok again.
+   - A node's opening that reaches the hub after the node's own raise,
+     which the set holds already, is older news: the node keeps its state,
+     and no update names it as joined.
    - **An update's severity** is the highest severity among the nodes that
      it adds or changes. A `warn` node that joins an `sos` key goes in a
      `warn` update, and never wakes the person who handles the SOS. An
