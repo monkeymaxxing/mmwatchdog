@@ -1771,10 +1771,16 @@ set_aside_findings:
     newly covered too.
   - Incidents that are no longer covered, because an entry was removed or
     changed or a node's exact finding moved off the entry, are applied
-    together first. Then each destination and key gets **one** opening
-    alert, with the note `an earlier exact finding was set aside: <reason>`.
-    The hub keeps the reason on the node incident while it is set aside,
-    so the reason is known after the entry is gone.
+    together first, by the rules of grouping by exact finding. An
+    incident whose exact finding the destination already has at its
+    severity is covered growth for the key's next update. For the others,
+    each destination and key gets **one** opening alert, with the note
+    `an earlier exact finding was set aside: <reason>`. The alert names
+    each of their exact findings with its nodes, and announces only the
+    exact findings that it names; what does not fit in the message's
+    bound goes in the next update. The hub keeps the reason on the node
+    incident while it is set aside, so the reason is known after the
+    entry is gone.
 - **Joined nodes never set anything aside.** While the hub is unreachable,
   nodes send every alert themselves, so a hub outage can only add alerts.
   `mmwatchdog status` on the node still shows the finding as failing,

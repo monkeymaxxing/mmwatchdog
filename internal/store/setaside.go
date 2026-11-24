@@ -267,44 +267,101 @@ func (set IncidentSet) closeSetAside(tx *sql.Tx, at int64, name string, dest che
 	return set.queueSetAsideClosing(tx, at, name, dest, key, setAsideClosingAlert(about, nodes, key, strings.Join(reasons, "; "), from, now), from)
 }
 
-// openNoLongerSetAside sends the destination name one opening alert for the
-// key, for the incidents that a set-aside entry no longer covers, which
-// joined its set, with the note "an earlier exact finding was set aside:
-// REASON". The alert announces their exact findings, as a key's first
-// alert does.
+// openNoLongerSetAside applies to the destination name the incidents of the
+// key that a set-aside entry no longer covers, which joined its set, by the
+// rules of grouping by exact finding. An incident whose exact finding the
+// destination has at its severity already is covered growth for the key's
+// next update. The others get one opening alert, with the note "an earlier
+// exact finding was set aside: REASON", that names each of their exact
+// findings with its nodes, as far as the message's bound allows. The alert
+// announces the exact findings that it names, and only those; the incidents
+// of the others are growth for the next update, which names them as new.
 func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, key string, members []coverageChange, from QueuedBy, now time.Time) error {
 	hub := from.hub()
 	slices.SortFunc(members, func(a, b coverageChange) int { return strings.Compare(a.node, b.node) })
-	events, reasons, highest := []checksandalerts.Event{}, []string{}, ""
-	for _, c := range members {
-		events = append(events, checksandalerts.Event{ID: incidents.ID(), Type: "failed", Incident: c.incident, Node: c.reporter, CheckGroup: c.checkGroup, Check: c.check, Finding: c.finding,
-			ExactFinding: c.exactFinding, AlertSeverity: c.severity, SendAlertsOnlyToDestinations: c.sendAlertsOnlyToDestinations, At: time.Unix(0, c.opened).UTC()})
-		if !slices.Contains(reasons, c.reason) {
-			reasons = append(reasons, c.reason)
-		}
-		highest = config.HigherSeverity(highest, c.severity)
+	a, e := set.announcement(tx, key)
+	if e != nil {
+		return e
 	}
+	byExactFinding, exactFindings, growth := map[string][]coverageChange{}, []string{}, []coverageChange{}
+	for _, c := range members {
+		if a.covers(c.severity, c.exactFinding) {
+			growth = append(growth, c)
+			continue
+		}
+		if byExactFinding[c.exactFinding] == nil {
+			exactFindings = append(exactFindings, c.exactFinding)
+		}
+		byExactFinding[c.exactFinding] = append(byExactFinding[c.exactFinding], c)
+	}
+	// The exact findings that the alert names, each with its nodes.
+	blocks, budget := []string{}, UpdateMessageLimit
+	for i, exactFinding := range exactFindings {
+		nodes := []string{}
+		for _, c := range byExactFinding[exactFinding] {
+			nodes = append(nodes, c.node)
+		}
+		block := exactFinding + "\n  on " + countNodes(len(nodes)) + ": " + namedNodes(nodes)
+		if budget -= len(block) + 1; budget < 0 && i > 0 {
+			for _, rest := range exactFindings[i:] {
+				growth = append(growth, byExactFinding[rest]...)
+			}
+			exactFindings = exactFindings[:i]
+			break
+		}
+		blocks = append(blocks, block)
+	}
+	for _, c := range growth {
+		if e = set.markPending(tx, key, c.reporter, c.incident, pendingJoined, c.severity, from, now); e != nil {
+			return e
+		}
+	}
+	if len(exactFindings) == 0 {
+		return nil
+	}
+	events, reasons, highest := []checksandalerts.Event{}, []string{}, ""
+	for _, exactFinding := range exactFindings {
+		for _, c := range byExactFinding[exactFinding] {
+			events = append(events, checksandalerts.Event{ID: incidents.ID(), Type: "failed", Incident: c.incident, Node: c.reporter, CheckGroup: c.checkGroup, Check: c.check, Finding: c.finding,
+				ExactFinding: c.exactFinding, AlertSeverity: c.severity, SendAlertsOnlyToDestinations: c.sendAlertsOnlyToDestinations, At: time.Unix(0, c.opened).UTC()})
+			if !slices.Contains(reasons, c.reason) {
+				reasons = append(reasons, c.reason)
+			}
+			highest = config.HigherSeverity(highest, c.severity)
+			if e = set.announce(tx, key, c.severity, c.exactFinding, remindEvery(dest), now); e != nil {
+				return e
+			}
+		}
+	}
+	slices.SortFunc(events, func(a, b checksandalerts.Event) int { return strings.Compare(a.Node, b.Node) })
 	note := "an earlier exact finding was set aside: " + strings.Join(reasons, "; ")
 	alert := events[0]
 	if len(events) == 1 {
 		alert.Message = alert.ExactFinding + "; " + note
 	} else {
 		alert = Combine(events, hub)
-		alert.ExactFinding = events[0].ExactFinding
+		alert.ExactFinding = exactFindings[0]
 		alert.Message += "; " + note
 	}
 	alert.AlertSeverity = highest
 	alert.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
 	alert.WriteAlertTexts(events, hub)
-	for _, c := range members {
-		if e := set.announce(tx, key, c.severity, c.exactFinding, remindEvery(dest), now); e != nil {
-			return e
-		}
+	if len(exactFindings) > 1 {
+		alert.Body = strings.Join(append([]string{alert.Body}, blocks...), "\n")
 	}
-	if e := set.recordSent(tx, key, highest); e != nil {
+	if e = set.recordSent(tx, key, highest); e != nil {
 		return e
 	}
 	return queueToDestination(tx, at, name, dest, key, alert, from, key)
+}
+
+// namedNodes names up to CombinedNames of nodes and counts the rest.
+func namedNodes(nodes []string) string {
+	names := strings.Join(nodes[:min(len(nodes), CombinedNames)], ", ")
+	if more := len(nodes) - CombinedNames; more > 0 {
+		names += fmt.Sprintf(", and %d more", more)
+	}
+	return names
 }
 
 // setAsideClosingAlert is the closed_without_recovery that tells a

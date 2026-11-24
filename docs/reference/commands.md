@@ -571,7 +571,9 @@ test message itself.
   `closed_without_recovery` alert for each destination and key,
   `Set aside after investigation: <reason>`. Incidents that an entry no
   longer covers send one opening alert for each destination and key, with
-  the note `an earlier exact finding was set aside: <reason>`. The hub
+  the note `an earlier exact finding was set aside: <reason>`, naming each
+  exact finding that the destination did not have yet; a node whose exact
+  finding the destination already has joins the next update. The hub
   does the same when it starts, for changes made while it was stopped.
 
 **What needs a restart instead.** These settings take effect only when

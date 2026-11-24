@@ -2,6 +2,7 @@ package store_test
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -224,11 +225,23 @@ func TestANodeWhoseExactFindingMovesOntoAndOffAnEntry(t *testing.T) {
 	if n := h.heldRows("db-1"); n != 0 {
 		t.Fatal("db-1 is still in the set", n)
 	}
-	h.report(off.Add(2*time.Minute), map[string]store.ReportedIncidents{"db-1": shows("db-1", "warn", versionA, 2, off, off.Add(2*time.Minute))})
+	const versionD = "Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u7; fixed version: none"
+	h.report(off.Add(2*time.Minute), map[string]store.ReportedIncidents{"db-1": shows("db-1", "warn", versionD, 2, off, off.Add(2*time.Minute))})
 	got = h.take("chat")
 	expectKinds(t, got, "failed warn")
-	if !strings.HasSuffix(got[0].Message, "an earlier exact finding was set aside: "+reasonNoPAM) {
+	if !strings.HasSuffix(got[0].Message, "an earlier exact finding was set aside: "+reasonNoPAM) || got[0].ExactFinding != versionD {
 		t.Fatal(got[0].Message)
+	}
+	// Moving off the entry onto an exact finding that the destination has
+	// already is growth for the next update.
+	h.report(off.Add(3*time.Minute), map[string]store.ReportedIncidents{"db-1": shows("db-1", "warn", versionB, 3, off, off.Add(3*time.Minute))})
+	h.report(off.Add(4*time.Minute), map[string]store.ReportedIncidents{"db-1": shows("db-1", "warn", versionC, 4, off, off.Add(4*time.Minute))})
+	expectKinds(t, h.take("chat"))
+	h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+	got = h.take("chat")
+	expectKinds(t, got, "finding_nodes_changed warn")
+	if g := got[0].NodesByExactFinding; len(g) != 1 || g[0].ExactFinding != versionC || !slices.Equal(g[0].Nodes, []string{"db-1"}) {
+		t.Fatalf("%+v", g)
 	}
 }
 
@@ -244,6 +257,57 @@ func TestAnIncidentNoLongerCoveredOpensWhereItsCheckSends(t *testing.T) {
 	h.setAside(tenOFive.Add(time.Hour))
 	expectKinds(t, h.take("chat_a"))
 	expectKinds(t, h.take("chat_b"), "failed warn")
+}
+
+// Nodes that move off an entry one by one, onto an exact finding that is
+// announced already, are covered growth: the first one's opening announces
+// it, and the others wait for the shared tick, as nodes that move between
+// two exact findings that are not set aside do.
+func TestNodesMovingOffAnEntryOneByOneAreGrowth(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	for _, node := range []string{"app-1", "app-2", "app-3"} {
+		h.arrive(tenOFive, h.alert(node, "failed", "warn", versionA, 0, tenOFive))
+	}
+	expectKinds(t, h.take("chat"))
+	at := tenOFive.Add(time.Hour)
+	h.arrive(at, h.alert("app-1", checksandalerts.ExactFindingChanged, "warn", versionB, 1, at))
+	got := h.take("chat")
+	expectKinds(t, got, "failed warn")
+	if got[0].ExactFinding != versionB {
+		t.Fatal(got[0].ExactFinding)
+	}
+	h.arrive(at.Add(10*time.Minute), h.alert("app-2", checksandalerts.ExactFindingChanged, "warn", versionB, 1, at.Add(10*time.Minute)))
+	h.report(at.Add(20*time.Minute), map[string]store.ReportedIncidents{"app-3": shows("app-3", "warn", versionB, 1, tenOFive, at.Add(20*time.Minute))})
+	expectKinds(t, h.take("chat"))
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	got = h.take("chat")
+	expectKinds(t, got, "finding_nodes_changed warn")
+	if !slices.Equal(got[0].Nodes, []string{"app-2", "app-3"}) {
+		t.Fatal(got[0].Nodes)
+	}
+}
+
+// Removing two entries of one key at once sends one opening alert that
+// names both exact findings, so a later node with either of them is
+// covered growth that the destination already knows of.
+func TestTheOpeningAfterRemovingEntriesNamesEveryExactFinding(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM), entryFor(versionB, "Not reachable from outside"))
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive, h.alert("app-2", "failed", "warn", versionB, 0, tenOFive))
+	h.arrive(tenOFive, h.alert("app-3", "failed", "warn", versionB, 0, tenOFive))
+	expectKinds(t, h.take("chat"))
+	h.setAside(tenOFive.Add(time.Hour))
+	got := h.take("chat")
+	expectKinds(t, got, "failed warn")
+	for _, want := range []string{versionA + "\n  on 1 node: app-1", versionB + "\n  on 2 nodes: app-2, app-3"} {
+		if !strings.Contains(got[0].Body, want) {
+			t.Fatalf("the opening does not name %q:\n%s", want, got[0].Body)
+		}
+	}
 }
 
 // A report sent before a node raised its covered incident to sos, and
