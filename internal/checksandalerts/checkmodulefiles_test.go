@@ -29,7 +29,7 @@ func TestCheckModuleReceivesFileContentsAndRedactsResults(t *testing.T) {
 			}
 			description := testhelpers.TestModuleDescription("credentials", checksandalerts.UsedAsCheck, map[string]string{"connection_string_file": "string"}, nil, "one_incident_for_each_finding: true")
 			cases := []struct{ source, status string }{
-				{`return {"status":"failed", "message":secret, "findings":[{"id":secret,"message":secret}]}`, "failed"},
+				{`return {"status":"failed", "message":secret, "findings":[{"id":secret,"message":secret,"exact_finding":"version " + secret}]}`, "failed"},
 				{`fail(secret)`, "unknown"},
 			}
 			for _, tc := range cases {
@@ -37,7 +37,7 @@ func TestCheckModuleReceivesFileContentsAndRedactsResults(t *testing.T) {
 					source := "def run_check(inputs, file_contents):\n    secret = file_contents[\"connection_string_file\"]\n    if secret != \"" + secret + "\":\n        fail(\"wrong file content\")\n    print(secret)\n    " + tc.source + "\n"
 					testhelpers.InstallStarlarkModule(t, modules, "credentials", description, source)
 				} else {
-					result := `{"protocol":1,"status":"failed","message":"` + secret + `","findings":[{"id":"` + secret + `","message":"` + secret + `"}]}`
+					result := `{"protocol":1,"status":"failed","message":"` + secret + `","findings":[{"id":"` + secret + `","message":"` + secret + `","exact_finding":"version ` + secret + `"}]}`
 					source := "cat > " + testhelpers.ShellQuote(filepath.Join(modules, "request.json")) + "\nprintf '%s' " + testhelpers.ShellQuote(secret) + " >&2\n"
 					if tc.status == "unknown" {
 						source += "exit 2\n"
@@ -67,6 +67,11 @@ func TestCheckModuleReceivesFileContentsAndRedactsResults(t *testing.T) {
 
 				encoded, _ := json.Marshal(observation)
 				if observation.Status != tc.status || strings.Contains(string(encoded), secret) || !strings.Contains(string(encoded), "content of connection_string_file") {
+					t.Fatalf("got %s", encoded)
+				}
+				// The exact finding of a module that is not core reaches
+				// MMWatchdog without the file's content.
+				if tc.status == "failed" && (len(observation.Findings) != 1 || observation.Findings[0].ExactFinding != "version [content of connection_string_file]") {
 					t.Fatalf("got %s", encoded)
 				}
 			}

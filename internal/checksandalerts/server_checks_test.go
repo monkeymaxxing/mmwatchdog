@@ -1735,10 +1735,14 @@ func TestKnownExploitedVulnerabilitiesInInstalledPackagesCheck(t *testing.T) {
 	reset()
 	o := observe()
 	wantFindings := []checksandalerts.Finding{
-		{ID: "CVE-2026-2222 caddy", Message: "CVE-2026-2222 in caddy 2.0: no fix yet (CISA: Test flaw CVE-2026-2222; https://security-tracker.debian.org/tracker/CVE-2026-2222)"},
-		{ID: "CVE-2026-3333 linux", Message: "CVE-2026-3333 in linux 6.12.113-1, the running kernel: fixed version 6.12.114-1 waits to be installed (CISA: Test flaw CVE-2026-3333; https://security-tracker.debian.org/tracker/CVE-2026-3333)"},
-		{ID: "CVE-2026-1111 openssh", Message: "CVE-2026-1111 in openssh 1:9.8-1: no fix yet (CISA: Test flaw CVE-2026-1111; https://security-tracker.debian.org/tracker/CVE-2026-1111)"},
-		{ID: "CVE-2025-32463 sudo", Message: "CVE-2025-32463 in sudo 1.9.16p2-2: fixed version 1.9.16p2-3 waits to be installed (CISA: Test flaw CVE-2025-32463; https://security-tracker.debian.org/tracker/CVE-2025-32463)"},
+		{ID: "CVE-2026-2222 caddy", Message: "CVE-2026-2222 in caddy 2.0: no fix yet (CISA: Test flaw CVE-2026-2222; https://security-tracker.debian.org/tracker/CVE-2026-2222)",
+			ExactFinding: "Debian:13 CVE-2026-2222 caddy 2.0; fixed version: none; DEBIAN-CVE-2026-2222 modified 2026-10-26T07:05:12Z"},
+		{ID: "CVE-2026-3333 linux", Message: "CVE-2026-3333 in linux 6.12.113-1, the running kernel: fixed version 6.12.114-1 waits to be installed (CISA: Test flaw CVE-2026-3333; https://security-tracker.debian.org/tracker/CVE-2026-3333)",
+			ExactFinding: "Debian:13 CVE-2026-3333 linux 6.12.113-1; fixed version waits: 6.12.114-1; DEBIAN-CVE-2026-3333 modified 2026-10-26T07:05:12Z"},
+		{ID: "CVE-2026-1111 openssh", Message: "CVE-2026-1111 in openssh 1:9.8-1: no fix yet (CISA: Test flaw CVE-2026-1111; https://security-tracker.debian.org/tracker/CVE-2026-1111)",
+			ExactFinding: "Debian:13 CVE-2026-1111 openssh 1:9.8-1; fixed version: none; DEBIAN-CVE-2026-1111 modified 2026-10-26T07:05:12Z"},
+		{ID: "CVE-2025-32463 sudo", Message: "CVE-2025-32463 in sudo 1.9.16p2-2: fixed version 1.9.16p2-3 waits to be installed (CISA: Test flaw CVE-2025-32463; https://security-tracker.debian.org/tracker/CVE-2025-32463)",
+			ExactFinding: "Debian:13 CVE-2025-32463 sudo 1.9.16p2-2; fixed version waits: 1.9.16p2-3; DEBIAN-CVE-2025-32463 modified 2026-10-26T07:05:12Z"},
 	}
 	if o.Status != "failed" || o.Message != "4 known exploited flaws affect installed packages: CVE-2026-2222 caddy, CVE-2026-3333 linux, CVE-2026-1111 openssh, CVE-2025-32463 sudo" || !reflect.DeepEqual(o.Findings, wantFindings) {
 		t.Fatalf("%+v", o)
@@ -1771,6 +1775,17 @@ func TestKnownExploitedVulnerabilitiesInInstalledPackagesCheck(t *testing.T) {
 	if got := checksandalerts.KnownExploitedVulnerabilityIsGoneForTest("CVE-2025-32463 sudo"); got != "CVE-2025-32463 no longer affects sudo on this node" {
 		t.Fatal(got)
 	}
+
+	// A new assessment of the flaw by the distribution changes its record:
+	// the exact finding changes with it, and the finding stays the same.
+	standIn.set(func() {
+		standIn.records["DEBIAN-CVE-2026-2222"] = strings.Replace(records["DEBIAN-CVE-2026-2222"], "2026-10-26T07:05:12Z", "2026-11-20T08:12:00Z", 1)
+	})
+	if reassessed := observe(); len(reassessed.Findings) != 4 || reassessed.Findings[0].ID != wantFindings[0].ID ||
+		reassessed.Findings[0].ExactFinding != "Debian:13 CVE-2026-2222 caddy 2.0; fixed version: none; DEBIAN-CVE-2026-2222 modified 2026-11-20T08:12:00Z" {
+		t.Fatalf("%+v", reassessed)
+	}
+	reset()
 
 	// The only input is required and has one value.
 	for _, failWhen := range []string{"", "another_rule"} {
@@ -1846,7 +1861,8 @@ func TestKnownExploitedVulnerabilitiesInInstalledPackagesCheck(t *testing.T) {
 	// install. A newer installed kernel that the flaw still affects changes
 	// nothing.
 	write(packages, installed+"installed\tlinux-image-6.12.115-amd64\tlinux-signed-amd64\t6.12.115+1\t6.12.115-1\tlinux (= 6.12.115-1)\n")
-	if o := observe(); o.Status != "failed" || len(o.Findings) != 4 || o.Findings[1].Message != "CVE-2026-3333 in linux 6.12.113-1, the running kernel: the fixed kernel 6.12.115-1 is installed and runs after a reboot (CISA: Test flaw CVE-2026-3333; https://security-tracker.debian.org/tracker/CVE-2026-3333)" {
+	if o := observe(); o.Status != "failed" || len(o.Findings) != 4 || o.Findings[1].Message != "CVE-2026-3333 in linux 6.12.113-1, the running kernel: the fixed kernel 6.12.115-1 is installed and runs after a reboot (CISA: Test flaw CVE-2026-3333; https://security-tracker.debian.org/tracker/CVE-2026-3333)" ||
+		o.Findings[1].ExactFinding != "Debian:13 CVE-2026-3333 linux 6.12.113-1; fixed kernel installed, runs after a reboot: 6.12.115-1; DEBIAN-CVE-2026-3333 modified 2026-10-26T07:05:12Z" {
 		t.Fatalf("%+v", o)
 	}
 	write(packages, installed+"installed\tlinux-image-6.12.113.5-amd64\tlinux-signed-amd64\t6.12.113.5+1\t6.12.113.5-1\tlinux (= 6.12.113.5-1)\n")
@@ -1857,7 +1873,8 @@ func TestKnownExploitedVulnerabilitiesInInstalledPackagesCheck(t *testing.T) {
 	// the node runs the version that /proc/version names until it reboots,
 	// and the installed version is the fixed kernel.
 	write(packages, strings.Replace(installed, "6.12.113+1\t6.12.113-1\tlinux (= 6.12.113-1)", "6.12.115+1\t6.12.115-1\tlinux (= 6.12.115-1)", 1))
-	if o := observe(); o.Status != "failed" || len(o.Findings) != 4 || o.Findings[1].Message != "CVE-2026-3333 in linux 6.12.113-1, the running kernel: the fixed kernel 6.12.115-1 is installed and runs after a reboot (CISA: Test flaw CVE-2026-3333; https://security-tracker.debian.org/tracker/CVE-2026-3333)" {
+	if o := observe(); o.Status != "failed" || len(o.Findings) != 4 || o.Findings[1].Message != "CVE-2026-3333 in linux 6.12.113-1, the running kernel: the fixed kernel 6.12.115-1 is installed and runs after a reboot (CISA: Test flaw CVE-2026-3333; https://security-tracker.debian.org/tracker/CVE-2026-3333)" ||
+		o.Findings[1].ExactFinding != "Debian:13 CVE-2026-3333 linux 6.12.113-1; fixed kernel installed, runs after a reboot: 6.12.115-1; DEBIAN-CVE-2026-3333 modified 2026-10-26T07:05:12Z" {
 		t.Fatalf("%+v", o)
 	}
 	write(packages, installed)
@@ -1989,9 +2006,12 @@ func TestKnownExploitedVulnerabilitiesInBothUbuntuEcosystems(t *testing.T) {
 	})
 	o := withinTimeLimit(t, 5*time.Second, check)
 	wantFindings := []checksandalerts.Finding{
-		{ID: "CVE-2026-6666 linux", Message: "CVE-2026-6666 in linux 6.8.0-87.88, the running kernel: no fix yet (CISA: Test flaw CVE-2026-6666; https://ubuntu.com/security/CVE-2026-6666)"},
-		{ID: "CVE-2024-42009 roundcube", Message: "CVE-2024-42009 in roundcube 1.6.6+dfsg-2ubuntu0.1: fix needs Ubuntu Pro, version 1.6.6+dfsg-2ubuntu0.1+esm1 (CISA: Test flaw CVE-2024-42009; https://ubuntu.com/security/CVE-2024-42009)"},
-		{ID: "CVE-2025-32463 sudo", Message: "CVE-2025-32463 in sudo 1.9.15p5-3ubuntu5.24.04.1: fixed version 1.9.15p5-3ubuntu5.24.04.2 waits to be installed (CISA: Test flaw CVE-2025-32463; https://ubuntu.com/security/CVE-2025-32463)"},
+		{ID: "CVE-2026-6666 linux", Message: "CVE-2026-6666 in linux 6.8.0-87.88, the running kernel: no fix yet (CISA: Test flaw CVE-2026-6666; https://ubuntu.com/security/CVE-2026-6666)",
+			ExactFinding: "Ubuntu:24.04:LTS CVE-2026-6666 linux 6.8.0-87.88; fixed version: none; UBUNTU-CVE-2026-6666 modified 2026-10-26T07:05:12Z"},
+		{ID: "CVE-2024-42009 roundcube", Message: "CVE-2024-42009 in roundcube 1.6.6+dfsg-2ubuntu0.1: fix needs Ubuntu Pro, version 1.6.6+dfsg-2ubuntu0.1+esm1 (CISA: Test flaw CVE-2024-42009; https://ubuntu.com/security/CVE-2024-42009)",
+			ExactFinding: "Ubuntu:24.04:LTS CVE-2024-42009 roundcube 1.6.6+dfsg-2ubuntu0.1; fix needs Ubuntu Pro: 1.6.6+dfsg-2ubuntu0.1+esm1; UBUNTU-CVE-2024-42009 modified 2026-10-26T07:05:12Z"},
+		{ID: "CVE-2025-32463 sudo", Message: "CVE-2025-32463 in sudo 1.9.15p5-3ubuntu5.24.04.1: fixed version 1.9.15p5-3ubuntu5.24.04.2 waits to be installed (CISA: Test flaw CVE-2025-32463; https://ubuntu.com/security/CVE-2025-32463)",
+			ExactFinding: "Ubuntu:24.04:LTS CVE-2025-32463 sudo 1.9.15p5-3ubuntu5.24.04.1; fixed version waits: 1.9.15p5-3ubuntu5.24.04.2; UBUNTU-CVE-2025-32463 modified 2026-10-26T07:05:12Z"},
 	}
 	if o.Status != "failed" || !reflect.DeepEqual(o.Findings, wantFindings) {
 		t.Fatalf("%+v", o)
@@ -2123,8 +2143,11 @@ func TestAptSecurityUpdatesCheck(t *testing.T) {
 		return withinTimeLimit(t, 5*time.Second, checksandalerts.Check{Inputs: &checksandalerts.AptSecurityUpdates{FailWhen: "a_security_update_waits_to_be_installed"}})
 	}
 	// Debian and Ubuntu: apt simulates the upgrade.
-	root := nodeFiles(t, map[string]string{"etc/os-release": "ID=debian\n", "var/lib/apt/lists/partial/": "", "var/lib/apt/lists/repository_Packages": "Package: test\n", "var/lib/apt/periodic/update-success-stamp": ""})
+	root := nodeFiles(t, map[string]string{"etc/os-release": "ID=debian\nVERSION_ID=\"12\"\n", "var/lib/apt/lists/partial/": "", "var/lib/apt/lists/repository_Packages": "Package: test\n", "var/lib/apt/periodic/update-success-stamp": ""})
 	answer, exitCode, asked := clientProgram(t, "apt-get", "LC_ALL")
+	// dpkg names the source package of each installed binary package.
+	inventory, _, inventoryAsked := clientProgram(t, "dpkg-query", "LC_ALL")
+	os.WriteFile(inventory, []byte("installed\tlibssl3\topenssl\ninstalled\topenssl\topenssl\ninstalled\tcurl\tcurl\ninstalled\ttzdata\ttzdata\ninstalled\tlibc6\tglibc\nconfig-files\tremoved\tremoved\n"), 0644)
 	const simulation = `Reading package lists...
 Building dependency tree...
 Reading state information...
@@ -2139,19 +2162,38 @@ Inst linux-image-6.1.0-28-amd64 (6.1.119-1 Debian-Security:12/stable-security [a
 Conf libssl3 (3.0.13-1~deb12u1 Debian-Security:12/stable-security [amd64])
 `
 	os.WriteFile(answer, []byte(simulation), 0644)
+	// Each source package with a security update is one finding, with an
+	// incident of its own: libssl3 and openssl are both of openssl. A
+	// package that the update installs anew has no installed version, and
+	// dpkg knows no source package of it. The exact finding is the release,
+	// the source package, its installed version, and the version that the
+	// update installs.
 	o := observe()
-	if o.Status != "failed" || o.Message != "4 security updates wait to be installed: curl, libssl3, linux-image-6.1.0-28-amd64, openssl" {
-		t.Fatal(o)
+	wantFindings := []checksandalerts.Finding{
+		{ID: "curl", Message: "a security update of curl waits to be installed: 7.88.1-10+deb12u5 to 7.88.1-10+deb12u8 (curl)", ExactFinding: "debian 12 curl 7.88.1-10+deb12u5 to 7.88.1-10+deb12u8"},
+		{ID: "linux-image-6.1.0-28-amd64", Message: "a security update of linux-image-6.1.0-28-amd64 waits to be installed: not installed to 6.1.119-1 (linux-image-6.1.0-28-amd64)", ExactFinding: "debian 12 linux-image-6.1.0-28-amd64 not installed to 6.1.119-1"},
+		{ID: "openssl", Message: "a security update of openssl waits to be installed: 3.0.11-1~deb12u1 to 3.0.13-1~deb12u1 (libssl3, openssl)", ExactFinding: "debian 12 openssl 3.0.11-1~deb12u1 to 3.0.13-1~deb12u1"},
 	}
-	// apt only simulates, as the unprivileged account, which can change
-	// nothing.
-	if data, _ := os.ReadFile(asked); string(data) != "--simulate\n--quiet\ndist-upgrade\nLC_ALL=C\n" || !reflect.DeepEqual(ranAs(), []string{"mmwatchdog"}) {
+	if o.Status != "failed" || o.Message != "3 security updates wait to be installed: curl, linux-image-6.1.0-28-amd64, openssl" || !reflect.DeepEqual(o.Findings, wantFindings) ||
+		!(&checksandalerts.Check{Inputs: new(checksandalerts.AptSecurityUpdates)}).Module().OneIncidentForEachFinding ||
+		o.FindingIsGoneMessage("openssl") != "no security update of openssl waits to be installed any more" {
+		t.Fatalf("%+v", o)
+	}
+	// apt only simulates, and dpkg only lists, as the unprivileged account,
+	// which can change nothing.
+	if data, _ := os.ReadFile(asked); string(data) != "--simulate\n--quiet\ndist-upgrade\nLC_ALL=C\n" || !reflect.DeepEqual(ranAs(), []string{"mmwatchdog", "mmwatchdog"}) {
 		t.Fatalf("%q", data)
 	}
-	// Ubuntu names its security archive in another way.
-	os.WriteFile(answer, []byte("Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.4 Ubuntu:24.04/noble-security [amd64])\nInst vim [2:9.1.0016-1ubuntu7.5] (2:9.1.0016-1ubuntu7.6 Ubuntu:24.04/noble-updates [amd64])\n"), 0644)
-	if o := observe(); o.Status != "failed" || o.Message != "1 security update waits to be installed: libc6" {
-		t.Fatal(o)
+	if data, _ := os.ReadFile(inventoryAsked); string(data) != "--show\n--showformat=${db:Status-Status}\t${Package}\t${source:Package}\n\nLC_ALL=C\n" {
+		t.Fatalf("dpkg-query arguments: %q", data)
+	}
+	// Ubuntu names its security archive in another way. apt names a
+	// package of another architecture with it; its source package is the
+	// same, and the lower installed version counts.
+	os.WriteFile(answer, []byte("Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.4 Ubuntu:24.04/noble-security [amd64])\nInst libc6:i386 [2.39-0ubuntu8.2] (2.39-0ubuntu8.4 Ubuntu:24.04/noble-security [i386])\nInst vim [2:9.1.0016-1ubuntu7.5] (2:9.1.0016-1ubuntu7.6 Ubuntu:24.04/noble-updates [amd64])\n"), 0644)
+	if o := observe(); o.Status != "failed" || o.Message != "1 security update waits to be installed: glibc" || len(o.Findings) != 1 ||
+		o.Findings[0].ExactFinding != "debian 12 glibc 2.39-0ubuntu8.2 to 2.39-0ubuntu8.4" || o.Findings[0].Message != "a security update of glibc waits to be installed: 2.39-0ubuntu8.2 to 2.39-0ubuntu8.4 (libc6)" {
+		t.Fatalf("%+v", o)
 	}
 	os.WriteFile(answer, []byte("Reading package lists...\nInst tzdata [2024a] (2024b Debian:12.8/stable-updates [all])\n0 upgraded, 0 newly installed.\n"), 0644)
 	if o := observe(); o.Status != "ok" || o.Message != "no security update waits to be installed" {
@@ -2206,7 +2248,7 @@ Conf libssl3 (3.0.13-1~deb12u1 Debian-Security:12/stable-security [amd64])
 
 func TestUbuntuProSecurityFixesCheck(t *testing.T) {
 	ranAs := asThisAccount(t)
-	root := nodeFiles(t, map[string]string{"etc/os-release": "ID=ubuntu\nPRETTY_NAME=Ubuntu 24.04 LTS\n", "var/lib/apt/lists/repository_Packages": "Package: test\n", "var/lib/apt/periodic/update-success-stamp": "", "var/lib/ubuntu-advantage/apt-esm/var/lib/apt/lists/esm_Packages": "Package: test\n"})
+	root := nodeFiles(t, map[string]string{"etc/os-release": "ID=ubuntu\nVERSION_ID=\"24.04\"\nPRETTY_NAME=Ubuntu 24.04 LTS\n", "var/lib/apt/lists/repository_Packages": "Package: test\n", "var/lib/apt/periodic/update-success-stamp": "", "var/lib/ubuntu-advantage/apt-esm/var/lib/apt/lists/esm_Packages": "Package: test\n"})
 	answer, exitCode, asked := clientProgram(t, "pro", "LC_ALL")
 	inventory, inventoryExit, inventoryAsked := clientProgram(t, "dpkg-query", "LC_ALL")
 	write := func(path, text string) {
@@ -2215,7 +2257,9 @@ func TestUbuntuProSecurityFixesCheck(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write(inventory, "installed\tpython3-wheel\tpython-wheel\ninstalled\tpython-wheel-common\tpython-wheel\ninstalled\ttillitis-tkey-udev\ttillitis-tkey\nconfig-files\tremoved\twrong-source\n")
+	// Two binary packages of one source package at different versions: the
+	// exact finding names the lower one.
+	write(inventory, "installed\tpython3-wheel\tpython-wheel\t0.42.0-1\ninstalled\tpython-wheel-common\tpython-wheel\t0.41.0-2\ninstalled\ttillitis-tkey-udev\ttillitis-tkey\t1.0.0+ds-6\nconfig-files\tremoved\twrong-source\t1\n")
 	const wheel = `{"package":"python3-wheel","version":"0.42.0-2ubuntu0.1~esm1","service_name":"esm-apps","status":"pending_attach"},{"package":"python-wheel-common","version":"0.42.0-2ubuntu0.1~esm1","service_name":"esm-apps","status":"pending_attach"}`
 	const tkey = `{"package":"tillitis-tkey-udev","version":"1.0.0+ds-6ubuntu0.1~esm1","service_name":"esm-apps","status":"pending_attach"}`
 	status := func(packages string, attached bool) {
@@ -2227,8 +2271,10 @@ func TestUbuntuProSecurityFixesCheck(t *testing.T) {
 	status(tkey+","+wheel+`,{"package":"zlib1g","version":"1.3","service_name":"standard-security","status":"upgrade_available"},{"package":"available","version":"1","service_name":"esm-apps","status":"upgrade_available"}`, false)
 	o := observe()
 	want := []checksandalerts.Finding{
-		{ID: "python-wheel", Message: "python-wheel has a security fix that this node misses because only Ubuntu Pro's ESM Apps delivers it: version 0.42.0-2ubuntu0.1~esm1 of the installed packages python-wheel-common, python3-wheel"},
-		{ID: "tillitis-tkey", Message: "tillitis-tkey has a security fix that this node misses because only Ubuntu Pro's ESM Apps delivers it: version 1.0.0+ds-6ubuntu0.1~esm1 of the installed package tillitis-tkey-udev"},
+		{ID: "python-wheel", Message: "python-wheel has a security fix that this node misses because only Ubuntu Pro's ESM Apps delivers it: version 0.42.0-2ubuntu0.1~esm1 of the installed packages python-wheel-common, python3-wheel",
+			ExactFinding: "ubuntu 24.04 python-wheel 0.41.0-2; esm-apps fixed version: 0.42.0-2ubuntu0.1~esm1"},
+		{ID: "tillitis-tkey", Message: "tillitis-tkey has a security fix that this node misses because only Ubuntu Pro's ESM Apps delivers it: version 1.0.0+ds-6ubuntu0.1~esm1 of the installed package tillitis-tkey-udev",
+			ExactFinding: "ubuntu 24.04 tillitis-tkey 1.0.0+ds-6; esm-apps fixed version: 1.0.0+ds-6ubuntu0.1~esm1"},
 	}
 	if o.Status != "failed" || o.Message != "2 source packages have a security fix that this node misses because only Ubuntu Pro delivers it: python-wheel, tillitis-tkey" || !reflect.DeepEqual(o.Findings, want) {
 		t.Fatal(o)
@@ -2239,7 +2285,7 @@ func TestUbuntuProSecurityFixesCheck(t *testing.T) {
 	if data, _ := os.ReadFile(asked); string(data) != "security-status\n--format\njson\nLC_ALL=C\n" {
 		t.Fatalf("pro arguments: %q", data)
 	}
-	if data, _ := os.ReadFile(inventoryAsked); string(data) != "--show\n--showformat=${db:Status-Status}\t${Package}\t${source:Package}\n\nLC_ALL=C\n" {
+	if data, _ := os.ReadFile(inventoryAsked); string(data) != "--show\n--showformat=${db:Status-Status}\t${Package}\t${source:Package}\t${source:Version}\n\nLC_ALL=C\n" {
 		t.Fatalf("dpkg-query arguments: %q", data)
 	}
 	if !reflect.DeepEqual(ranAs(), []string{"mmwatchdog", "mmwatchdog"}) {
@@ -2262,13 +2308,14 @@ func TestUbuntuProSecurityFixesCheck(t *testing.T) {
 	}
 	status(`{"package":"python3-wheel","version":"1.1","service_name":"esm-apps","status":"pending_enable"},{"package":"python-wheel-common","version":"1.0","service_name":"esm-infra","status":"pending_enable"}`, true)
 	o = observe()
-	if o.Status != "failed" || len(o.Findings) != 1 || o.Findings[0].ID != "python-wheel" || o.Findings[0].Message != "python-wheel has a security fix that this node misses because only Ubuntu Pro's ESM Apps delivers it: version 1.1 of the installed package python3-wheel; python-wheel has a security fix that this node misses because only Ubuntu Pro's ESM Infra delivers it: version 1.0 of the installed package python-wheel-common" {
+	if o.Status != "failed" || len(o.Findings) != 1 || o.Findings[0].ID != "python-wheel" || o.Findings[0].Message != "python-wheel has a security fix that this node misses because only Ubuntu Pro's ESM Apps delivers it: version 1.1 of the installed package python3-wheel; python-wheel has a security fix that this node misses because only Ubuntu Pro's ESM Infra delivers it: version 1.0 of the installed package python-wheel-common" ||
+		o.Findings[0].ExactFinding != "ubuntu 24.04 python-wheel 0.41.0-2; esm-apps fixed version: 1.1; esm-infra fixed version: 1.0" {
 		t.Fatal(o)
 	}
 
 	status(`{"package":"unlisted","version":"1","service_name":"esm-apps","status":"pending_attach"},{"package":"removed","version":"1","service_name":"esm-apps","status":"pending_attach"}`, false)
 	o = observe()
-	if o.Status != "failed" || len(o.Findings) != 2 || o.Findings[0].ID != "removed" || o.Findings[1].ID != "unlisted" {
+	if o.Status != "failed" || len(o.Findings) != 2 || o.Findings[0].ID != "removed" || o.Findings[1].ID != "unlisted" || o.Findings[1].ExactFinding != "ubuntu 24.04 unlisted installed version unknown; esm-apps fixed version: 1" {
 		t.Fatal(o)
 	}
 	status(`{"package":"standard","version":"1","service_name":"standard-security","status":"pending_attach"},{"package":"available","version":"1","service_name":"esm-infra","status":"upgrade_available"}`, false)

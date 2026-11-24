@@ -34,7 +34,14 @@ type Event struct {
 	// Each finding is its own incident, so the finding is part of what the
 	// event is about: see AboutCheck.
 	Finding string `json:"finding,omitempty"`
-	Type    string `json:"type"`
+	// ExactFinding is, on an alert about a finding whose module names the
+	// problem precisely, that exact finding as the node's latest run
+	// reported it (Finding.ExactFinding), and ExactFindingSequence counts
+	// its changes during the incident, so that the hub ignores an older one
+	// that arrives after a newer one. See HasExactFinding.
+	ExactFinding         string `json:"exact_finding,omitempty"`
+	ExactFindingSequence int64  `json:"exact_finding_sequence,omitempty"`
+	Type                 string `json:"type"`
 	// AlertSeverity is info, warn, or sos: an incident's current severity,
 	// on a recovery or retirement the highest it reached, for a rebooted
 	// notice the node's alert_severity_when_this_node_has_rebooted, for a
@@ -64,12 +71,6 @@ type Event struct {
 	// A hub's combined message names up to 20 of its nodes and counts all.
 	Nodes     []string `json:"nodes,omitempty"`
 	NodeCount int      `json:"node_count,omitempty"`
-	// ExactFinding names the finding's problem precisely, on one line of
-	// at most 255 bytes: two nodes with the same exact finding have the
-	// same problem. ExactFindingSequence counts the changes of a node
-	// incident's exact finding, so the hub ignores an older one.
-	ExactFinding         string `json:"exact_finding,omitempty"`
-	ExactFindingSequence int64  `json:"exact_finding_sequence,omitempty"`
 	// NodesByExactFinding, RecoveredNodes, and RecoveredNodeCount are, on
 	// the hub's finding_nodes_changed update, the nodes that joined or
 	// changed by exact finding, and the nodes that are ok again, each named
@@ -123,20 +124,30 @@ type ExactFindingNodes struct {
 	NodeCount    int      `json:"node_count"`
 }
 
-// HasExactFinding reports an alert of a finding whose module named its
-// exact finding: the one test for grouping by exact finding across the
-// fleet.
+// ExactFindingChanged is the alert that a finding's open, announced incident
+// now has another exact finding than its last alert carried: the problem
+// changed, such as the installed version of a flawed package, and the
+// incident stays open. It belongs to the incident, and goes where a raise
+// of the incident goes.
+const ExactFindingChanged = "exact_finding_changed"
+
+// ExactFindingChangedMessage is the message of an ExactFindingChanged alert.
+func ExactFindingChangedMessage(before, now string) string {
+	if before == "" {
+		return "the exact finding is now: " + now
+	}
+	return "the exact finding changed to: " + now + "; it was: " + before
+}
+
+// HasExactFinding reports an alert about a finding that names its exact
+// finding: the one test for whether a hub groups the alerts of a fleet
+// incident key by exact finding. Every other alert keeps the one-minute
+// fleet alert grouping.
 func HasExactFinding(e Event) bool { return e.Finding != "" && e.ExactFinding != "" }
 
-// The event types of grouping by exact finding. A node sends
-// ExactFindingChanged when the exact finding of an announced, open
-// incident changes; it belongs to the incident. Only the hub sends
-// FindingNodesChanged: the nodes that joined, changed, or recovered in a
-// key whose exact findings were announced.
-const (
-	ExactFindingChanged = "exact_finding_changed"
-	FindingNodesChanged = "finding_nodes_changed"
-)
+// FindingNodesChanged is the hub's update of an exact-finding key: the
+// nodes that joined, changed, or recovered since the last update.
+const FindingNodesChanged = "finding_nodes_changed"
 
 type TrackEvents struct{ Failed, Recovered, Raised, Stale string }
 

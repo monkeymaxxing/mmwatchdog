@@ -404,6 +404,10 @@ func (m *ModuleCall) Run(ctx context.Context, r *CheckRun) (observation Observat
 		for index := range observation.Findings {
 			observation.Findings[index].ID = WithoutFileContents(observation.Findings[index].ID, contents)
 			observation.Findings[index].Message = WithoutFileContents(observation.Findings[index].Message, contents)
+			// The words that replace a file's content can be longer than it.
+			if exact := observation.Findings[index].ExactFinding; exact != "" {
+				observation.Findings[index].ExactFinding = FitExactFinding(WithoutFileContents(exact, contents))
+			}
 		}
 	}()
 	var problem *FieldError
@@ -541,6 +545,9 @@ func ValidateResult(r ModuleResult) error {
 		}
 		if finding.Message == "" {
 			return fmt.Errorf("the finding %s needs a message", strconv.Quote(finding.ID))
+		}
+		if !ValidExactFinding(finding.ExactFinding) {
+			return fmt.Errorf("the exact_finding of the finding %s must be text on one line of at most %d bytes", strconv.Quote(finding.ID), ExactFindingLimit)
 		}
 		seen[finding.ID] = true
 	}

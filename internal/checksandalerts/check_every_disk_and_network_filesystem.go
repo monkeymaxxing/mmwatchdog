@@ -139,7 +139,7 @@ func (m *EveryDiskAndNetworkFilesystem) Run(ctx context.Context, r *CheckRun) Ob
 		answered[path] = !errors.Is(err, fs.ErrNotExist)
 		switch {
 		case errors.Is(err, primitives.ErrFilesystemDoesNotAnswer):
-			failed = append(failed, Finding{ID: filesystemFindingID(path), Message: err.Error()})
+			failed = append(failed, Finding{ID: filesystemFindingID(path), Message: err.Error(), ExactFinding: filesystemExactFinding(path, filesystemUnreadable)})
 			continue
 		case errors.Is(err, fs.ErrNotExist):
 			// The filesystem went away since the kernel listed it; the
@@ -148,19 +148,20 @@ func (m *EveryDiskAndNetworkFilesystem) Run(ctx context.Context, r *CheckRun) Ob
 		case err != nil:
 			// A filesystem whose other side is gone answers with an error,
 			// as a network filesystem does when its server restarted.
-			failed = append(failed, Finding{ID: filesystemFindingID(path), Message: primitives.OnOneLine(fmt.Sprintf("the filesystem at %s gives an error in place of its size: %s", path, err))})
+			failed = append(failed, Finding{ID: filesystemFindingID(path), Message: primitives.OnOneLine(fmt.Sprintf("the filesystem at %s gives an error in place of its size: %s", path, err)), ExactFinding: filesystemExactFinding(path, filesystemUnreadable)})
 			continue
 		case counts.Blocks == 0:
 			// The kernel gives this filesystem no size.
 			continue
 		}
-		switch o := FilesystemObservation(limitsOnWhatWasMeasured(r.Check, counts), path, counts); o.Status {
+		limits := limitsOnWhatWasMeasured(r.Check, counts)
+		switch o := FilesystemObservation(limits, path, counts); o.Status {
 		case "failed", "unknown":
 			message := o.Message
 			if !strings.HasPrefix(message, path+" ") && !strings.HasPrefix(message, path+":") {
 				message = path + ": " + message
 			}
-			failed = append(failed, Finding{ID: filesystemFindingID(path), Message: message})
+			failed = append(failed, Finding{ID: filesystemFindingID(path), Message: message, ExactFinding: filesystemExactFinding(path, filesystemFailureKinds(limits, o, counts.ReadOnly)...)})
 		case "ok":
 			within++
 		}
@@ -168,7 +169,7 @@ func (m *EveryDiskAndNetworkFilesystem) Run(ctx context.Context, r *CheckRun) Ob
 	for _, path := range failedBefore {
 		if id := filesystemFindingID(path); !answered[path] && !slices.Contains(ignored, path) {
 			failedPaths[id] = path
-			failed = append(failed, Finding{ID: id, Message: "the filesystem at " + path + " is no longer mounted"})
+			failed = append(failed, Finding{ID: id, Message: "the filesystem at " + path + " is no longer mounted", ExactFinding: filesystemExactFinding(path, filesystemUnreadable)})
 		}
 	}
 	failedNow := []string{}
@@ -205,6 +206,49 @@ func filesystemFindingID(path string) string {
 		return path
 	}
 	return fmt.Sprintf("filesystem_path_sha256:%x", sha256.Sum256([]byte(path)))
+}
+
+// The kinds of failure of a filesystem in its exact finding.
+const (
+	filesystemFullSpace  = "space"
+	filesystemFullInodes = "inodes"
+	filesystemReadOnly   = "read-only"
+	// filesystemUnreadable is a filesystem that MMWatchdog could not
+	// measure: it does not answer, gives an error, is no longer mounted, or
+	// gives counts that cannot be read.
+	filesystemUnreadable = "unreadable"
+)
+
+// filesystemExactFinding names a failing filesystem precisely: its mount
+// path and how it fails, such as "/var space" or "/srv space, read-only".
+func filesystemExactFinding(path string, kinds ...string) string {
+	return FitExactFinding(path + " " + strings.Join(kinds, ", "))
+}
+
+// filesystemFailureKinds says how a measured filesystem fails, in a fixed
+// order: its space or its inodes beyond a limit of check c, and read-only,
+// or unreadable for an observation that is unknown.
+func filesystemFailureKinds(c Check, o Observation, readOnly bool) []string {
+	if o.Status == "unknown" {
+		return []string{filesystemUnreadable}
+	}
+	beyond := func(name string) bool {
+		reading, measured := o.Measurements[name]
+		above, hasAbove := c.FailWhenMeasurementAbove[name]
+		below, hasBelow := c.FailWhenMeasurementBelow[name]
+		return measured && (hasAbove && reading.Value > above || hasBelow && reading.Value < below)
+	}
+	kinds := []string{}
+	if beyond("space_used_percent") || beyond("space_free_gib") {
+		kinds = append(kinds, filesystemFullSpace)
+	}
+	if beyond("inodes_used_percent") {
+		kinds = append(kinds, filesystemFullInodes)
+	}
+	if readOnly {
+		kinds = append(kinds, filesystemReadOnly)
+	}
+	return kinds
 }
 
 // countOf writes a count with the words for one thing or for several.

@@ -197,6 +197,7 @@ func ModuleJSONHelper(args []string, in io.Reader, out io.Writer) (err error) {
 	case "result":
 		result := ModuleResult{Protocol: 1}
 		messageSet, stdinMessage, statusSet := false, false, false
+		exactFindings := map[string]string{}
 		for i := 1; i < len(args); i++ {
 			switch args[i] {
 			case "--status", "--message":
@@ -246,9 +247,29 @@ func ModuleJSONHelper(args []string, in io.Reader, out io.Writer) (err error) {
 				}
 				result.Findings = append(result.Findings, Finding{ID: args[i+1], Message: args[i+2]})
 				i += 2
+			case "--exact-finding":
+				if i+2 >= len(args) {
+					return badArgs("--exact-finding requires ID TEXT")
+				}
+				if _, given := exactFindings[args[i+1]]; given {
+					return fmt.Errorf("--exact-finding %s may be supplied once", strconv.Quote(args[i+1]))
+				}
+				exactFindings[args[i+1]] = args[i+2]
+				i += 2
 			default:
 				return badArgs("unknown result argument " + strconv.Quote(args[i]))
 			}
+		}
+		// Each exact finding belongs to the finding that its ID names, which
+		// may come before or after it.
+		for index, finding := range result.Findings {
+			if text, given := exactFindings[finding.ID]; given {
+				result.Findings[index].ExactFinding = text
+				delete(exactFindings, finding.ID)
+			}
+		}
+		if len(exactFindings) > 0 {
+			return fmt.Errorf("--exact-finding %s names no --finding", strconv.Quote(Names(exactFindings)[0]))
 		}
 		if !statusSet || (!messageSet && !stdinMessage) {
 			return badArgs("result requires --status and exactly one of --message or --message-stdin")

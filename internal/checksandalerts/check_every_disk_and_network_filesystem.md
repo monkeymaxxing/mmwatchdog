@@ -42,6 +42,18 @@ filesystem is a finding. A filesystem is a finding:
 A permission error or an unknown observation of a filesystem also becomes
 a finding, with the path and reason.
 
+Each finding names its exact finding: the mount path and how the
+filesystem fails, one or more of `space`, `inodes`, `read-only`, and
+`unreadable`, such as `/var space` or `/srv/data space, read-only`.
+`space` is a limit on `space_used_percent` or `space_free_gib` that the
+reading passes, and `inodes` one on `inodes_used_percent`. `unreadable` is
+a filesystem that does not answer, answers with an error, gives counts
+that cannot be read, or is no longer mounted. Two nodes with the same exact
+finding have the same problem, so a fleet hub sends one alert for all of
+them. When the filesystem fails in another way while its incident is open,
+such as `/var` turning read-only, the incident stays open, and MMWatchdog
+sends `exact_finding_changed`.
+
 Each finding identifies the path where the failing filesystem is mounted
 and follows the check's timings independently. The finding's incident opens
 after `alert_after_failing_for`. The finding recovers when runs stop
@@ -198,8 +210,9 @@ recovery with the full mount path.
 - **Go tests** in `internal/checksandalerts/node_measurements_test.go` check
   coverage of disk and network filesystems once each, with memory
   filesystems, overlays, and inherently read-only images excluded. The tests
-  check findings when a filesystem passes a limit, is read-only, does not
-  answer, or answers with an error. The tests check ignored filesystems in
+  check findings and their exact findings when a filesystem passes a limit,
+  is read-only, does not answer, answers with an error, or is no longer
+  mounted. The tests check ignored filesystems in
   the message and inode limits skipped where no inodes are counted. The
   tests also check inputs and the validation warning.
   `cmd/mmwatchdog/main_test.go` covers the warning in the output of
@@ -226,6 +239,10 @@ recovery with the full mount path.
 - **Long paths use a stable checksum for identity.** The finding protocol's
   size limit must not exclude a filesystem from monitoring.
 
+- **The exact finding names how the filesystem fails.** `/var` full on
+  one node and read-only on another are two problems with one fix each, so
+  only the same way of failing joins a later node to an earlier
+  investigation.
 - **The check covers filesystems without a list.** A filesystem that
   nobody listed is the filesystem that fills up.
 - **Each filesystem is its own incident.** A second full filesystem gets

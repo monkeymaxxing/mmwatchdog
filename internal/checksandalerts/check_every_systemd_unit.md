@@ -34,6 +34,14 @@ finding is its own incident:
 - **The message of one unit** is `systemd unit backup.service failed
   (systemd result: exit-code)`, with the `Result` that systemd gives, or
   `systemd unit backup.service failed` when systemd gives none.
+- **The exact finding of one unit** is the unit and systemd's `Result`,
+  such as `backup.service exit-code`. Two nodes with the same exact finding
+  have the same unit failing in the same way, so a fleet hub sends one alert
+  for all of them. When the unit fails in another way while its incident is
+  open, such as `backup.service timeout`, the incident stays open, and
+  MMWatchdog sends `exact_finding_changed`. A unit whose `Result` systemd
+  does not give has no exact finding, and its alerts keep the fleet's
+  one-minute grouping.
 - **When systemd no longer lists the unit as failed,** the unit's message is
   `systemd unit backup.service is no longer failed`.
 - **Each unit follows the check's settings by itself.** Its failing time
@@ -295,6 +303,11 @@ The check has no incident of its own, so a recovery command gets an empty
 - **A failed unit takes the alert severity of its check.** A reader sees the
   severity on the check itself, as for every alert. Two severities are two
   checks.
+- **The exact finding holds systemd's `Result`.** The same unit can fail
+  for different reasons on two nodes, such as an exit code on one and a
+  timeout on the other, and only the same reason is the same problem. A
+  unit without a `Result` gets no exact finding, rather than one that
+  changes when systemd gives the `Result` at the next run.
 - **An unknown run is the check's, not a unit's.** MMWatchdog learned nothing about
   any unit, so it sends one cannot-check alert and leaves each open incident
   as it is.

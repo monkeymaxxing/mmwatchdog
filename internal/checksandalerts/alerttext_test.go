@@ -61,6 +61,7 @@ func TestAlertTitles(t *testing.T) {
 		{check(checksandalerts.FailureIncidentEvents.Raised), "", "web-3: myapp/http still failing, now SOS"},
 		{grouped(check(checksandalerts.FailureIncidentEvents.Raised), 3), "util", "myapp/http still failing on 3 nodes, now SOS"},
 		{check(checksandalerts.CannotCheckIncidentEvents.Raised), "", "web-3: MMWatchdog still cannot check myapp/http, now SOS"},
+		{checksandalerts.Event{Node: "web-3", CheckGroup: "security", Check: "flaws", Finding: "CVE-2026-123158 openssh", Type: checksandalerts.ExactFindingChanged, AlertSeverity: "warn"}, "", "web-3: security/flaws: CVE-2026-123158 openssh still failing, changed"},
 		{check("recovered"), "", "web-3: myapp/http is ok again"},
 		{grouped(check("recovered"), 3), "util", "myapp/http is ok again on 3 nodes"},
 		{check("can_check_again"), "", "web-3: MMWatchdog can check myapp/http again"},

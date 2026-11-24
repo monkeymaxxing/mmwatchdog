@@ -44,19 +44,36 @@ type Track struct {
 	// Reminded is the last reminder sent to each destination.
 	RemindFrom time.Time            `json:"remind_from,omitempty"`
 	Reminded   map[string]time.Time `json:"reminded,omitempty"`
-	// CurrentExactFinding is the exact finding of the latest run, and
-	// AnnouncedExactFinding the one that the incident's last alert carried.
-	// ExactFindingSequence counts the changes of CurrentExactFinding.
+	// CurrentExactFinding is, on the failure track of a finding whose
+	// module names its exact finding, the exact finding that the latest run
+	// that reported the finding gave (checksandalerts.Finding.ExactFinding).
+	// ExactFindingSequence counts its changes, so it only grows during an
+	// incident. AnnouncedExactFinding is the exact finding that the
+	// incident's latest alert carried: when the two differ, the incident's
+	// next run outside maintenance and quiet time sends
+	// exact_finding_changed (announceExactFindingChange).
 	CurrentExactFinding   string `json:"current_exact_finding,omitempty"`
 	AnnouncedExactFinding string `json:"announced_exact_finding,omitempty"`
 	ExactFindingSequence  int64  `json:"exact_finding_sequence,omitempty"`
-	// ReminderEligible reports an open, announced incident that is neither
-	// in maintenance nor in quiet time.
+	// ReminderEligible reports, in status and in a node status report, an
+	// incident that is open and announced while no maintenance window and
+	// no quiet time holds its alerts back: one whose reminders are due.
+	// MarkReminderEligible sets it when status is built; the state that
+	// the store keeps never has it.
 	ReminderEligible bool `json:"reminder_eligible"`
 }
 
 // reminding reports that the track's incident is open and announced.
 func (t *Track) reminding() bool { return t.Incident != "" && t.Announced == t.Incident }
+
+// reportExactFinding records the exact finding that a run reported for the
+// track's finding, and counts it when it changed.
+func (t *Track) reportExactFinding(exact string) {
+	if exact != t.CurrentExactFinding {
+		t.CurrentExactFinding = exact
+		t.ExactFindingSequence++
+	}
+}
 
 type CheckState struct {
 	// RecordsOnly marks a measurement check without an alert_severity: it
@@ -458,9 +475,9 @@ func (s *CheckState) forgetFindingsWithoutIncident() {
 // announced while the incident of the first is open. For a
 // every_systemd_unit check, each failed unit is one finding.
 func (s *CheckState) observeFindings(o checksandalerts.Observation, t checksandalerts.Timing, suppressed bool) []checksandalerts.Event {
-	messages := map[string]string{}
+	messages, exactFindings := map[string]string{}, map[string]string{}
 	for _, reported := range o.Findings {
-		messages[reported.ID] = reported.Message
+		messages[reported.ID], exactFindings[reported.ID] = reported.Message, reported.ExactFinding
 		if s.Findings[reported.ID] == nil {
 			if s.Findings == nil {
 				s.Findings = map[string]*CheckState{}
@@ -482,12 +499,32 @@ func (s *CheckState) observeFindings(o checksandalerts.Observation, t checksanda
 		own := checksandalerts.Result("ok", message)
 		if message, failed := messages[unit.Finding]; failed {
 			own = checksandalerts.Result("failed", message)
+			// Before the observation, so that the alert that announces the
+			// incident carries it.
+			unit.FailureIncident.reportExactFinding(exactFindings[unit.Finding])
 		}
 		own.At, own.Duration = o.At, o.Duration
 		events = append(events, unit.Observe(own, t, suppressed)...)
+		events = append(events, unit.announceExactFindingChange(o.At, suppressed)...)
 	}
 	s.forgetFindingsWithoutIncident()
 	return events
+}
+
+// announceExactFindingChange is the exact_finding_changed alert of a
+// finding whose incident is open and announced, when the latest run
+// reported another exact finding than the incident's latest alert carried.
+// While maintenance or quiet time holds the finding's alerts back
+// (suppressed), the change waits: the first run after that time sends it,
+// if the exact finding still differs then.
+func (s *CheckState) announceExactFindingChange(at time.Time, suppressed bool) []checksandalerts.Event {
+	t := &s.FailureIncident
+	if suppressed || !t.reminding() || t.CurrentExactFinding == "" || t.CurrentExactFinding == t.AnnouncedExactFinding {
+		return nil
+	}
+	message := checksandalerts.ExactFindingChangedMessage(t.AnnouncedExactFinding, t.CurrentExactFinding)
+	t.AnnouncedExactFinding = t.CurrentExactFinding
+	return []checksandalerts.Event{s.Event(t, checksandalerts.ExactFindingChanged, t.Incident, message, at, true)}
 }
 
 func (s *CheckState) endFailingTime() {
@@ -600,6 +637,11 @@ func (s *CheckState) Event(t *Track, kind, incident, msg string, at time.Time, n
 	// no new alert. Closing an announced incident still reaches its recipients.
 	silent := s.SendAlertsOnlyToDestinations != nil && len(*s.SendAlertsOnlyToDestinations) == 0 && !checksandalerts.Closes(kind)
 	e := checksandalerts.Event{ID: ID(), Incident: incident, CheckGroup: s.CheckGroup, Check: s.Check, Finding: s.Finding, Type: kind, AlertSeverity: t.AlertSeverity, At: at, Message: msg, Notify: notify && !silent, Evidence: evidence, SendAlertsOnlyToDestinations: s.SendAlertsOnlyToDestinations}
+	// Every alert about a finding with an exact finding names the latest
+	// one, so the hub groups each by it (checksandalerts.HasExactFinding).
+	if t.CurrentExactFinding != "" {
+		e.ExactFinding, e.ExactFindingSequence = t.CurrentExactFinding, t.ExactFindingSequence
+	}
 	// Every alert of the incident carries its key across the fleet. This
 	// is the one place that knows the incident kind of every such alert,
 	// a reminder's and a retirement's too. Store.Save gives the hub's
@@ -777,6 +819,7 @@ func (s *CheckState) advance(t *Track, kinds checksandalerts.TrackEvents, o chec
 			add(kinds.Failed, t.Incident, o.Message, true)
 			t.Announced, t.RemindFrom, t.Reminded = t.Incident, o.At, nil
 			t.AnnouncedAlertSeverities = []string{t.AlertSeverity}
+			t.AnnouncedExactFinding = t.CurrentExactFinding
 		}
 		if !failing && t.Incident == "" && t.Announced != "" {
 			add(kinds.Recovered, t.Announced, recovered, true)
@@ -784,7 +827,7 @@ func (s *CheckState) advance(t *Track, kinds checksandalerts.TrackEvents, o chec
 		}
 	}
 	if t.Announced == "" {
-		t.RemindFrom, t.Reminded, t.AnnouncedAlertSeverities = time.Time{}, nil, nil
+		t.RemindFrom, t.Reminded, t.AnnouncedAlertSeverities, t.AnnouncedExactFinding = time.Time{}, nil, nil, ""
 	}
 	if t.Incident == "" && t.Announced == "" {
 		t.Evidence = nil
@@ -801,13 +844,25 @@ func (s *CheckState) advance(t *Track, kinds checksandalerts.TrackEvents, o chec
 // so MMWatchdog makes no reminder that no destination gets. The caller holds
 // reminders while maintenance covers the check.
 func (s *CheckState) Reminders(destinations map[string]checksandalerts.Destination, now time.Time) []checksandalerts.Event {
+	return s.reminders(destinations, now, false)
+}
+
+// RemindersOfIncidentsWithoutExactFinding are the Reminders, without those
+// of a finding whose incident has an exact finding: a joined node leaves
+// them to its fleet hub while its reports reach the hub, because the hub
+// reminds once for each fleet incident key, for every node of the key.
+func (s *CheckState) RemindersOfIncidentsWithoutExactFinding(destinations map[string]checksandalerts.Destination, now time.Time) []checksandalerts.Event {
+	return s.reminders(destinations, now, true)
+}
+
+func (s *CheckState) reminders(destinations map[string]checksandalerts.Destination, now time.Time, leaveOutExactFindings bool) []checksandalerts.Event {
 	events := []checksandalerts.Event{}
 	for _, track := range []struct {
 		t     *Track
 		kinds checksandalerts.TrackEvents
 	}{{&s.CannotCheckIncident, checksandalerts.CannotCheckIncidentEvents}, {&s.FailureIncident, checksandalerts.FailureIncidentEvents}} {
 		t := track.t
-		if !t.reminding() {
+		if !t.reminding() || leaveOutExactFindings && s.Finding != "" && t.CurrentExactFinding != "" {
 			continue
 		}
 		opened := t.Opened.UTC().Format("15:04 UTC")
@@ -837,7 +892,7 @@ func (s *CheckState) Reminders(destinations map[string]checksandalerts.Destinati
 	// Each failed unit of an every_systemd_unit check is reminded of by
 	// itself.
 	for _, unit := range s.FindingStates() {
-		events = append(events, unit.Reminders(destinations, now)...)
+		events = append(events, unit.reminders(destinations, now, leaveOutExactFindings)...)
 	}
 	if len(events) > 0 {
 		s.Touch()
@@ -918,6 +973,17 @@ func retirementReason(c *config.Config, st *CheckState, replaced bool) string {
 	return why + "; MMWatchdog does not know whether the problem is fixed"
 }
 
+// findingsChangeReason is the message of the alert that closes the
+// incidents of a check whose module changed between one incident for the
+// check and one incident for each finding. eachFinding reports the
+// module's new choice.
+func findingsChangeReason(eachFinding bool) string {
+	if eachFinding {
+		return "the check's module now reports each finding as an incident of its own, and the findings open as new incidents; MMWatchdog does not know whether the problem is fixed"
+	}
+	return "the check's module no longer reports each finding as an incident of its own, and the check opens a new incident; MMWatchdog does not know whether the problem is fixed"
+}
+
 // sameNames compares two optional lists of names; a list that is not stated
 // differs from an empty one.
 func sameNames(a, b *[]string) bool {
@@ -955,7 +1021,13 @@ func (s *Snapshot) Reconcile(c *config.Config, defs map[string]config.Definition
 func (s *Snapshot) ReconcileOne(c *config.Config, key string, d *config.Definition, now time.Time) []checksandalerts.Event {
 	events := []checksandalerts.Event{}
 	if st := s.Checks[key]; st != nil {
-		if d != nil && st.Fingerprint == d.Identity() {
+		// A check whose module changed between one incident and one
+		// incident for each finding, such as apt_security_updates in
+		// MMWatchdog 0.2.0, is a new check, although its configuration reads
+		// the same: its state has another form. Its old incidents retire
+		// once, and the new state keeps the module's choice.
+		findingsChanged := d != nil && st.OneIncidentForEachFinding != d.Check.Module().OneIncidentForEachFinding
+		if d != nil && st.Fingerprint == d.Identity() && !findingsChanged {
 			source, recordsOnly := c.CheckSource(d.CheckGroup, d.Name), d.CheckWithSeverity().RecordsOnly()
 			if st.Source != source || st.Timing != d.Timing || st.RecordsOnly != recordsOnly {
 				st.Touch()
@@ -982,6 +1054,9 @@ func (s *Snapshot) ReconcileOne(c *config.Config, key string, d *config.Definiti
 			return events
 		}
 		reason := retirementReason(c, st, d != nil)
+		if findingsChanged {
+			reason = findingsChangeReason(d.Check.Module().OneIncidentForEachFinding)
+		}
 		events = append(events, st.retire(&st.FailureIncident, reason, now)...)
 		events = append(events, st.retire(&st.CannotCheckIncident, reason, now)...)
 		// A changed or removed every_systemd_unit check closes the
@@ -1039,6 +1114,20 @@ func (s CheckState) Summary(now time.Time, needsFresh bool) string {
 		return "confirming_failure"
 	}
 	return "ok"
+}
+
+// MarkReminderEligible sets ReminderEligible on each track of the check's
+// status and of its findings' statuses: true for an incident that is open
+// and announced, unless heldBack, which reports that a maintenance window
+// or quiet time holds the check's alerts back.
+func (s *CheckStatus) MarkReminderEligible(heldBack bool) {
+	for _, t := range []*Track{&s.FailureIncident, &s.CannotCheckIncident} {
+		t.ReminderEligible = !heldBack && t.reminding()
+	}
+	for name, finding := range s.FindingStatuses {
+		finding.MarkReminderEligible(heldBack)
+		s.FindingStatuses[name] = finding
+	}
 }
 
 // ObservationUnknown reports that the latest observation does not establish health.

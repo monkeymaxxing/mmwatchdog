@@ -202,6 +202,8 @@ func AlertTitleParts(e Event, hub string) []TitlePart {
 	switch {
 	case e.Type == "failed":
 		after = " failed"
+	case e.Type == ExactFindingChanged:
+		after = " still failing, changed"
 	case still:
 		after = " still failing"
 	case e.Type == "cannot_check":
@@ -504,10 +506,12 @@ func IncidentKind(eventType string) string {
 	return "failed"
 }
 
-// Opens reports an alert that announces or raises an incident.
+// Opens reports an alert that announces or raises an incident, or says that
+// its exact finding changed: an alert that goes where config.GoesTo sends
+// it, and whose destinations the incident's closing alert follows.
 func Opens(eventType string) bool {
 	switch eventType {
-	case "failed", "cannot_check", FailureIncidentEvents.Raised, CannotCheckIncidentEvents.Raised:
+	case "failed", "cannot_check", FailureIncidentEvents.Raised, CannotCheckIncidentEvents.Raised, ExactFindingChanged:
 		return true
 	}
 	return false
