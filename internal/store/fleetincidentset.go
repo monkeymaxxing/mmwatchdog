@@ -900,26 +900,30 @@ func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hu
 	aside, coverage := map[string]string{}, []coverageChange{}
 	for _, reporter := range checksandalerts.Names(changes) {
 		r := changes[reporter]
-		rows, e := tx.Query("SELECT incident_id, opened FROM fleet_node_incidents WHERE reporter=?", reporter)
+		rows, e := tx.Query("SELECT incident_id, opened, alert_severity FROM fleet_node_incidents WHERE reporter=?", reporter)
 		if e != nil {
 			return nil, nil, e
 		}
-		heldRows := map[string]int64{}
+		type heldRow struct {
+			opened   int64
+			severity string
+		}
+		heldRows := map[string]heldRow{}
 		for rows.Next() {
 			var id string
-			var opened int64
-			if e = rows.Scan(&id, &opened); e != nil {
+			var x heldRow
+			if e = rows.Scan(&id, &x.opened, &x.severity); e != nil {
 				_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
 				return nil, nil, e
 			}
-			heldRows[id] = opened
+			heldRows[id] = x
 		}
 		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
 		if e = rows.Err(); e != nil {
 			return nil, nil, e
 		}
 		for _, id := range checksandalerts.Names(heldRows) {
-			if _, shown := r.Incidents[id]; shown || !r.Forgotten && heldRows[id] >= r.Sent.UnixNano() {
+			if _, shown := r.Incidents[id]; shown || !r.Forgotten && heldRows[id].opened >= r.Sent.UnixNano() {
 				continue
 			}
 			if _, e = tx.Exec("DELETE FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", reporter, id); e != nil {
@@ -928,7 +932,8 @@ func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hu
 		}
 		for _, id := range checksandalerts.Names(r.Incidents) {
 			m := r.Incidents[id]
-			if _, known := heldRows[id]; !known {
+			held, known := heldRows[id]
+			if !known {
 				opened := m.At
 				if opened.IsZero() {
 					opened = r.Sent
@@ -936,8 +941,11 @@ func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hu
 				_, e = tx.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible,send_alerts_only_to_destinations) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
 					reporter, id, checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub), checksandalerts.AlertNode(m, hub), m.CheckGroup, m.Check, m.Finding, m.ExactFinding, m.ExactFindingSequence, m.AlertSeverity, opened.UnixNano(), r.ReminderEligible[id], destinationsColumn(m.SendAlertsOnlyToDestinations))
 			} else {
+				// An incident's severity only rises, and a report sent before a
+				// raise can arrive after the raise's alert: it never lowers the
+				// severity, which would let a set-aside entry cover an sos.
 				_, e = tx.Exec(`UPDATE fleet_node_incidents SET alert_severity=?, reminder_eligible=?, exact_finding=CASE WHEN ?>=exact_finding_sequence THEN ? ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,?), send_alerts_only_to_destinations=? WHERE reporter=? AND incident_id=?`,
-					m.AlertSeverity, r.ReminderEligible[id], m.ExactFindingSequence, m.ExactFinding, m.ExactFindingSequence, destinationsColumn(m.SendAlertsOnlyToDestinations), reporter, id)
+					config.HigherSeverity(held.severity, m.AlertSeverity), r.ReminderEligible[id], m.ExactFindingSequence, m.ExactFinding, m.ExactFindingSequence, destinationsColumn(m.SendAlertsOnlyToDestinations), reporter, id)
 			}
 			if e != nil {
 				return nil, nil, e

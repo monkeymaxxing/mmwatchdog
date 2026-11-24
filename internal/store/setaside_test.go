@@ -245,3 +245,24 @@ func TestAnIncidentNoLongerCoveredOpensWhereItsCheckSends(t *testing.T) {
 	expectKinds(t, h.take("chat_a"))
 	expectKinds(t, h.take("chat_b"), "failed warn")
 }
+
+// A report sent before a node raised its covered incident to sos, and
+// applied after the raise, never lowers the incident below sos: the entry
+// does not cover it again, so the sos stays open everywhere.
+func TestAnOlderReportNeverSetsAsideAnSos(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn", "sos"), "hotline": hotline()})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	raise := tenOFive.Add(time.Hour)
+	h.arrive(raise, h.alert("app-1", checksandalerts.FailureIncidentEvents.Raised, "sos", versionA, 0, raise))
+	expectKinds(t, h.take("chat"), "failure_alert_severity_raised sos")
+	expectKinds(t, h.take("hotline"), "failure_alert_severity_raised sos")
+	// The report that the node sent just before the raise.
+	h.report(raise.Add(time.Second), map[string]store.ReportedIncidents{"app-1": shows("app-1", "warn", versionA, 0, tenOFive, raise.Add(-time.Second))})
+	expectKinds(t, h.take("chat"))
+	expectKinds(t, h.take("hotline"))
+	if n := h.heldRows("app-1"); n != 2 {
+		t.Fatal("the sos incident left the sets:", n)
+	}
+}
