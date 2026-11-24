@@ -754,8 +754,24 @@ func TestMMHotlineReportedRaiseDecidesResolution(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	// Each send is recorded once MMHotline accepts it.
+	for {
+		heads, e := node.store.Pending()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(heads) == 0 {
+			break
+		}
+		if _, e = node.store.Delivered(heads[0], nil); e != nil {
+			t.Fatal(e)
+		}
+	}
 	var kind, severity string
-	if e = tx.QueryRow("SELECT kind, alert_severities_sent_for_incident FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?", mmhotlineDestinationName, id).Scan(&kind, &severity); e != nil || kind != "failed" || severity != "warn,sos" {
+	if e = node.store.DB.QueryRow("SELECT kind, alert_severities_sent_for_incident FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?", mmhotlineDestinationName, id).Scan(&kind, &severity); e != nil || kind != "failed" || severity != "warn,sos" {
 		t.Fatal(kind, severity, e)
 	}
 }

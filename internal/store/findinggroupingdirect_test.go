@@ -28,9 +28,34 @@ func fallBack(t *testing.T, s *store.Store, alert checksandalerts.Event, destina
 	}
 }
 
+// accept delivers every alert that waits in s's outbox, each accepted by
+// its destination, and returns them in the order of delivery.
+func accept(t *testing.T, s *store.Store) []checksandalerts.Event {
+	t.Helper()
+	out := []checksandalerts.Event{}
+	for {
+		heads, e := s.Pending()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(heads) == 0 {
+			return out
+		}
+		for _, d := range heads {
+			out = append(out, d.Event)
+			if _, e = s.Delivered(d, nil); e != nil {
+				t.Fatal(e)
+			}
+		}
+	}
+}
+
 // A joined node that delivers a finding with an exact finding without the
 // hub keeps the record of the direct send for a chat too, and leaves the
 // closing alert to the hub. Other findings keep today's direct recovery.
+// The record exists only once the destination has accepted the alert; while
+// the alert waits to be retried, the recovery still leaves the closing to
+// the hub.
 func TestAJoinedNodeLeavesTheClosingAlertOfAGroupedFindingToTheHub(t *testing.T) {
 	t.Parallel()
 	node, e := store.OpenStore(filepath.Join(t.TempDir(), "state"), config.DefaultStorageLimits)
@@ -45,11 +70,14 @@ func TestAJoinedNodeLeavesTheClosingAlertOfAGroupedFindingToTheHub(t *testing.T)
 	plain.Incident, plain.Finding = "incident-plain", "other"
 	for _, alert := range []checksandalerts.Event{grouped, plain} {
 		fallBack(t, node, alert, destinations)
+		if records, e := node.SentWithoutTheHub(); e != nil || len(records) != 0 {
+			t.Fatalf("a direct send is recorded before the destination accepted it: %+v %v", records, e)
+		}
 		recovery := alert
 		recovery.ID, recovery.Type, recovery.At = alert.ID+"-recovered", "recovered", tenOFive.Add(time.Minute)
 		fallBack(t, node, recovery, destinations)
 	}
-	expectKinds(t, h.take("chat"), "failed warn", "failed warn", "recovered warn")
+	expectKinds(t, accept(t, node), "failed warn", "failed warn", "recovered warn")
 	records, e := node.SentWithoutTheHub()
 	if e != nil || len(records) != 1 || records[0].Incident != grouped.Incident || records[0].ExactFinding != versionA || records[0].Destination != "chat" {
 		t.Fatalf("the records of direct sends %+v %v", records, e)

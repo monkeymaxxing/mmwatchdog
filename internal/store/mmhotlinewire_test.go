@@ -278,7 +278,7 @@ func TestAJoinedNodeSendsWithoutTheHubUnderTheNodeAlertSource(t *testing.T) {
 	}{{hotlineWithNodeAlertSource(), nodeAlertSource}, {hotline(), ""}} {
 		n := newJoinedNode(t)
 		fallBack(t, n.s, failureOf(n, "app-2", "app-2 "+"cannot resolve db.internal", tenOFive), map[string]checksandalerts.Destination{"hotline": c.destination})
-		got := n.take("hotline")
+		got := accept(t, n.s)
 		records, e := n.s.SentWithoutTheHub()
 		if e != nil || len(got) != 1 || got[0].MMHotlineAlertSource != c.source || len(records) != 1 || records[0].AlertSource != c.source {
 			t.Fatalf("want the source %q: %+v %+v %v", c.source, got, records, e)

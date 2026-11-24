@@ -816,9 +816,11 @@ func TestTheSeveritiesSentWithoutTheHubReachTheClosingAlert(t *testing.T) {
 	recordEvents(t, node, app.observe(t, "failed", time.Now().UTC()), app.raise(t, time.Now().UTC()), app.observe(t, "ok", time.Now().UTC()))
 	runWorker(t, node)
 	waitForRecordedAlerts(t, pager, 2)
-	if sent, _ := node.store.SentWithoutTheHub(); len(sent) != 1 || !reflect.DeepEqual(sent[0].AlertSeveritiesSentForIncident, []string{"warn", "sos"}) {
-		t.Fatalf("the node carries %+v", sent)
-	}
+	// The node records each send once the pager has accepted it.
+	testhelpers.WaitFor(t, "the node to record both severities", func() bool {
+		sent, _ := node.store.SentWithoutTheHub()
+		return len(sent) == 1 && reflect.DeepEqual(sent[0].AlertSeveritiesSentForIncident, []string{"warn", "sos"})
+	})
 	back := httptest.NewUnstartedServer(hub.hubRoutes())
 	back.TLS = &tls.Config{Certificates: []tls.Certificate{hub.hub.Cert}}
 	back.StartTLS()
@@ -837,8 +839,9 @@ func TestTheSeveritiesSentWithoutTheHubReachTheClosingAlert(t *testing.T) {
 
 // A joined node learns from the fleet settings which destinations keep
 // incidents, so a node without the module, or with an older copy of it,
-// still never sends such a destination a recovery without the hub, and
-// records the failure for its reports.
+// still never sends such a destination a recovery without the hub. It
+// records the failure for its reports only once the destination accepts
+// it: here the node lacks the module, so the failure waits in the queue.
 func TestAJoinedNodeTakesTheDestinationsThatKeepIncidentsFromTheHub(t *testing.T) {
 	t.Parallel()
 	pager := recordingDestination(t, "own_pager", testhelpers.AllSeverities)
@@ -858,7 +861,7 @@ func TestAJoinedNodeTakesTheDestinationsThatKeepIncidentsFromTheHub(t *testing.T
 	if got := queuedFor(t, node, "on_call_pager"); len(got) != 1 || got[0].ID != failed.ID {
 		t.Fatalf("the node without the module queued for the pager: %v", typesOf(got))
 	}
-	if sent, _ := node.store.SentWithoutTheHub(); len(sent) != 1 || sent[0].Incident != failed.Incident {
-		t.Fatal("the node does not carry the incident", sent)
+	if sent, _ := node.store.SentWithoutTheHub(); len(sent) != 0 {
+		t.Fatal("the node carries an incident whose failure the destination did not accept", sent)
 	}
 }

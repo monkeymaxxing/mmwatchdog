@@ -117,15 +117,16 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 
 // queueWithoutTheHub queues a joined node's direct alert, of the incidents
 // of members, under the destination's alert source for nodes sending
-// without the hub when it has one, and records it with that source for the
-// node's reports, which carry it until the hub has heard of it: so the hub
-// can resolve it even if it recovers before the hub returns.
+// without the hub when it has one. Once MMHotline accepts it, it is recorded
+// with that source for the node's reports, which carry it until the hub has
+// heard of it: so the hub can resolve it even if it recovers before the hub
+// returns.
 func queueWithoutTheHub(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, alert checksandalerts.Event, members []checksandalerts.Event, now time.Time) error {
 	alert.MMHotlineAlertSource = dest.MMHotline().NodeAlertSourceID()
-	if e := recordSentWithoutTheHub(tx, name, members, alert.MMHotlineAlertSource, now); e != nil {
+	if e := queueAlerts(tx, at, name, dest, []checksandalerts.Event{alert}); e != nil {
 		return e
 	}
-	return queueAlerts(tx, at, name, dest, []checksandalerts.Event{alert})
+	return recordOnAcceptance(tx, members, alert.MMHotlineAlertSource)
 }
 
 // What an alert of a key does to the key's incident in MMHotline, for the

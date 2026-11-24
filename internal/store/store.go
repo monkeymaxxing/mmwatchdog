@@ -61,7 +61,7 @@ const stateTables = `
  CREATE TABLE IF NOT EXISTS checks (key TEXT PRIMARY KEY, data BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, queued_at INTEGER NOT NULL, destination TEXT NOT NULL, event BLOB NOT NULL, target BLOB NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
-  urgent INTEGER NOT NULL DEFAULT 0, incident_key TEXT NOT NULL DEFAULT '', closes INTEGER NOT NULL DEFAULT 0, announced_key TEXT NOT NULL DEFAULT '');
+  urgent INTEGER NOT NULL DEFAULT 0, incident_key TEXT NOT NULL DEFAULT '', closes INTEGER NOT NULL DEFAULT 0, announced_key TEXT NOT NULL DEFAULT '', sent_without_the_hub TEXT NOT NULL DEFAULT '');
  CREATE INDEX IF NOT EXISTS outbox_dest ON outbox(destination,seq);
  CREATE INDEX IF NOT EXISTS outbox_urgent ON outbox(destination,urgent,seq);
  CREATE INDEX IF NOT EXISTS outbox_key ON outbox(destination,incident_key,seq);
@@ -639,12 +639,17 @@ func QueueDirect(tx *sql.Tx, at int64, message checksandalerts.Event, members []
 func queueFallbackForExactFinding(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, message checksandalerts.Event, members []checksandalerts.Event, now time.Time) error {
 	switch {
 	case opensOrChanges(message.Type) && checksandalerts.HasExactFinding(message):
-		if e := recordSentWithoutTheHub(tx, name, members, "", now); e != nil {
+		if e := queueEvent(tx, at, name, dest, message); e != nil {
 			return e
 		}
+		return recordOnAcceptance(tx, members, "")
 	case checksandalerts.Closes(message.Type):
+		// The hub closes what the destination took, or will take, of the
+		// incident.
 		var recorded bool
-		if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=? AND exact_finding!='')", name, message.Incident).Scan(&recorded); e != nil || recorded {
+		if e := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=? AND exact_finding!='')
+ OR EXISTS(SELECT 1 FROM outbox o, json_each(o.sent_without_the_hub,'$.members') m WHERE o.destination=? AND o.sent_without_the_hub!=''
+  AND json_extract(m.value,'$.incident_id')=? AND COALESCE(json_extract(m.value,'$.exact_finding'),'')!='')`, name, message.Incident, name, message.Incident).Scan(&recorded); e != nil || recorded {
 			return e
 		}
 	}
@@ -954,8 +959,7 @@ func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 	// Retention can remove an in-flight delivery and SQLite can reuse its sequence.
 	// Only acknowledge or reschedule the event that was actually sent.
 	if err == nil {
-		_, e := s.DB.Exec("DELETE FROM outbox WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID)
-		return 0, e
+		return 0, s.accepted(d)
 	}
 	var refused *checksandalerts.MMHotlineRefusal
 	if errors.As(err, &refused) {
@@ -972,6 +976,39 @@ func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 	}
 	_, e := s.DB.Exec("UPDATE outbox SET attempts=attempts+1,next=?,error=? WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", time.Now().Add(delay).UnixNano(), msg, d.Seq, d.Destination, d.Event.ID)
 	return delay, e
+}
+
+// accepted removes a delivery that its destination accepted from the
+// outbox. A joined node's direct alert records its incidents for the
+// node's reports in the same transaction (recordOnAcceptance): only an
+// alert that the destination took needs the hub's closing alert.
+func (s *Store) accepted(d Delivery) error {
+	tx, e := s.DB.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	var recorded string
+	e = tx.QueryRow("SELECT sent_without_the_hub FROM outbox WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID).Scan(&recorded)
+	if e == sql.ErrNoRows {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	if _, e = tx.Exec("DELETE FROM outbox WHERE seq=?", d.Seq); e != nil {
+		return e
+	}
+	if recorded != "" {
+		var sent sentWithoutTheHub
+		if e = json.Unmarshal([]byte(recorded), &sent); e != nil {
+			return e
+		}
+		if e = recordSentWithoutTheHub(tx, d.Destination, sent.Members, sent.AlertSource, time.Now()); e != nil {
+			return e
+		}
+	}
+	return tx.Commit()
 }
 
 // DelayAfterFailedAttempts is how long MMWatchdog waits before the next attempt of

@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strconv"
@@ -474,10 +475,10 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 		// Reports carry it until the hub has heard of it, so the hub sends
 		// the closing alert, even when the incident closes before the hub is
 		// back.
-		if e := recordSentWithoutTheHub(tx, name, members, "", now); e != nil {
+		if e := queueEvent(tx, at, name, dest, message); e != nil {
 			return e
 		}
-		return queueEvent(tx, at, name, dest, message)
+		return recordOnAcceptance(tx, members, "")
 	case checksandalerts.Opens(message.Type):
 		kept, over, e := set.openIncidents(tx, members, from.hub(), now)
 		if e != nil {
@@ -635,10 +636,41 @@ func closingTitle(readable string, about checksandalerts.Event, nodes []string, 
 	return []checksandalerts.TitlePart{{Text: about.AboutCheck() + " is ok again" + covered}}, was
 }
 
+// sentWithoutTheHub is what a joined node's direct failure or raise
+// records once its destination accepts it (Store.accepted): the incidents
+// of its members, and the MMHotline alert source that it went under ("" for
+// the destination's own).
+type sentWithoutTheHub struct {
+	AlertSource string                  `json:"alert_source,omitempty"`
+	Members     []checksandalerts.Event `json:"members"`
+}
+
+// recordOnAcceptance makes the delivery that transaction tx queued last, a
+// joined node's direct failure or raise of the incidents of members, record
+// them for the node's reports once its destination accepts it. A delivery
+// that waits to be retried is not in the record, so the hub settles only
+// what the destination took: a retry that lands after the hub closed the
+// key then gets its own closing alert. One that leaves the outbox
+// undelivered needs none.
+func recordOnAcceptance(tx *sql.Tx, members []checksandalerts.Event, alertSource string) error {
+	sent := sentWithoutTheHub{AlertSource: alertSource}
+	for _, m := range members {
+		sent.Members = append(sent.Members, checksandalerts.Event{Incident: m.Incident, CheckGroup: m.CheckGroup, Check: m.Check, Finding: m.Finding, Type: m.Type, AlertSeverity: m.AlertSeverity,
+			ExactFinding: m.ExactFinding, ExactFindingSequence: m.ExactFindingSequence})
+	}
+	b, e := json.Marshal(sent)
+	if e != nil {
+		return e
+	}
+	_, e = tx.Exec("UPDATE outbox SET sent_without_the_hub=? WHERE seq=last_insert_rowid()", string(b))
+	return e
+}
+
 // recordSentWithoutTheHub records, on a joined node, each incident of
 // members whose failure or raise its fallback sent to the destination
-// without the hub, with every severity sent, and the MMHotline alert
-// source that it sent under ("" for the destination's own).
+// without the hub and the destination accepted, with every severity sent,
+// and the MMHotline alert source that it sent under ("" for the
+// destination's own).
 func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksandalerts.Event, alertSource string, now time.Time) error {
 	for _, m := range members {
 		var earlier string
