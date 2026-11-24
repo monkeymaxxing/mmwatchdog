@@ -179,15 +179,45 @@ func (h *routineHub) shown() (fleetIncidents, nodeIncidents int) {
 	return fleetIncidents, nodeIncidents
 }
 
-// expectCounts fails unless each destination got exactly want, by alert
-// type and severity.
-func (h *routineHub) expectCounts(want map[string]int) {
+// expectedUpdate is a shared tick's update that each destination must get:
+// its time, its severity, and the nodes it adds and names ok again.
+type expectedUpdate struct {
+	at               time.Time
+	severity         string
+	added, recovered int
+}
+
+// expectFirstAlertAndUpdates fails unless each destination got exactly
+// one first alert and the updates want, each at its time with its severity
+// and its counts of nodes, and nothing else. It logs what each destination
+// got.
+func (h *routineHub) expectFirstAlertAndUpdates(scenario string, want ...expectedUpdate) {
 	h.t.Helper()
-	for name, got := range h.counts {
-		if fmt.Sprint(got) != fmt.Sprint(want) {
-			h.t.Errorf("%s got %v, want %v", name, got, want)
+	for _, name := range []string{"hotline", "chat"} {
+		got := h.updates(name)
+		h.t.Logf("%s: %s got %v; the updates: %s", scenario, name, h.counts[name], describeUpdates(got))
+		if h.counts[name]["failed warn"] != 1 || sum(h.counts[name]) != 1+len(got) {
+			h.t.Errorf("%s got %v, want 1 first alert and only updates", name, h.counts[name])
+		}
+		if len(got) != len(want) {
+			h.t.Errorf("%s got %d updates, want %d", name, len(got), len(want))
+			continue
+		}
+		for i, w := range want {
+			if g := got[i]; !g.at.Equal(w.at) || g.severity != w.severity || g.added != w.added || g.recovered != w.recovered {
+				h.t.Errorf("%s update %d: at %s %s, %d added, %d ok again; want at %s %s, %d added, %d ok again", name, i+1,
+					g.at.Format("15:04"), g.severity, g.added, g.recovered, w.at.Format("15:04"), w.severity, w.added, w.recovered)
+			}
 		}
 	}
+}
+
+func describeUpdates(updates []sentUpdate) string {
+	parts := []string{}
+	for _, u := range updates {
+		parts = append(parts, fmt.Sprintf("%s %s %d added %d ok again", u.at.Format("15:04"), u.severity, u.added, u.recovered))
+	}
+	return strings.Join(parts, "; ")
 }
 
 // waitingAdvisories is the message of dnf_security_updates for n advisories
@@ -225,8 +255,8 @@ func TestOneNodeWith27KernelAdvisoriesSendsOneAlert(t *testing.T) {
 		h.minute(at, alerts, map[string]store.ReportedIncidents{n.name: n.report(at)})
 	})
 	fleetIncidents, nodeIncidents := h.shown()
-	t.Logf("(a) 1 node, 27 kernel advisories, a 28th at 05:07: hotline %v, chat %v; fleet incidents shown %d, node incidents %d", h.counts["hotline"], h.counts["chat"], fleetIncidents, nodeIncidents)
-	h.expectCounts(map[string]int{"failed warn": 1})
+	t.Logf("(a) 1 node, 27 kernel advisories, a 28th at 05:07: fleet incidents shown %d, node incidents %d", fleetIncidents, nodeIncidents)
+	h.expectFirstAlertAndUpdates("(a)")
 	if fleetIncidents != 1 || nodeIncidents != 1 {
 		t.Fatalf("the hub shows %d fleet incidents of %d node incidents, want 1 of 1", fleetIncidents, nodeIncidents)
 	}
@@ -269,13 +299,8 @@ func TestAThousandNodesWithWaitingUpdatesSendOneAlertAndTheTicksUpdates(t *testi
 		h.minute(at, alerts, reports)
 	})
 	fleetIncidents, nodeIncidents := h.shown()
-	t.Logf("(b) 1,000 nodes, drifting over 6 h, every 10th recovering and reopening: hotline %v, chat %v; fleet incidents shown %d, node incidents %d", h.counts["hotline"], h.counts["chat"], fleetIncidents, nodeIncidents)
-	for name, counts := range h.counts {
-		updates := counts[checksandalerts.FindingNodesChanged+" warn"] + counts[checksandalerts.FindingNodesChanged+" info"]
-		if counts["failed warn"] != 1 || updates < 1 || updates > 2 || counts["failed warn"]+updates != sum(counts) {
-			t.Errorf("%s got %v, want 1 first alert and 1 or 2 updates", name, counts)
-		}
-	}
+	t.Logf("(b) 1,000 nodes, drifting over 6 h, every 10th recovering and reopening: fleet incidents shown %d, node incidents %d", fleetIncidents, nodeIncidents)
+	h.expectFirstAlertAndUpdates("(b)", ticksOfOpenings(firstRun)...)
 	// app-0000 recovers at 01:00 and fails again at 02:00, in a new
 	// incident: the 06:00 update names it affected, never ok again.
 	for name := range h.counts {
@@ -291,6 +316,54 @@ func TestAThousandNodesWithWaitingUpdatesSendOneAlertAndTheTicksUpdates(t *testi
 	if fleetIncidents != 1 || nodeIncidents != nodes {
 		t.Fatalf("the hub shows %d fleet incidents of %d node incidents, want 1 of %d", fleetIncidents, nodeIncidents, nodes)
 	}
+}
+
+// ticksOfOpenings are the updates of the shared ticks at 06:00 and 12:00
+// in scenario (b), from what each node does, by the rules of an update:
+// a tick's update adds each node that failed, in a new incident or again,
+// since the previous tick and is failing at the tick, and names ok again
+// each other node whose incident recovered since the previous tick and
+// that is not failing at the tick. A change at the tick itself waits for
+// the next tick. Node 0's first failure is the first alert. Every 10th
+// node recovers at its second run and fails again at its third.
+func ticksOfOpenings(firstRun []time.Duration) []expectedUpdate {
+	type change struct {
+		at    time.Duration
+		fails bool
+	}
+	out := []expectedUpdate{}
+	for previous, tick := time.Duration(0), 6*time.Hour; tick <= 12*time.Hour; previous, tick = tick, tick+6*time.Hour {
+		u := expectedUpdate{at: simulatedDay.Add(tick), severity: "warn"}
+		for i, first := range firstRun {
+			changes := []change{{first, true}}
+			if i%10 == 0 {
+				changes = append(changes, change{first + time.Hour, false}, change{first + 2*time.Hour, true})
+			}
+			failingAtTick, failedSince, recoveredSince := false, false, false
+			for _, c := range changes {
+				if c.at <= tick {
+					failingAtTick = c.fails
+				}
+				if c.at >= previous && c.at < tick && !(i == 0 && c.at == 0) {
+					failedSince, recoveredSince = failedSince || c.fails, recoveredSince || !c.fails
+				}
+			}
+			switch {
+			case failedSince && failingAtTick:
+				u.added++
+			case recoveredSince && !failingAtTick:
+				u.recovered++
+			}
+		}
+		if u.added == 0 && u.recovered == 0 {
+			continue
+		}
+		if u.added == 0 {
+			u.severity = "info"
+		}
+		out = append(out, u)
+	}
+	return out
 }
 
 // (b2) 300 nodes wait for updates that nobody installs. They get one first
@@ -311,7 +384,9 @@ func TestANewAdvisoryOnStuckNodesSendsNothing(t *testing.T) {
 		}
 		alerts, reports := []checksandalerts.Event{}, map[string]store.ReportedIncidents{}
 		for i, n := range fleet {
-			if at.Sub(simulatedDay.Add(time.Duration(i)*12*time.Second))%time.Hour >= time.Minute {
+			// Each node runs hourly from its first run, 12 s after the
+			// node before it, and never before its first run.
+			if since := at.Sub(simulatedDay.Add(time.Duration(i) * 12 * time.Second)); since < 0 || since%time.Hour >= time.Minute {
 				continue
 			}
 			message := "1 security patch waits to be installed: openSUSE-Leap-16.1-12 (important): Security update for libXtst"
@@ -324,9 +399,11 @@ func TestANewAdvisoryOnStuckNodesSendsNothing(t *testing.T) {
 		h.minute(at, alerts, reports)
 	})
 	fleetIncidents, nodeIncidents := h.shown()
-	t.Logf("(b2) 300 stuck nodes: before the new advisory at 07:00 hotline %v, chat %v; at 12:00 hotline %v, chat %v; fleet incidents shown %d, node incidents %d",
-		beforeTheAdvisory["hotline"], beforeTheAdvisory["chat"], h.counts["hotline"], h.counts["chat"], fleetIncidents, nodeIncidents)
-	h.expectCounts(map[string]int{"failed warn": 1, checksandalerts.FindingNodesChanged + " warn": 1})
+	t.Logf("(b2) 300 stuck nodes: before the new advisory at 07:00 hotline %v, chat %v; fleet incidents shown %d, node incidents %d",
+		beforeTheAdvisory["hotline"], beforeTheAdvisory["chat"], fleetIncidents, nodeIncidents)
+	// Every node first fails within the first hour: node 0 is the first
+	// alert, and the 06:00 update adds the other 299.
+	h.expectFirstAlertAndUpdates("(b2)", expectedUpdate{simulatedDay.Add(6 * time.Hour), "warn", nodes - 1, 0})
 	for name := range h.counts {
 		if fmt.Sprint(beforeTheAdvisory[name]) != fmt.Sprint(h.counts[name]) {
 			t.Errorf("the new advisory sent %s more than %v: %v", name, beforeTheAdvisory[name], h.counts[name])
@@ -350,7 +427,6 @@ func TestFiveThousandNodesWithOneExploitedFlawSendOneAlertAndAnUpdate(t *testing
 		fleet[i] = newSimulatedNode(fmt.Sprintf("node-%04d", i), "known_exploited_flaws")
 		firstRun[i] = (time.Duration(i) * 6 * time.Hour / nodes).Truncate(time.Minute)
 	}
-	updated := 0
 	everyMinuteUntilNoon(func(at time.Time) {
 		alerts, reports := []checksandalerts.Event{}, map[string]store.ReportedIncidents{}
 		for i, n := range fleet {
@@ -360,30 +436,15 @@ func TestFiveThousandNodesWithOneExploitedFlawSendOneAlertAndAnUpdate(t *testing
 			alerts = append(alerts, n.run(h.groupingHub, at, exploitedFlaw, versionA, "openssh has "+exploitedFlaw)...)
 			reports[n.name] = n.report(at)
 		}
-		h.arrive(at, alerts...)
-		if len(reports) > 0 {
-			h.report(at, reports)
-		}
-		h.tick(at)
-		for name, counts := range h.counts {
-			for _, a := range h.take(name) {
-				counts[kinds([]checksandalerts.Event{a})[0]]++
-				if name == "chat" && a.Type == checksandalerts.FindingNodesChanged {
-					updated += a.NodeCount
-				}
-			}
-		}
+		h.minute(at, alerts, reports)
 	})
 	fleetIncidents, nodeIncidents := h.shown()
-	t.Logf("(c) 5,000 nodes, one exploited flaw: hotline %v, chat %v; the updates name %d nodes; fleet incidents shown %d, node incidents %d", h.counts["hotline"], h.counts["chat"], updated, fleetIncidents, nodeIncidents)
-	for name, counts := range h.counts {
-		updates := counts[checksandalerts.FindingNodesChanged+" warn"]
-		if counts["failed warn"] != 1 || updates < 1 || updates > 2 || counts["failed warn"]+updates != sum(counts) {
-			t.Errorf("%s got %v, want 1 first alert and 1 or 2 updates", name, counts)
-		}
-	}
-	if updated != nodes-1 || fleetIncidents != 1 || nodeIncidents != nodes {
-		t.Fatalf("the updates name %d nodes, want %d; the hub shows %d fleet incidents of %d node incidents, want 1 of %d", updated, nodes-1, fleetIncidents, nodeIncidents, nodes)
+	t.Logf("(c) 5,000 nodes, one exploited flaw: fleet incidents shown %d, node incidents %d", fleetIncidents, nodeIncidents)
+	// Every node first fails before 06:00: node 0 is the first alert, and
+	// the 06:00 update adds the other 4,999.
+	h.expectFirstAlertAndUpdates("(c)", expectedUpdate{simulatedDay.Add(6 * time.Hour), "warn", nodes - 1, 0})
+	if fleetIncidents != 1 || nodeIncidents != nodes {
+		t.Fatalf("the hub shows %d fleet incidents of %d node incidents, want 1 of %d", fleetIncidents, nodeIncidents, nodes)
 	}
 }
 
