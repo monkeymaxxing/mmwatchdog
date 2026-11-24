@@ -1500,8 +1500,15 @@ delivery, decides the destination's closing alert, and then confirms the
 record. When the incident is [set aside](#set-a-finding-aside) on the hub,
 and nothing else of the key is open for the destination, the hub queues
 `closed_without_recovery` with `Set aside after investigation: <reason>`.
-So a set-aside incident never holds back the confirmation of a report's
-records. When the incident is not set aside, the hub marks the node
+The hub decides this once every report of the batch is applied. The
+severities of the set-aside send count for the key's closing alert, so a
+key that closes in the same batch for another reason gets that one closing
+alert, at the highest severity sent and under each alert source that the
+key reached; the set-aside closing alert is then not sent. Like every
+closing alert, the set-aside closing alert records its time, so a node
+whose later report shows an incident of the key that opened before it gets
+its failure sent again. So a set-aside incident never holds back the
+confirmation of a report's records. When the incident is not set aside, the hub marks the node
 `joined` for the next update of [one alert per exact finding](#one-alert-per-exact-finding),
 because MMHotline may have merged the node's direct warning into another
 node's ([MMHotline in a fleet](#mmhotline-in-a-fleet)).

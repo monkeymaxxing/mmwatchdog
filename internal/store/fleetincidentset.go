@@ -1214,32 +1214,15 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 			return out, e
 		}
 	}
-	// A set-aside direct send closes its key for the destination only when
-	// nothing of the key is open there once every report is applied: another
-	// node of the same batch may hold it open.
+	// A settled set-aside direct send reached the destination: its
+	// severities count for the key's closing alert, whichever alert closes
+	// the key.
 	for _, key := range checksandalerts.Names(setAsideSends) {
-		open, e := set.hasOpen(tx, key, "")
-		if e != nil {
-			return out, e
-		}
-		if open {
-			continue
-		}
-		sends := setAsideSends[key]
-		nodes, reasons, sent := []string{}, []string{}, []string{}
-		for _, d := range sends {
-			if !slices.Contains(nodes, d.sent.Node) {
-				nodes = append(nodes, d.sent.Node)
+		for _, d := range setAsideSends[key] {
+			if e := set.recordSent(tx, key, d.sent.AlertSeveritiesSentForIncident...); e != nil {
+				return out, e
 			}
-			if !slices.Contains(reasons, d.reason) {
-				reasons = append(reasons, d.reason)
-			}
-			sent = append(sent, d.sent.AlertSeveritiesSentForIncident...)
 		}
-		slices.Sort(nodes)
-		about := sends[0].sent
-		about.AlertSeveritiesSentForIncident = lowestFirst(sent)
-		out.setAside = append(out.setAside, setAsideClosingAlert(about, nodes, key, strings.Join(reasons, "; "), from, now))
 	}
 	// Until every node has reported since the hub started, another node
 	// may still hold a key open without the hub knowing.
@@ -1265,8 +1248,51 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 	if e = rows.Err(); e != nil {
 		return out, e
 	}
-	out.closings, e = set.closeKeys(tx, changed, waiting, destinations[name].MMHotline() != nil, now)
-	return out, e
+	if out.closings, e = set.closeKeys(tx, changed, waiting, destinations[name].MMHotline() != nil, now); e != nil {
+		return out, e
+	}
+	// A set-aside direct send closes its key for the destination only when
+	// nothing of the key is open there once every report is applied: another
+	// node of the same batch may hold it open. A key that closes anyway gets
+	// that one closing alert, which covers the send.
+	closing := map[string]bool{}
+	for _, c := range out.closings {
+		closing[c.key] = true
+	}
+	for _, key := range checksandalerts.Names(setAsideSends) {
+		if closing[key] || waiting[key] {
+			continue
+		}
+		open, e := set.hasOpen(tx, key, "")
+		if e != nil {
+			return out, e
+		}
+		if open {
+			continue
+		}
+		sent, e := set.keySent(tx, key)
+		if e != nil {
+			return out, e
+		}
+		if e = set.startKeyOver(tx, key, now); e != nil {
+			return out, e
+		}
+		sends := setAsideSends[key]
+		nodes, reasons := []string{}, []string{}
+		for _, d := range sends {
+			if !slices.Contains(nodes, d.sent.Node) {
+				nodes = append(nodes, d.sent.Node)
+			}
+			if !slices.Contains(reasons, d.reason) {
+				reasons = append(reasons, d.reason)
+			}
+		}
+		slices.Sort(nodes)
+		about := sends[0].sent
+		about.AlertSeveritiesSentForIncident = sent
+		out.setAside = append(out.setAside, setAsideClosingAlert(about, nodes, key, strings.Join(reasons, "; "), from, now))
+	}
+	return out, nil
 }
 
 // directSendVersion names one version of a node's record of a direct

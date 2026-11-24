@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,5 +361,59 @@ func TestAnAcknowledgmentKeepsARecordThatChangedSinceTheReport(t *testing.T) {
 	}
 	if records, e = node.s.SentWithoutTheHub(); e != nil || len(records) != 0 {
 		t.Fatalf("the acknowledged record stays: %+v %v", records, e)
+	}
+}
+
+// resolutions are the MMHotline resolutions among got, each as its
+// severity and the alert source that it goes under.
+func resolutions(got []checksandalerts.Event) []string {
+	out := []string{}
+	for _, a := range got {
+		if a.MMHotlineAlert != nil && strings.HasPrefix(a.MMHotlineAlert.Severity, "resolved-") {
+			out = append(out, a.MMHotlineAlert.Severity+" "+sourceOf(a))
+		}
+	}
+	return out
+}
+
+// When one report batch both recovers the last open node of a key and
+// settles a set-aside direct send of the key, the destination gets one
+// resolution per alert source that the key reached, at the highest
+// severity sent: here the sos that app-1 sent under the node source.
+func TestOneBatchClosesAKeyOnceForARecoveryAndASetAsideDirectSend(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()})
+	h.setAside(tenOFive, entryFor(versionB, reasonNoPAM))
+	first := tenOFive.Add(10 * time.Minute)
+	sos := carriedTo(shows("app-1", "sos", versionA, 0, tenOFive, first), "hotline", nodeAlertSource)
+	h.report(first, map[string]store.ReportedIncidents{"app-1": sos})
+	expectKinds(t, h.take("hotline"))
+	second := first.Add(time.Minute)
+	h.report(second, map[string]store.ReportedIncidents{
+		"app-1": {Sent: second},
+		"app-2": carriedTo(shows("app-2", "warn", versionB, 0, tenOFive, second), "hotline", nodeAlertSource),
+	})
+	if got := resolutions(h.take("hotline")); !slices.Equal(got, []string{"resolved-sos " + nodeAlertSource}) {
+		t.Fatalf("the resolutions %q", got)
+	}
+}
+
+// A set-aside direct send that closes a key records the time of that
+// closing alert, as every closing alert does: a node whose report arrives
+// later with an incident of the key that opened before it gets its failure
+// sent again, because the closing alert closed it in the service.
+func TestASetAsideClosingReopensAnIncidentThatOpenedBeforeIt(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	first := tenOFive.Add(10 * time.Minute)
+	h.report(first, map[string]store.ReportedIncidents{"app-1": carriedTo(shows("app-1", "warn", versionA, 0, tenOFive, first), "hotline", nodeAlertSource)})
+	expectKinds(t, h.take("hotline"), "closed_without_recovery resolved-warn")
+	later := first.Add(40 * time.Second)
+	h.report(later, map[string]store.ReportedIncidents{"app-2": carriedTo(shows("app-2", "warn", versionB, 0, tenOFive, later), "hotline", nodeAlertSource)})
+	got := h.take("hotline")
+	expectKinds(t, got, "failed warn")
+	if got[0].Node != "app-2" {
+		t.Fatalf("%+v", got[0])
 	}
 }

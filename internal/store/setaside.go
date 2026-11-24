@@ -243,12 +243,7 @@ func (set IncidentSet) closeSetAside(tx *sql.Tx, at int64, name string, dest che
 	if e != nil {
 		return e
 	}
-	if _, e = tx.Exec(`UPDATE fleet_incident_keys SET alert_severities_sent='', last_closing_alert_at=?, announced_alert_severity='', announced_exact_findings='[]', next_update_due=0, next_reminder_due=0 WHERE `+inSet+` AND incident_key=?`, append([]any{now.UnixNano()}, set.with(key)...)...); e != nil {
-		return e
-	}
-	// The closed rows' pending changes belong to the key that closes; an
-	// update of the key that opens again names none of them.
-	if _, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=?, pending_change='' WHERE "+inSet+" AND incident_key=? AND state=?", append([]any{fleetIncidentResolved, now.UnixNano()}, set.with(key, fleetIncidentClosed)...)...); e != nil {
+	if e = set.startKeyOver(tx, key, now); e != nil {
 		return e
 	}
 	if len(sent) == 0 {
@@ -267,6 +262,22 @@ func (set IncidentSet) closeSetAside(tx *sql.Tx, at int64, name string, dest che
 	}
 	slices.Sort(nodes)
 	return set.queueSetAsideClosing(tx, at, name, dest, key, setAsideClosingAlert(about, nodes, key, strings.Join(reasons, "; "), from, now), from)
+}
+
+// startKeyOver ends the key for the set's destination with a set-aside
+// closing alert, which the caller queues: the key starts over, as after any
+// closing alert, and keeps the time of that alert, so an incident of the key
+// that opened before it and that a later report shows has its failure sent
+// again (IncidentSet.reconcile).
+func (set IncidentSet) startKeyOver(tx *sql.Tx, key string, now time.Time) error {
+	if _, e := tx.Exec(`INSERT INTO fleet_incident_keys(destination,alert_source,incident_key,alert_severities_sent,last_closing_alert_at) VALUES(?,?,?,'',?)
+ ON CONFLICT(destination,alert_source,incident_key) DO UPDATE SET alert_severities_sent='', last_closing_alert_at=excluded.last_closing_alert_at, announced_alert_severity='', announced_exact_findings='[]', next_update_due=0, next_reminder_due=0`, set.with(key, now.UnixNano())...); e != nil {
+		return e
+	}
+	// The closed rows' pending changes belong to the key that closes; an
+	// update of the key that opens again names none of them.
+	_, e := tx.Exec("UPDATE fleet_incident_set SET state=?, changed=?, pending_change='' WHERE "+inSet+" AND incident_key=? AND state=?", append([]any{fleetIncidentResolved, now.UnixNano()}, set.with(key, fleetIncidentClosed)...)...)
+	return e
 }
 
 // openNoLongerSetAside applies to the destination name the incidents of the
