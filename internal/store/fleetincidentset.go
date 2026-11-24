@@ -626,7 +626,13 @@ type IncidentSentWithoutTheHub struct {
 	// Finding is the finding, such as the failed unit, for an incident of
 	// one finding of a check; the finding is part of its key.
 	Finding string `json:"finding,omitempty"`
-	Type    string `json:"type"`
+	// ExactFinding is the exact finding that the latest direct alert of the
+	// incident carried, and ExactFindingSequence its sequence number
+	// (checksandalerts.Event.ExactFinding), so that the hub can tell an
+	// older exact finding from a newer one.
+	ExactFinding         string `json:"exact_finding,omitempty"`
+	ExactFindingSequence int64  `json:"exact_finding_sequence,omitempty"`
+	Type                 string `json:"type"`
 	// AlertSeveritiesSentForIncident are the severities that its alerts
 	// went to the destination with, lowest first.
 	AlertSeveritiesSentForIncident []string `json:"alert_severities_sent_for_incident"`
