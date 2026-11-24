@@ -87,17 +87,7 @@ func TestZypperSecurityPatchesCheck(t *testing.T) {
 	if o.Status != "failed" || o.Message != "2 security patches wait to be installed: openSUSE-Leap-16.1-12 (important): Security update for libXtst, openSUSE-Leap-16.1-30 (critical): Security update for the Linux kernel (needs a reboot)" {
 		t.Fatal(o)
 	}
-	// Each patch is one finding, with an incident of its own. Its exact
-	// finding is the release, the patch, its severity, and whether it needs
-	// a reboot.
-	wantFindings := []checksandalerts.Finding{
-		{ID: "openSUSE-Leap-16.1-12", Message: "the security patch openSUSE-Leap-16.1-12 (important): Security update for libXtst waits to be installed", ExactFinding: "opensuse-leap openSUSE-Leap-16.1-12 important; no reboot needed"},
-		{ID: "openSUSE-Leap-16.1-30", Message: "the security patch openSUSE-Leap-16.1-30 (critical): Security update for the Linux kernel (needs a reboot) waits to be installed", ExactFinding: "opensuse-leap openSUSE-Leap-16.1-30 critical; reboot needed"},
-	}
-	if !reflect.DeepEqual(o.Findings, wantFindings) || !(&checksandalerts.Check{Inputs: new(checksandalerts.ZypperSecurityPatches)}).Module().OneIncidentForEachFinding ||
-		o.FindingIsGoneMessage("openSUSE-Leap-16.1-12") != "the security patch openSUSE-Leap-16.1-12 no longer waits to be installed" {
-		t.Fatalf("%+v", o.Findings)
-	}
+	expectPackageSecurity(t, o, new(checksandalerts.ZypperSecurityPatches), "opensuse-leap", "no security patch waits to be installed")
 
 	// Exit code 106 means that zypper skipped a repository. Its error text
 	// makes the check unknown, also when the XML lists a patch.

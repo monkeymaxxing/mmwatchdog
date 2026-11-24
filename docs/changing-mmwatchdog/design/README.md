@@ -336,7 +336,7 @@ names what the build still lacks of the feature in the row.
 | [Executables and the JSON protocol](checks.md#executables-and-the-json-protocol), and the [JSON helper](checks.md#json-helper-for-bash-executables) | Built |
 | [State kept between runs](checks.md#state-kept-between-runs) | Built, including preservation across timing-only reloads |
 | [Findings](checks.md#findings) | Built |
-| [Exact findings](checks.md#exact-findings), from every core module that reports findings and from modules of the project's own; `apt_security_updates`, `dnf_security_updates`, and `zypper_security_patches` report one finding per source package, advisory, or patch | Built |
+| [Exact findings](checks.md#exact-findings), from every core module that reports findings and from modules of the project's own; `apt_security_updates`, `dnf_security_updates`, and `zypper_security_patches` report one finding, `package security`, keyed to the node's release | Built |
 | [Official extra modules](checks.md#official-extra-modules) | Built: Starlark scripts in `official_extra_modules/` of the repository and of every release, the version check, and a directory for official extra modules on a node. Five modules deliver alerts: `discord`, `mattermost`, `pushover`, `slack`, and `telegram`. Three modules check a tool: `zfs_pool`, `apache_status`, and `mongodb`. The destination scripts support configuration-time input validation and quiet verification |
 | [One cause, one alert](checks.md#one-cause-one-alert) | Built |
 | [Heartbeats](checks.md#heartbeats) | Built |

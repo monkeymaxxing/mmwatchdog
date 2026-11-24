@@ -10,12 +10,12 @@ import (
 	"mmwatchdog/internal/incidents"
 )
 
-// MMWatchdog 0.2.0 makes apt_security_updates report one finding for each
-// source package. A check of it that a 0.1.x node kept, with its one
-// incident for the whole check, is a new check at the upgrade: its
-// announced incident closes once, with a message that says why, and the
-// check's findings then open as incidents of their own. A healthy check
-// changes without an alert.
+// MMWatchdog 0.2.0 makes apt_security_updates report its waiting updates
+// as the one finding package security. A check of it that a 0.1.x node
+// kept, with its one incident for the whole check, is a new check at the
+// upgrade: its announced incident closes once, with a message that says
+// why, and the finding then opens as an incident of its own. A healthy
+// check changes without an alert.
 func TestACheckWhoseModuleNowReportsFindingsRetiresItsIncidentOnce(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)

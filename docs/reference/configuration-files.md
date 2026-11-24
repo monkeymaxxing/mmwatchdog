@@ -810,6 +810,9 @@ set_aside_findings:
   alerts again. An entry has no expiry date.
 - **`sos` is never set aside.** A finding at `sos` alerts, whatever the
   file says.
+- **Never set aside the routine-update checks** (`apt_security_updates`,
+  `dnf_security_updates`, `zypper_security_patches`): an entry would quiet
+  every security update of the release; install the updates.
 - **Only the hub reads the file.** On a joined node or a standalone node
   the file is a validation error. Joined nodes never get a copy, so a node
   that sends without the hub sends every alert.

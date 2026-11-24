@@ -76,33 +76,19 @@ func (n *ZypperSecurityPatches) Run(ctx context.Context, _ *CheckRun) Observatio
 	if len(patches) == 0 {
 		return Result("ok", "no security patch waits to be installed")
 	}
-	// One finding for each patch: SUSE ships each security fix as a patch,
-	// which is one problem on every node that waits for it.
-	described, findings := make([]string, len(patches)), make([]Finding, len(patches))
-	releaseName := releaseOfTheNode()
+	described := make([]string, len(patches))
 	for index, patch := range patches {
 		described[index] = patch.name + " (" + patch.severity + "): " + patch.summary
-		reboot := "no reboot needed"
 		if patch.needsReboot {
 			described[index] += " (needs a reboot)"
-			reboot = "reboot needed"
-		}
-		findings[index] = Finding{
-			ID:           patch.name,
-			Message:      "the security patch " + described[index] + " waits to be installed",
-			ExactFinding: FitExactFinding(releaseName + " " + patch.name + " " + patch.severity + "; " + reboot),
 		}
 	}
-	o := Result("failed", countOf(len(patches), "security patch waits", "security patches wait")+" to be installed: "+shownNames(described))
-	o.Findings = findings
-	return o
+	return securityUpdatesWait(countOf(len(patches), "security patch waits", "security patches wait") + " to be installed: " + shownNames(described))
 }
 
-// zypperSecurityPatchIsGone is the message of the run in which the security
-// patch no longer waits to be installed.
-func zypperSecurityPatchIsGone(patch string) string {
-	return "the security patch " + patch + " no longer waits to be installed"
-}
+// noSecurityPatchWaits is the message of the run of
+// zypper_security_patches in which the finding PackageSecurity is gone.
+func noSecurityPatchWaits(string) string { return "no security patch waits to be installed" }
 
 // zypperPatch is a patch in the XML of zypper list-patches.
 type zypperPatch struct {
@@ -251,7 +237,7 @@ func zypperMetadataProblem() *Observation {
 // zypperSecurityPatchesDescription is what "mmwatchdog describe-module zypper_security_patches" shows, and what
 // validation knows about the module's inputs.
 var zypperSecurityPatchesDescription = ModuleDescription{
-	Summary:                   "Fails while a security patch waits to be installed on a SUSE node, such as openSUSE Leap. Each security patch that waits is one finding, with an incident of its own. The check reads what zypper already knows, and downloads nothing.",
+	Summary:                   "Fails while a security patch waits to be installed on a SUSE node, such as openSUSE Leap. All waiting patches are one finding, package security, whose exact finding is the node's release. The check reads what zypper already knows, and downloads nothing.",
 	UsedAs:                    UsedAsCheck,
 	OneIncidentForEachFinding: true,
 	Inputs: []ModuleInput{

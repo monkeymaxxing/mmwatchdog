@@ -1388,16 +1388,21 @@ The core modules that report findings supply these exact findings:
 | Module | Finding `id` | `exact_finding` |
 | --- | --- | --- |
 | [`known_exploited_vulnerabilities_in_installed_packages`](../../reference/modules/known_exploited_vulnerabilities_in_installed_packages.md) | The CVE and the source package | The release ecosystem, the CVE, the source package, the installed version, the fix state, and the `modified` time of the release's own OSV record, such as `Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-CVE-2026-123158 modified 2026-11-20T08:12:00Z` |
-| [`apt_security_updates`](../../reference/modules/apt_security_updates.md) | The source package | The release, the source package, the installed version, and the candidate version |
-| [`dnf_security_updates`](../../reference/modules/dnf_security_updates.md) | The advisory, such as `RHSA-2026:1234` | The release, the advisory, and the advisory's severity |
-| [`zypper_security_patches`](../../reference/modules/zypper_security_patches.md) | The patch | The release, the patch, the patch's severity, and whether a reboot is needed |
+| [`apt_security_updates`](../../reference/modules/apt_security_updates.md), [`dnf_security_updates`](../../reference/modules/dnf_security_updates.md), [`zypper_security_patches`](../../reference/modules/zypper_security_patches.md) | `package security`, the one finding of all waiting updates or patches | The release, `ID` and `VERSION_ID` of `/etc/os-release`, such as `debian 13` |
 | [`ubuntu_pro_security_fixes`](../../reference/modules/ubuntu_pro_security_fixes.md) | The source package | The release, the source package, the installed version, the fixed version, and the Ubuntu Pro service |
 | [`every_systemd_unit`](../../reference/modules/every_systemd_unit.md) | The unit | The unit and systemd's `Result`, such as `backup.service exit-code` |
 | [`every_disk_and_network_filesystem`](../../reference/modules/every_disk_and_network_filesystem.md) | The mount point | The mount point and the kind of failure: `space`, `inodes`, `read-only`, or `unreadable` |
 
-- **The three security-update checks report one finding per source
-  package, advisory, or patch,** so a security update across the fleet is
-  one alert.
+- **The three security-update checks report one finding for all waiting
+  updates,** `package security`, keyed to the node's release. The remedy
+  is the same for every waiting update, to install the updates. So a node
+  with 27 waiting kernel advisories sends one alert, a fleet whose nodes
+  wait for updates gets one alert for each release, and a new update that
+  starts to wait sends none. The message still names the waiting packages,
+  advisories, or patches. Never set aside these routine-update checks: an
+  entry would quiet every security update of the release; install the
+  updates. `known_exploited_vulnerabilities_in_installed_packages` keeps one
+  finding for each flaw, because each flaw needs its own investigation.
 - **A flaw's fix state** has one of four forms: `fixed version: none`,
   `fixed version waits: X`, `fix needs Ubuntu Pro: X`, and
   `fixed kernel installed, runs after a reboot: X`.

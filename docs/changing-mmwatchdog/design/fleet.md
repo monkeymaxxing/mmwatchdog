@@ -1816,6 +1816,9 @@ set_aside_findings:
 - **`sos` is never set aside.** An entry covers only incidents below
   `sos`, in alerts, in the fleet view, and in the listing. A finding at
   `sos` alerts, whatever the file says.
+- **Never set aside the routine-update checks** (`apt_security_updates`,
+  `dnf_security_updates`, `zypper_security_patches`): an entry would quiet
+  every security update of the release; install the updates.
 - **The hub applies the file everywhere it handles alerts:** alert intake,
   report reconciliation, reminders, and updates. A covered node incident
   stays in the hub's records with the entry that covers it, and never

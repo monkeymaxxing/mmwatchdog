@@ -1,9 +1,8 @@
 # `dnf_security_updates`
 
 `dnf_security_updates` fails while a security update waits to be installed on
-a node of the Red Hat family, such as Rocky Linux, AlmaLinux, and Fedora. Each
-security advisory that waits is one finding, with its own incident, its own
-alert, and its own recovery. The check asks the node's own package manager,
+a node of the Red Hat family, such as Rocky Linux, AlmaLinux, and Fedora, and
+its message names the packages. The check asks the node's own package manager,
 `dnf`. The check downloads nothing and reads only what dnf already knows. Set
 `fail_when` to `a_security_update_waits_to_be_installed` to state when the
 check fails.
@@ -70,21 +69,18 @@ fails, so the stamp tells only that the timer ran.
 ## When the check fails, and when it cannot check
 
 - **The check fails** while at least one security update waits. The message
-  names the advisories, such as `2 security advisories wait to be installed:
-  RLSA-2026:1001, RLSA-2026:2002`, 20 at most, and counts the rest, such as
-  `, and 4 more`.
-- **Each advisory is one finding,** with the advisory's ID as the finding's
-  ID, and so one incident, one alert, and one recovery of its own. The
-  finding's message names the advisory's severity and its packages, such as
-  `the security advisory RLSA-2026:2002 (Critical) waits to be installed:
-  kernel, kernel-core`. When the update is installed, the finding recovers
-  with `the security advisory RLSA-2026:2002 no longer waits to be
-  installed`.
-- **Each finding names its exact finding:** the release, the advisory, and
-  the advisory's severity, such as `rocky 9.4 RLSA-2026:2002 Critical`. The
-  release is `ID` and `VERSION_ID` of `/etc/os-release`. Two nodes with the
-  same exact finding wait for the same advisory, so a fleet hub sends one
-  alert for all of them. An advisory without a severity has `no severity`.
+  looks like `2 security updates wait to be installed: bind-libs, kernel`.
+  Each package is named once, however many security advisories name it. The
+  message names 20 packages at most and counts the rest, such as `, and 4 more`.
+- **All waiting updates are one finding,** `package security`, with one
+  incident, one alert, and one recovery, and the check's message as the
+  finding's message. Its exact finding is the node's release, `ID` and
+  `VERSION_ID` of `/etc/os-release`, such as `rocky 9.4`. So every node of
+  a release that waits for updates has the same exact finding, whichever
+  updates wait, and a fleet hub sends one alert for all of them. A further
+  update that starts to wait changes no exact finding and sends no alert.
+  When nothing waits any more, the finding recovers with
+  `no security update waits to be installed`.
 - **The check is healthy** with `no security update waits to be installed`.
 - **MMWatchdog cannot check, and the check is unknown,** when any condition
   below applies. The message explains why. An unknown result is never healthy:
@@ -125,10 +121,9 @@ check_groups:
 
 Once an hour, MMWatchdog on the node asks dnf which security updates wait.
 `alert_after_failing_for: 0s` sends the `warn` alert after the first run that
-finds a waiting security update: one alert for each advisory, with its
-severity and packages. After an advisory's update is installed, the next run
-no longer reports the advisory, and `recovered_after_healthy_for: 0s` sends
-that finding's recovery at once.
+finds a waiting security update. The alert message names the packages. After
+the updates are installed, the next run is healthy, and
+`recovered_after_healthy_for: 0s` sends the recovery at once.
 
 ### A node that installs its updates by itself
 
@@ -191,10 +186,10 @@ because the program `dnf` is the one that runs.
    which dnf has an update that it would install, so an advisory for a package
    of a module stream that the node does not use does not count.
 3. MMWatchdog reads the list: one line for each advisory and package, with
-   three columns, the advisory, its severity and kind (such as
-   `Important/Sec.`), and the package with its version. Each advisory is one
-   finding, with its packages. An `Error:` that dnf writes, or a line with
-   another form, makes the check unknown.
+   three columns, the advisory, its kind (such as `Important/Sec.`), and the
+   package with its version. The check counts each package once, however many
+   advisories name it. An `Error:` that dnf writes, or a line with another form,
+   makes the check unknown.
 
 **dnf 5 (Fedora):**
 
@@ -218,11 +213,11 @@ because the program `dnf` is the one that runs.
    unprivileged account, dnf 5 also reads the system's cache; the check runs
    it as root anyway, as for dnf 4, so that both versions run in one way.
 3. MMWatchdog reads the JSON: an array with one object for each advisory and
-   package, with the advisory's ID in `name`, its `type`, which must be
-   `security`, its `severity`, and the package with its version in `nevra`,
-   such as `pcre2-10.49-1.fc45.x86_64`. The array is empty when no update
-   waits. Each advisory is one finding, with its packages. Anything else
-   makes the check unknown, with the first 200 characters of what dnf wrote.
+   package, with the advisory's `type`, which must be `security`, and the
+   package with its version in `nevra`, such as `pcre2-10.49-1.fc45.x86_64`.
+   The array is empty when no update waits. The check counts each package
+   once. Anything else makes the check unknown, with the first 200 characters
+   of what dnf wrote.
 
 ## Errors and what they mean
 
@@ -251,8 +246,8 @@ because the program `dnf` is the one that runs.
 
 - **Go tests:** `red_hat_checks_test.go` tests the check on dnf 4:
   `TestDnfSecurityUpdatesCheck` covers dnf's list with no update, one update,
-  and several updates (one finding for each advisory, with its message and
-  exact finding), a
+  and several updates (a package that several advisories name counts once,
+  and the one finding with the release as its exact finding), a
   list in another form, an error of dnf beside exit code 0 and a failed dnf,
   fresh, missing, old, and empty package data among several repositories (one
   of them disabled, one without `enabled=`, one with an old directory beside
@@ -260,10 +255,10 @@ because the program `dnf` is the one that runs.
   the arguments, and the unknown messages of Debian and SUSE and of the other
   checks on Red Hat. `fedora_checks_test.go` tests the check on dnf 5, with a
   `dnf5` stand-in and the link `dnf`: `TestDnfSecurityUpdatesCheckOnDnfFive`
-  covers an empty list, waiting updates (one finding for each advisory,
-  with its message and exact finding), lists that are not understood (dnf
-  5's text list, no output, `null`, an object, another advisory type, no
-  advisory, no package, and more), a failed dnf, the repository limits of 7, 8, and 15 days at their
+  covers an empty list, waiting updates (a package that several advisories
+  name counts once, and the one finding), lists that are not understood (dnf 5's text
+  list, no output, `null`, an object, another advisory type, no package, and
+  more), a failed dnf, the repository limits of 7, 8, and 15 days at their
   edges (the repository's `metadata_expire` plus one day, but at least 7
   days), the oldest repository, a repository without data, no enabled
   repository, answers about the repositories that are not understood,
@@ -280,7 +275,7 @@ because the program `dnf` is the one that runs.
   refresh touched with the enabled repositories, and sees that a second run of
   the service right after the first touches nothing. It then picks a package at run
   time that has a security advisory, installs the version before the update, and
-  compares the check's findings with the advisories that dnf lists as root. It also
+  compares the check's answer with the updates that dnf lists as root. It also
   tests package data that is old (nine days; on Fedora twenty, because one of
   Fedora's repositories keeps its package data 14 days), also after a refresh
   that failed with the servers blocked (on Rocky Linux and AlmaLinux that
@@ -343,17 +338,16 @@ because the program `dnf` is the one that runs.
 - **dnf runs as MMWatchdog itself.** dnf's cache belongs to root, and dnf 4 run
   as an unprivileged account does not read it and reports no update without
   an error. `--cacheonly` keeps dnf from fetching or changing anything.
-- **One finding for each advisory.** The distribution ships each security
-  fix as an advisory, which is the same problem on every node that waits for
-  it. So the fleet hub can send one alert for an advisory across the fleet,
-  and each advisory recovers by itself when its update is installed. A
-  kernel that is a year old has an open finding for each advisory that its
-  update covers, such as 27, and all of them recover with the one update.
-- **The exact finding names the release and the severity.** The same
-  advisory ID is the same fix; the release keeps nodes of different
-  releases apart, and a change of the advisory's severity is a new exact
-  finding, which the hub announces.
-- **A check of MMWatchdog 0.1.x had one incident for all updates.** At the
-  upgrade to 0.2.0, that incident closes once with the message that the
-  check's module now reports each finding as an incident of its own, and
-  the waiting advisories open as new incidents.
+- **The check names packages.** dnf's list names the package of each advisory.
+  Several advisories for one package, such as the 27 of a kernel that is a year
+  old, count as one update, as `dnf check-update --security` counts.
+- **One finding for all waiting updates, keyed to the release.** The
+  remedy is the same for every waiting update, to install the updates, and a
+  node that waits for one usually waits for several. A finding for each
+  update would send a node one alert for each, such as 27 for an old
+  kernel, and a new update across a fleet would send another alert. The
+  message still names the packages.
+- **A check of MMWatchdog 0.1.x had one incident without a finding.** At
+  the upgrade to 0.2.0, that incident closes once with the message that the
+  check's module now reports each finding as an incident of its own, and the
+  finding `package security` opens as a new incident.

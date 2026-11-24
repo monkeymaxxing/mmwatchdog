@@ -880,10 +880,10 @@ wait in its queue (`delivery.queued_notifications` of
 `mmwatchdog status --json`), the release notes of 0.2.0 say to let them
 drain and to check that MMHotline closed the affected incidents.
 For the three security-update
-checks, whose result changed from one incident to one incident per
-[finding](checks.md#findings), the migration counts the check as changed:
-its old single incident closes once with `closed_without_recovery`, and
-its findings open as new incidents. A `state.db` of a format that the
+checks, whose result changed from one incident without a finding to the
+one [finding](checks.md#findings) `package security`, the start counts the
+check as changed: its old incident closes once with
+`closed_without_recovery`, and the finding opens as a new incident. A `state.db` of a format that the
 running build cannot migrate is refused, with a message that names both
 formats.
 

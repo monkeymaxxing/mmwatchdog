@@ -2137,6 +2137,18 @@ func TestRebootAfterUpdatesCheck(t *testing.T) {
 // An apt_security_updates check reads what the node's package manager
 // already knows: which packages an upgrade would take from a security
 // archive.
+// expectPackageSecurity checks the one finding of a check of security
+// updates while updates wait: package security, with the observation's
+// message, whose exact finding is the node's release, and which is an
+// incident of its own; once gone, its message is gone.
+func expectPackageSecurity(t *testing.T, o checksandalerts.Observation, inputs checksandalerts.CheckInputs, release, gone string) {
+	t.Helper()
+	want := []checksandalerts.Finding{{ID: "package security", Message: o.Message, ExactFinding: release}}
+	if o.Status != "failed" || !reflect.DeepEqual(o.Findings, want) || !(&checksandalerts.Check{Inputs: inputs}).Module().OneIncidentForEachFinding || o.FindingIsGoneMessage("package security") != gone {
+		t.Fatalf("%+v, want the one finding %+v", o, want)
+	}
+}
+
 func TestAptSecurityUpdatesCheck(t *testing.T) {
 	ranAs := asThisAccount(t)
 	observe := func() checksandalerts.Observation {
@@ -2145,9 +2157,6 @@ func TestAptSecurityUpdatesCheck(t *testing.T) {
 	// Debian and Ubuntu: apt simulates the upgrade.
 	root := nodeFiles(t, map[string]string{"etc/os-release": "ID=debian\nVERSION_ID=\"12\"\n", "var/lib/apt/lists/partial/": "", "var/lib/apt/lists/repository_Packages": "Package: test\n", "var/lib/apt/periodic/update-success-stamp": ""})
 	answer, exitCode, asked := clientProgram(t, "apt-get", "LC_ALL")
-	// dpkg names the source package of each installed binary package.
-	inventory, _, inventoryAsked := clientProgram(t, "dpkg-query", "LC_ALL")
-	os.WriteFile(inventory, []byte("installed\tlibssl3\topenssl\ninstalled\topenssl\topenssl\ninstalled\tcurl\tcurl\ninstalled\ttzdata\ttzdata\ninstalled\tlibc6\tglibc\nconfig-files\tremoved\tremoved\n"), 0644)
 	const simulation = `Reading package lists...
 Building dependency tree...
 Reading state information...
@@ -2162,38 +2171,22 @@ Inst linux-image-6.1.0-28-amd64 (6.1.119-1 Debian-Security:12/stable-security [a
 Conf libssl3 (3.0.13-1~deb12u1 Debian-Security:12/stable-security [amd64])
 `
 	os.WriteFile(answer, []byte(simulation), 0644)
-	// Each source package with a security update is one finding, with an
-	// incident of its own: libssl3 and openssl are both of openssl. A
-	// package that the update installs anew has no installed version, and
-	// dpkg knows no source package of it. The exact finding is the release,
-	// the source package, its installed version, and the version that the
-	// update installs.
 	o := observe()
-	wantFindings := []checksandalerts.Finding{
-		{ID: "curl", Message: "a security update of curl waits to be installed: 7.88.1-10+deb12u5 to 7.88.1-10+deb12u8 (curl)", ExactFinding: "debian 12 curl 7.88.1-10+deb12u5 to 7.88.1-10+deb12u8"},
-		{ID: "linux-image-6.1.0-28-amd64", Message: "a security update of linux-image-6.1.0-28-amd64 waits to be installed: not installed to 6.1.119-1 (linux-image-6.1.0-28-amd64)", ExactFinding: "debian 12 linux-image-6.1.0-28-amd64 not installed to 6.1.119-1"},
-		{ID: "openssl", Message: "a security update of openssl waits to be installed: 3.0.11-1~deb12u1 to 3.0.13-1~deb12u1 (libssl3, openssl)", ExactFinding: "debian 12 openssl 3.0.11-1~deb12u1 to 3.0.13-1~deb12u1"},
+	if o.Status != "failed" || o.Message != "4 security updates wait to be installed: curl, libssl3, linux-image-6.1.0-28-amd64, openssl" {
+		t.Fatal(o)
 	}
-	if o.Status != "failed" || o.Message != "3 security updates wait to be installed: curl, linux-image-6.1.0-28-amd64, openssl" || !reflect.DeepEqual(o.Findings, wantFindings) ||
-		!(&checksandalerts.Check{Inputs: new(checksandalerts.AptSecurityUpdates)}).Module().OneIncidentForEachFinding ||
-		o.FindingIsGoneMessage("openssl") != "no security update of openssl waits to be installed any more" {
-		t.Fatalf("%+v", o)
-	}
-	// apt only simulates, and dpkg only lists, as the unprivileged account,
-	// which can change nothing.
-	if data, _ := os.ReadFile(asked); string(data) != "--simulate\n--quiet\ndist-upgrade\nLC_ALL=C\n" || !reflect.DeepEqual(ranAs(), []string{"mmwatchdog", "mmwatchdog"}) {
+	// All waiting updates are one finding, whose exact finding is the
+	// release: a further update changes nothing that the fleet groups by.
+	expectPackageSecurity(t, o, new(checksandalerts.AptSecurityUpdates), "debian 12", "no security update waits to be installed")
+	// apt only simulates, as the unprivileged account, which can change
+	// nothing.
+	if data, _ := os.ReadFile(asked); string(data) != "--simulate\n--quiet\ndist-upgrade\nLC_ALL=C\n" || !reflect.DeepEqual(ranAs(), []string{"mmwatchdog"}) {
 		t.Fatalf("%q", data)
 	}
-	if data, _ := os.ReadFile(inventoryAsked); string(data) != "--show\n--showformat=${db:Status-Status}\t${Package}\t${source:Package}\n\nLC_ALL=C\n" {
-		t.Fatalf("dpkg-query arguments: %q", data)
-	}
-	// Ubuntu names its security archive in another way. apt names a
-	// package of another architecture with it; its source package is the
-	// same, and the lower installed version counts.
-	os.WriteFile(answer, []byte("Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.4 Ubuntu:24.04/noble-security [amd64])\nInst libc6:i386 [2.39-0ubuntu8.2] (2.39-0ubuntu8.4 Ubuntu:24.04/noble-security [i386])\nInst vim [2:9.1.0016-1ubuntu7.5] (2:9.1.0016-1ubuntu7.6 Ubuntu:24.04/noble-updates [amd64])\n"), 0644)
-	if o := observe(); o.Status != "failed" || o.Message != "1 security update waits to be installed: glibc" || len(o.Findings) != 1 ||
-		o.Findings[0].ExactFinding != "debian 12 glibc 2.39-0ubuntu8.2 to 2.39-0ubuntu8.4" || o.Findings[0].Message != "a security update of glibc waits to be installed: 2.39-0ubuntu8.2 to 2.39-0ubuntu8.4 (libc6)" {
-		t.Fatalf("%+v", o)
+	// Ubuntu names its security archive in another way.
+	os.WriteFile(answer, []byte("Inst libc6 [2.39-0ubuntu8.3] (2.39-0ubuntu8.4 Ubuntu:24.04/noble-security [amd64])\nInst vim [2:9.1.0016-1ubuntu7.5] (2:9.1.0016-1ubuntu7.6 Ubuntu:24.04/noble-updates [amd64])\n"), 0644)
+	if o := observe(); o.Status != "failed" || o.Message != "1 security update waits to be installed: libc6" {
+		t.Fatal(o)
 	}
 	os.WriteFile(answer, []byte("Reading package lists...\nInst tzdata [2024a] (2024b Debian:12.8/stable-updates [all])\n0 upgraded, 0 newly installed.\n"), 0644)
 	if o := observe(); o.Status != "ok" || o.Message != "no security update waits to be installed" {

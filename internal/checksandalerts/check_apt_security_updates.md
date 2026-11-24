@@ -1,9 +1,7 @@
 # `apt_security_updates`
 
 `apt_security_updates` fails while a security update waits to be
-installed on the node. Each source package with a waiting security update
-is one finding, with its own incident, its own alert, and its own recovery.
-The check asks
+installed on the node, and its message names the packages. The check asks
 the node's own package manager, `apt-get` on Debian and Ubuntu. The check
 downloads nothing and reads only what the package manager already knows.
 On a node of the Red Hat family, such as Rocky Linux, AlmaLinux, and Fedora, use
@@ -66,26 +64,19 @@ never refreshes the node's lists of available packages.
 ## When the check fails, and when it cannot check
 
 - **The check fails** while at least one package has a security update
-  that waits, with a message such as `2 security updates wait to be
-  installed: curl, openssl`. The message names the source packages, 20 at
-  most, and counts the rest, such as `, and 4 more`.
-- **Each source package is one finding,** with the source package as the
-  finding's ID, and so one incident, one alert, and one recovery of its
-  own. The binary packages of one source package, such as `libssl3` and
-  `openssl` of `openssl`, are one finding. The finding's message names the
-  versions and the binary packages, such as `a security update of openssl
-  waits to be installed: 3.0.11-1~deb12u1 to 3.0.13-1~deb12u1 (libssl3,
-  openssl)`. When the update is installed, the finding recovers with `no
-  security update of openssl waits to be installed any more`.
-- **Each finding names its exact finding:** the release, the source
-  package, its installed version, and the version that the update
-  installs, such as `debian 12 openssl 3.0.11-1~deb12u1 to
-  3.0.13-1~deb12u1`. Two nodes with the same exact finding wait for the
-  same update, so a fleet hub sends one alert for all of them. A package
-  that the update installs anew has `not installed` as its installed
-  version. When a newer update of the same source package appears while the
-  finding is open, the incident stays open, and MMWatchdog sends
-  `exact_finding_changed` with the new versions.
+  that waits, with a message such as `3 security updates wait to be
+  installed: curl, libssl3, openssl`. The message names 20 packages at most
+  and counts the rest, such as `, and 4 more`. Each package counts once,
+  however many security advisories name it.
+- **All waiting updates are one finding,** `package security`, with one
+  incident, one alert, and one recovery, and the check's message as the
+  finding's message. Its exact finding is the node's release, `ID` and
+  `VERSION_ID` of `/etc/os-release`, such as `debian 13`. So every node of
+  a release that waits for updates has the same exact finding, whichever
+  updates wait, and a fleet hub sends one alert for all of them. A further
+  update that starts to wait changes no exact finding and sends no alert.
+  When nothing waits any more, the finding recovers with
+  `no security update waits to be installed`.
 - **The check is healthy** with `no security update waits to be installed`.
 - **MMWatchdog cannot check, and the check is unknown,** when any condition
   below applies. The message explains why MMWatchdog cannot check. An
@@ -129,10 +120,9 @@ check_groups:
 
 Once an hour, MMWatchdog on the node asks the package manager which security
 updates wait. `alert_after_failing_for: 0s` sends the `warn` alert after the
-first run that finds a waiting security update: one alert for each source
-package, with the versions. After an update is installed, the next run no
-longer reports its source package, and `recovered_after_healthy_for: 0s`
-sends that finding's recovery at once. A run may take
+first run that finds a waiting security update. The alert message names the
+packages. After the updates are installed, the next run is healthy, and
+`recovered_after_healthy_for: 0s` sends the recovery at once. A run may take
 2 minutes, because a package manager can be slow on a busy node.
 
 ### A node that installs its security updates by itself
@@ -179,19 +169,9 @@ SUSE node [`zypper_security_patches`](check_zypper_security_patches.md).
 2. MMWatchdog runs `apt-get --simulate --quiet dist-upgrade` with `LC_ALL=C`, as
    the unprivileged account `mmwatchdog`, in `/`. The simulation changes nothing,
    and the account `mmwatchdog` cannot change anything anyway.
-3. MMWatchdog takes each package that the upgrade would install from a security
+3. MMWatchdog counts each package that the upgrade would install from a security
    archive: an archive whose name contains `security`, such as Debian's
-   `Debian-Security` and Ubuntu's archives that end with `-security`. For
-   each, the simulation gives the installed version and the version that
-   the upgrade installs.
-4. When an update waits, MMWatchdog runs `dpkg-query --show` with `LC_ALL=C`, as
-   the account `mmwatchdog`, to learn the source package of each installed
-   package. MMWatchdog leaves out the architecture that apt writes after a
-   package of another architecture, such as `libc6:i386`. A package that
-   is not installed yet counts by its own name.
-5. Each source package is one finding. Its installed version is the lowest
-   installed version of its packages, and the version that the update
-   installs is the highest.
+   `Debian-Security` and Ubuntu's archives that end with `-security`.
 
 ## Errors and what they mean
 
@@ -215,11 +195,9 @@ SUSE node [`zypper_security_patches`](check_zypper_security_patches.md).
   checks `ID` and `ID_LIKE`. `TestUpdateChecksOnUnknownDistributions`
   checks the unknown result and its distribution name.
   `TestAptSecurityUpdatesCheck` covers the simulated upgrade of
-  `apt-get` with Debian and Ubuntu archives, one finding for each source
-  package with its message and exact finding, a package of another
-  architecture, a package that the update installs anew, the accounts and
-  arguments, missing or old lists, the refresh stamp, and a package manager
-  that fails.
+  `apt-get` with Debian and Ubuntu archives, the one finding with the
+  release as its exact finding, the account and arguments,
+  missing or old lists, the refresh stamp, and a package manager that fails.
   `TestSecurityUpdateCheckRequiresSuccessfulRefreshStamp` refuses fresh lists
   without a success stamp before it queries apt.
   `TestSecurityUpdateRefreshStampTakesPrecedenceOverFreshLists` refuses a
@@ -235,8 +213,7 @@ SUSE node [`zypper_security_patches`](check_zypper_security_patches.md).
   Where the guest has no refresh hook, the suite writes
   `/etc/apt/apt.conf.d/15update-stamp` as [Set up](#set-up) shows.
   The suite runs `apt-get update`, which writes the stamp, and compares
-  the check's source packages with the source packages that it finds
-  itself with `apt-get` and `dpkg-query`. The node suite also tests a
+  security updates with its own package count. The node suite also tests a
   stamp made nine days old.
 
 ## Why it works this way
@@ -272,16 +249,15 @@ SUSE node [`zypper_security_patches`](check_zypper_security_patches.md).
 - **`apt-get` runs as the unprivileged account `mmwatchdog`.** The simulation
   needs no root privileges, so MMWatchdog runs `apt-get` without root
   privileges.
-- **One finding for each source package.** A security update of one
-  source package updates all its binary packages, and is the same problem on
-  every node that waits for it. So the fleet hub can send one alert for a
-  security update across the fleet, and each update recovers by itself
-  when it is installed.
-- **The exact finding names both versions.** Two nodes that wait for the
-  same update from the same installed version have the same problem, and
-  one look covers both. A node with an older installed version, or an update
-  with a newer version, is a new exact finding, which the hub announces.
-- **A check of MMWatchdog 0.1.x had one incident for all updates.** At the
-  upgrade to 0.2.0, that incident closes once with the message that the
-  check's module now reports each finding as an incident of its own, and
-  the waiting updates open as new incidents.
+- **Each package counts once.** The update that waits for a package is one,
+  the newest, whatever the number of advisories that name it.
+- **One finding for all waiting updates, keyed to the release.** The
+  remedy is the same for every waiting update, to install the updates, and a
+  node that waits for one usually waits for several. A finding for each
+  update would send a node one alert for each, such as 27 for an old
+  kernel, and a new update across a fleet would send another alert. The
+  message still names the packages.
+- **A check of MMWatchdog 0.1.x had one incident without a finding.** At
+  the upgrade to 0.2.0, that incident closes once with the message that the
+  check's module now reports each finding as an incident of its own, and the
+  finding `package security` opens as a new incident.
