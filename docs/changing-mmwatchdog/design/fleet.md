@@ -1525,7 +1525,11 @@ its failure sent again. So a set-aside incident never holds back the
 confirmation of a report's records. When the incident is not set aside, the hub marks the node
 `joined` for the next update of [one alert per exact finding](#one-alert-per-exact-finding),
 because MMHotline may have merged the node's direct warning into another
-node's ([MMHotline in a fleet](#mmhotline-in-a-fleet)).
+node's ([MMHotline in a fleet](#mmhotline-in-a-fleet)). A new version that
+only a direct reminder made marks no node that the key's set already
+holds open: the destination had the node already, so the node is not
+newly affected. MMHotline gets no reminders, so for MMHotline such a
+version changes nothing.
 
 A report carries as many unconfirmed records as fit its request size;
 remaining records follow after earlier records are confirmed.

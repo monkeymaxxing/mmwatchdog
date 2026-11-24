@@ -121,6 +121,46 @@ func TestTheHubSettlesADirectSendAndTheNodeJoinsTheNextUpdate(t *testing.T) {
 	expectKinds(t, h.take("chat"), "recovered warn")
 }
 
+// A node's direct reminder that its destination accepted changes only the
+// reminder of its record: the hub settles and acknowledges the new
+// version, but the node, already a member of the key, is not newly
+// affected, and no update names it again. The same holds for MMHotline,
+// which gets no reminders, at sos, where an update would go at once.
+func TestADirectReminderDoesNotMakeAMemberNewlyAffected(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		destination, severity string
+		dest                  checksandalerts.Destination
+	}{
+		{"chat", "warn", chatTaking("https://chat.example.com", "warn")},
+		{"hotline", "sos", hotline()},
+	} {
+		t.Run(c.destination, func(t *testing.T) {
+			t.Parallel()
+			h := newGroupingHub(t, map[string]checksandalerts.Destination{c.destination: c.dest})
+			h.arrive(tenOFive, h.alert("app-1", "failed", c.severity, versionA, 0, tenOFive))
+			h.take(c.destination)
+			report := carriedTo(shows("app-2", c.severity, versionA, 0, tenOFive.Add(time.Minute), tenOFive.Add(10*time.Minute)), c.destination, "")
+			h.report(tenOFive.Add(10*time.Minute), map[string]store.ReportedIncidents{"app-2": report})
+			h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+			h.take(c.destination)
+			reminded := tenOFive.Add(3 * time.Hour)
+			sent := report.SentWithoutTheHub[c.destination]["incident-app-2"]
+			sent.ReminderAcceptedAt = reminded
+			report.SentWithoutTheHub[c.destination]["incident-app-2"] = sent
+			report.Sent = reminded
+			h.report(reminded, map[string]store.ReportedIncidents{"app-2": report})
+			h.tick(reminded.Add(time.Minute))
+			h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+			expectKinds(t, h.take(c.destination))
+			record := store.IncidentSentWithoutTheHub{Destination: c.destination, Incident: "incident-app-2", CheckGroup: "packages", Check: "flaws", Finding: flaw, Type: "failed", AlertSeveritiesSentForIncident: []string{c.severity}, ExactFinding: versionA, ReminderAcceptedAt: reminded}
+			if known, e := h.s.IncidentsKnownToTheHub("app-2", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 1 {
+				t.Fatal("the record with the reminder is not acknowledged", known, e)
+			}
+		})
+	}
+}
+
 // carriedTo is report with its incident also carried as sent without the
 // hub to destination, under the MMHotline alert source source.
 func carriedTo(report store.ReportedIncidents, destination, source string) store.ReportedIncidents {

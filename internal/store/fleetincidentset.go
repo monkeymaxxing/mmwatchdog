@@ -1377,11 +1377,30 @@ func (set IncidentSet) countSeverities(tx *sql.Tx, reporter, id, key, severity s
 // makes a new version, which the hub settles again before it acknowledges
 // the record.
 func directSendVersion(c checksandalerts.Event) string {
-	version := strings.Join(lowestFirst(c.AlertSeveritiesSentForIncident), ",") + "|" + c.MMHotlineAlertSource + "|" + strconv.FormatInt(c.ExactFindingSequence, 10)
+	version := directSendVersionWithoutReminder(c)
 	if !c.ReminderAcceptedAt.IsZero() {
 		version += "|" + strconv.FormatInt(c.ReminderAcceptedAt.UnixNano(), 10)
 	}
 	return version
+}
+
+// directSendVersionWithoutReminder is directSendVersion without when the
+// destination accepted the latest direct reminder.
+func directSendVersionWithoutReminder(c checksandalerts.Event) string {
+	return strings.Join(lowestFirst(c.AlertSeveritiesSentForIncident), ",") + "|" + c.MMHotlineAlertSource + "|" + strconv.FormatInt(c.ExactFindingSequence, 10)
+}
+
+// onlyItsReminderChanged reports that the version of the reporter's record
+// of a direct send (c) of the incident id to the set's destination that
+// the hub settled last differs from c only in its reminder.
+func (set IncidentSet) onlyItsReminderChanged(tx *sql.Tx, reporter, id string, c checksandalerts.Event) (bool, error) {
+	var settled string
+	e := tx.QueryRow("SELECT settled_version FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=?", set.Destination, reporter, id).Scan(&settled)
+	if e == sql.ErrNoRows {
+		return false, nil
+	}
+	without := directSendVersionWithoutReminder(c)
+	return settled == without || strings.HasPrefix(settled, without+"|"), e
 }
 
 // unixNanoOrZero is t in nanoseconds since 1970, or 0 for the zero time.
@@ -1453,7 +1472,13 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 				changed[key] = "recovered"
 			}
 		}
+		// A version that only a direct reminder made adds nothing that the
+		// destination has not had: the node is no newly affected member.
+		reminderOnly := false
 		if e == nil && grouped && state == FleetIncidentOpen {
+			reminderOnly, e = set.onlyItsReminderChanged(tx, reporter, id, c)
+		}
+		if e == nil && grouped && state == FleetIncidentOpen && !reminderOnly {
 			e = set.markPending(tx, key, reporter, id, pendingJoined, c.AlertSeverity, from, now)
 		}
 		// The destination got the key from the node, which leaves its
