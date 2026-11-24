@@ -430,8 +430,10 @@ func (s *Store) Emit(p AlertGroupingPlan, destinations map[string]checksandalert
 		if e = QueueDirect(tx, now.UnixNano(), message, events, destinations, QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, AwaitingFirstReports: awaitingFirstReports, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), SetAsideFindings: s.setAsideFindings(), Now: now}); e != nil {
 			return e
 		}
-	}
-	for _, m := range p.Messages {
+		// The message's alerts take their new state before the next message
+		// is queued: a failure sent in this step no longer waits in the
+		// intake, so its recovery later in the step closes its key
+		// (waitingFailureKeys).
 		state := intakeDone
 		if m.Hold {
 			state = intakeHeld

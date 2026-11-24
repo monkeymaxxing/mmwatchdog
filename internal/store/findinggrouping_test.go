@@ -234,6 +234,18 @@ func TestAnOlderNodesAlertNeverSwallowsAnExactFinding(t *testing.T) {
 	}
 }
 
+// A node's failure and its recovery that the hub takes in one alert
+// grouping step, such as after a short network interruption, send the
+// failure and then the closing alert: the failure sent in the same step
+// no longer waits in the intake.
+func TestAFailureAndItsRecoveryInOneStepCloseTheKey(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn"), "hotline": hotline()})
+	h.arrive(tenOFive.Add(time.Minute), h.alert("app-1", "failed", "warn", versionA, 0, tenOFive), h.alert("app-1", "recovered", "warn", versionA, 0, tenOFive.Add(time.Minute)))
+	expectKinds(t, h.take("chat"), "failed warn", "recovered warn")
+	expectKinds(t, h.take("hotline"), "failed warn", "recovered resolved-warn")
+}
+
 // An exact finding that was not announced goes out at once, once per
 // destination and key: nodes moving from A to B give one message for B,
 // and the others are growth for the next update.
