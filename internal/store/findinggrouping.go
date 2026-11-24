@@ -557,8 +557,22 @@ func findingNodesUpdate(key string, about checksandalerts.Event, pending []pendi
 	e.Title, e.TitleWasShortened = checksandalerts.FitTitle([]checksandalerts.TitlePart{{Text: title}})
 	e.WriteTitleWithAlertSeverity()
 	e.Message = title
+	// The lines after the exact findings always fit: the nodes that are ok
+	// again, with up to CombinedNames names, and the command that lists
+	// every node. The exact findings take what is left, less a reserve for
+	// the line that counts those that do not fit and for the line that
+	// MMHotline's alert adds (QueuedBy.SentBy).
+	last := []string{}
+	if e.RecoveredNodeCount > 0 {
+		last = append(last, "ok again on "+nodes(e.RecoveredNodeCount)+": "+nameNodes(e.RecoveredNodes, e.RecoveredNodeCount))
+	}
+	listAll := "mmwatchdog fleet findings " + about.CheckGroup + "/" + about.Check
+	if about.Finding != "" {
+		listAll += " --finding '" + strings.ReplaceAll(about.Finding, "'", `'\''`) + "'"
+	}
+	last = append(last, "List every node on the MMWatchdog fleet hub: "+listAll)
 	lines := []string{title}
-	listed, budget := 0, UpdateMessageLimit-len(title)-512
+	listed, budget := 0, UpdateMessageLimit-len(title)-len(strings.Join(last, "\n"))-512
 	for _, exactFinding := range exactFindings {
 		group := byExactFinding[exactFinding]
 		block := exactFinding + "\n  on " + nodes(group.NodeCount) + ": " + nameNodes(group.Nodes, group.NodeCount)
@@ -579,15 +593,7 @@ func findingNodesUpdate(key string, about checksandalerts.Event, pending []pendi
 		}
 		lines = append(lines, fmt.Sprintf("and %d more exact findings on %s", more, nodes(count)))
 	}
-	if e.RecoveredNodeCount > 0 {
-		lines = append(lines, "ok again on "+nodes(e.RecoveredNodeCount)+": "+nameNodes(e.RecoveredNodes, e.RecoveredNodeCount))
-	}
-	listAll := "mmwatchdog fleet findings " + about.CheckGroup + "/" + about.Check
-	if about.Finding != "" {
-		listAll += " --finding '" + strings.ReplaceAll(about.Finding, "'", `'\''`) + "'"
-	}
-	lines = append(lines, "List every node on the MMWatchdog fleet hub: "+listAll)
-	e.Body = strings.Join(lines, "\n")
+	e.Body = strings.Join(append(lines, last...), "\n")
 	return e
 }
 

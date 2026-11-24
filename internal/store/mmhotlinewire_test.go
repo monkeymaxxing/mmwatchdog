@@ -157,6 +157,39 @@ func TestAnUpdateStaysWithinMMHotlinesLimits(t *testing.T) {
 	}
 }
 
+// The bound holds with long node names and nodes that are ok again in the
+// same update: the lines after the exact findings, the nodes that are ok
+// again and the command that lists every node, always fit.
+func TestAnUpdateWithLongNodeNamesStaysWithinItsBound(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline()})
+	exactFinding := func(i int) string { return fmt.Sprintf("%03d %s", i, strings.Repeat("x", 260))[:255] }
+	node := func(kind string, i int) string { return fmt.Sprintf("%s-%03d.%s", kind, i, strings.Repeat("a", 240)) }
+	const exactFindings = 40
+	for i := range exactFindings {
+		h.arrive(tenOFive, h.alert(node("first", i), "failed", "warn", exactFinding(i), 0, tenOFive))
+		h.arrive(tenOFive, h.alert(node("second", i), "failed", "warn", exactFinding(i), 0, tenOFive))
+	}
+	h.take("hotline")
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	h.take("hotline")
+	later := time.Date(2026, 11, 24, 13, 0, 0, 0, time.UTC)
+	for i := range exactFindings {
+		h.arrive(later, h.alert(node("later", i), "failed", "warn", exactFinding(i), 0, later))
+		h.arrive(later, h.alert(node("first", i), "recovered", "warn", exactFinding(i), 0, later))
+	}
+	h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+	got := h.take("hotline")
+	expectKinds(t, got, "finding_nodes_changed warn")
+	a := wire(t, got[0])
+	if len(a["message"]) > store.UpdateMessageLimit {
+		t.Fatalf("the update has %d bytes", len(a["message"]))
+	}
+	if !strings.Contains(a["message"], "ok again on 40 nodes: "+node("first", 0)) || !strings.Contains(a["message"], "mmwatchdog fleet findings packages/flaws") {
+		t.Fatal("the update lost its last lines", a["message"][len(a["message"])-400:])
+	}
+}
+
 // failureOf is node's failure of the check myapp/dns, which has no exact
 // finding, with message.
 func failureOf(h *groupingHub, node, message string, at time.Time) checksandalerts.Event {
