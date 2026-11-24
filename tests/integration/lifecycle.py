@@ -285,7 +285,7 @@ def failed_units(fragment, status, mark):
         assert sorted(a.get('finding') for a in attention if a['check'] == key) == [backup, certbot], attention
         now = vm.console('/usr/local/bin/mmwatchdog check-now failed_systemd_units --json', check=False)
         observed = json.loads(now.stdout)['machine_has_no_failed_systemd_unit']
-        assert now.returncode == 1 and observed['findings'] == [{'id': unit, 'message': 'systemd unit ' + unit + ' failed (systemd result: exit-code)'} for unit in (backup, certbot)], now.stdout
+        assert now.returncode == 1 and observed['findings'] == [{'id': unit, 'message': 'systemd unit ' + unit + ' failed (systemd result: exit-code)', 'exact_finding': unit + ' exit-code'} for unit in (backup, certbot)], now.stdout
         mark('each failed systemd unit is its own incident with its own alert that names the unit, a second unit fails while the first incident is open, and mmwatchdog status shows one line for each')
 
         # The backup is repaired and run again: only its incident recovers.
