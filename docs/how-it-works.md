@@ -635,7 +635,10 @@ and then sends the alert through the hub's own outbox.
 **The hub groups alerts from many nodes.** The first alert of a kind goes
 out at once. Matching alerts in the following minute, such as the same
 check failing on seven nodes, become one message when the minute ends:
-`myapp/http failed on 7 nodes`. A notice is never grouped.
+`myapp/http failed on 7 nodes`. A notice is never grouped. A finding with
+an exact finding, such as one security flaw in one package version, gets
+one alert across the whole fleet, however many hours the nodes take to
+report it ([one alert per exact finding](#one-alert-per-exact-finding)).
 
 **A node sends directly when the hub does not accept an alert.** Each
 joined node keeps a copy of the fleet's destinations, with their
@@ -701,6 +704,55 @@ A joined node that sends directly never sends a closing alert, because only
 the hub knows whether another node still fails. The hub sends the closing
 alert once the hub is back. A standalone node uses the node's own name in
 the key, so separate nodes never share an incident.
+
+### One alert per exact finding
+
+Some checks report each problem as a [finding](#a-run-of-a-module-that-is-not-core),
+such as each package with a known security flaw. A core module that
+reports findings also gives each one an **exact finding**: one line that
+names the problem precisely, such as
+`Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-CVE-2026-123158 modified 2026-11-20T08:12:00Z`.
+Two nodes with the same exact finding have the same problem, and one
+investigation covers both.
+
+A check that runs every 6 hours reaches the hub from each node at a
+different time. So the hub keeps, for each destination, what it has
+already announced about each key:
+
+- **The first node's alert goes out at once.**
+- **A later node with an announced exact finding waits.** The hub sends one
+  update for every such key together on the **shared tick**, every
+  `send_newly_affected_nodes_every` (6 hours by default, at 00:00, 06:00,
+  12:00, and 18:00 UTC). The update names the nodes that joined, changed,
+  or are ok again, at the highest severity among the nodes that it adds.
+- **Anything new goes out at once:** an exact finding that was not
+  announced, such as after an upgrade to another affected version, a
+  severity above the announced one, and every `sos` node, which goes out
+  within a minute.
+- **One closing alert** goes out when the last node of the key recovers.
+  It names the nodes that it covered: `CVE-2026-123158 openssh is ok again
+  on the 3 nodes that this alert covered`.
+
+This holds for every destination, also a chat or a mailbox. An alert
+without an exact finding, such as an HTTPS check that fails with a
+certificate error on one node and with HTTP 503 on another, keeps the
+one-minute grouping, because only the module knows whether two failures
+have the same cause.
+
+**Set a finding aside after an investigation.** When a team decides that
+an exact finding needs no action on any node, an entry in the hub's file
+`/etc/mmwatchdog/set_aside_findings.yml` sets it aside. The hub then sends
+no alert below `sos` for it, closes the incident that it opened with
+`Set aside after investigation: <reason>`, and the fleet view counts it on
+one line, such as `Set aside: 1 finding on 5000 nodes`. Any change to the
+package, release, fix state, or advisory changes the exact finding, so the
+finding alerts again. `sos` is never set aside, and joined nodes never set
+anything aside, so a hub outage can only add alerts.
+`mmwatchdog fleet set-aside-findings` lists the entries in effect, and
+`mmwatchdog fleet findings CHECK_GROUP/CHECK` lists every node with each
+exact finding of a check ([commands](reference/commands.md#mmwatchdog-fleet-findings)).
+The [fleet design](changing-mmwatchdog/design/fleet.md#set-a-finding-aside)
+gives every rule.
 
 [Set up a fleet](how-to/set-up-a-fleet.md) joins the nodes, and
 [Change a fleet](how-to/change-a-fleet.md) adds and forgets nodes, rotates
@@ -836,11 +888,22 @@ MMHotline does not delay another team's check-ins.
 `fleet_incident_key` become one MMHotline incident: 40 nodes that go silent
 together are one incident. When no node remains at `sos` for the key, the
 hub sends `resolved-sos`, so a server left silent at `warn` does not keep
-the `sos` alert escalating. A joined node sends to MMHotline only an alert
-that the hub did not accept in time. The joined node uses the same
-`mmhotline_url` as the hub, so that address must be one that every node
-reaches. A joined node never sends a check-in
-or a resolution.
+the `sos` alert escalating. An update that adds nodes to a key with an
+exact finding goes at the highest severity of the added nodes, so
+MMHotline's triage agent looks at the new nodes; an update with only
+recovered nodes is `info`.
+
+A joined node sends to MMHotline only an alert that the hub did not accept
+in time. The joined node uses the same `mmhotline_url` as the hub, so that
+address must be one that every node reaches. A joined node never sends a
+check-in or a resolution. The `mmhotline` destination can give such
+direct alerts an alert source of their own,
+`alert_source_for_nodes_sending_without_the_hub`. MMHotline merges repeated
+warnings from that source only, by key and by the message's first line,
+so a hub outage on a large fleet cannot use up MMHotline's hourly budget.
+That is why the first line of every `warn` and `sos` message to MMHotline
+names the problem with no node name. The block needs MMWatchdog 0.2.0 on every joined
+node ([MMHotline in a fleet](changing-mmwatchdog/design/fleet.md#mmhotline-in-a-fleet)).
 
 A joined node holds each team's signing secret for direct delivery. Root on
 a joined node can therefore send alerts to MMHotline as the fleet.

@@ -186,7 +186,10 @@ carries:
 
 - the daemon-produced status summary that `mmwatchdog status` uses, and every
   check's state and explanation;
-- open incidents with their evidence;
+- open incidents with their evidence; for an incident of a finding, its
+  current exact finding with the exact finding's sequence number, and
+  `reminder_eligible`, whether the incident may get a reminder now
+  ([one alert per exact finding](#one-alert-per-exact-finding));
 - node CPU, memory, and root-disk use;
 - maintenance windows, the notification queue, and storage problems;
 - the node's `alert_severity_when_this_node_goes_silent`, its
@@ -232,6 +235,11 @@ joined node's status JSON uses `joined_fleet_hub` with `hub_address`,
 `this_node_name`, `last_accepted_report_at`, `last_error`, `last_error_at`, and
 `fleet_settings_version`. The hub's own status JSON uses
 `fleet_hub_role_address` for its role's address. The hub lists itself in the fleet as an ordinary entry.
+
+The hub ignores an exact finding with a lower sequence number than the one
+that it holds for the node incident, whether the exact finding came in a
+report or in an alert, so an old report never brings back an older exact
+finding.
 
 If the hub cannot save a report, it answers `503`, but the authenticated
 report still counts as contact, so a full disk on the hub never raises false
@@ -513,6 +521,8 @@ sudo mmwatchdog fleet                                    # every node, problems 
 sudo mmwatchdog fleet --node-group application_servers   # only the nodes of one node group
 sudo mmwatchdog fleet app-2                              # one node in detail
 sudo mmwatchdog fleet app-2 --json                       # the same facts for agents
+sudo mmwatchdog fleet findings installed_packages/known_exploited_flaws   # every node with each finding of one check
+sudo mmwatchdog fleet set-aside-findings                 # the findings set aside, and the nodes that each covers
 ```
 
 `mmwatchdog fleet` counts the healthy nodes and lists the others with what needs
@@ -598,7 +608,10 @@ A clock more than five seconds off, or a name conflict in the last hour,
 also makes the fleet view print a separate entry for the affected node.
 
 The exit code of `mmwatchdog fleet` is the worst node's, failure before
-unknown, or 3 for a fleet storage problem when no node has failed.
+unknown, or 3 for a fleet storage problem when no node has failed. A
+finding below `sos` that is [set aside](#set-a-finding-aside) counts for
+neither: it shares one compressed line, such as
+`Set aside: 1 finding on 5000 nodes`.
 
 The hub sends only the settings that the whole fleet must share. The fleet
 settings contain alert destinations, fleet timings, and the hub's own
@@ -711,7 +724,20 @@ the hub cannot save, is refused, so the node delivers it without the hub.
 
 ### Fleet alert grouping
 
-No single event produces one message per node.
+No single event produces one message per node. The hub groups alerts in
+one of two ways:
+
+- **By exact finding**, for an alert about a [finding](checks.md#findings)
+  whose module supplies an [exact finding](checks.md#exact-findings). One
+  exact finding gets one alert across the fleet, however long the nodes
+  take to report it ([one alert per exact finding](#one-alert-per-exact-finding)).
+- **Within one minute**, for every other alert: a check without findings,
+  a finding without an exact finding (also every finding from a node older
+  than 0.2.0), a `cannot check` incident, a silence alert, a maintenance
+  alert, and a reboot. The rest of this section describes grouping within
+  one minute.
+
+Grouping within one minute:
 
 - For each combination of check group, check, change, and
   [alert severity](alerts.md#alert-severity), the first alert goes out at
@@ -755,6 +781,128 @@ No single event produces one message per node.
   ends the alert body with the present. For example, after a hub outage:
   `(alert delivered late; the event happened at 14:02 UTC. Now app-2 shows myapp/http as
   ok)`.
+
+### One alert per exact finding
+
+A check that runs every 6 hours runs on each node's own schedule, so one
+security flaw reaches the hub from different nodes over hours. Grouping
+within one minute would send one alert, and start one investigation, for
+nearly every node. An exact finding names the problem precisely, so the
+hub can tell that a later node has a problem that the first alert already
+announced.
+
+Only a module-supplied exact finding joins a later node to an earlier
+alert. One key can fail for different reasons: an HTTPS check fails with a
+certificate error on `app-1` and with HTTP 503 on `app-2`. Only the module
+knows the reason, so every alert without an exact finding keeps grouping
+within one minute.
+
+**Per destination and key.** The hub keeps a set of open node incidents
+for each destination and each [key](#one-incident-per-check-across-the-fleet)
+with an exact finding. This includes every destination, also chat and
+email. An incident is in a destination's set only when its alerts go to
+that destination, by `send_alerts_only_to_destinations`,
+`alert_severities`, and the recipients recorded on the incident. Each
+destination's messages are built from its own set only.
+
+For each destination and key, the hub records what it has announced: the
+**announced severity** and the **announced exact findings**. The hub
+writes both only when it queues an alert that carries them, in the same
+transaction as the outbox entry. A node status report never writes them.
+They go back to "not announced" when the key closes, when an alert that
+carried them leaves the outbox undelivered (by retention, a permanent
+refusal, or a replaced destination), and, for the severity, when
+`resolved-sos` goes out: the announced severity then becomes the highest
+severity still open.
+
+For one destination and one key:
+
+1. **The first alert goes out at once,** as the first node's own alert.
+2. **Covered growth waits for the shared tick.** A later node, or a node
+   whose exact finding changed, is covered when its severity is not above
+   the announced severity and its exact finding is among the announced
+   ones. A covered node is not sent on its own, from the first second.
+   - The node joins the set, marked `joined` or `changed`. A node whose
+     incident closes is marked `recovered`.
+   - On the **shared tick**, the hub sends one `finding_nodes_changed`
+     update for each key with marked nodes. The tick falls on the
+     multiples of `fleet_hub_role.send_newly_affected_nodes_every`
+     (default `6h`) since 1970-01-01 00:00 UTC, such as 00:00, 06:00,
+     12:00, and 18:00 UTC. Every key's updates go out together, so
+     MMHotline's triage agent can cover them in one run.
+   - The update lists the nodes that joined, changed, or are ok again.
+   - **An update's severity** is the highest severity among the nodes that
+     it adds or changes. A `warn` node that joins an `sos` key goes in a
+     `warn` update, and never wakes the person who handles the SOS. An
+     update with only recovered nodes is `info`.
+   - **An update that adds `sos` nodes does not wait for the tick.** It
+     goes out at the end of each minute in which `sos` nodes joined, as
+     `finding_nodes_changed`, and joins the open MMHotline incident.
+3. **Something new goes out at once,** once for each destination and key:
+   a severity above the announced severity, or an exact finding that was
+   not announced. A new exact finding comes from a new node or from a
+   node's `exact_finding_changed`, and the alert names the exact finding.
+   Later nodes with the same exact finding are covered growth. So 5,000
+   nodes that move from version A to version B give one message for B at
+   once, and then updates on the shared tick. A raise on a key that is
+   already `sos` is growth.
+4. **A new exact finding keeps the key's severity.** It goes out at the
+   severity that is routed to the destination: `info` stays `info`, and
+   `warn` stays `warn`.
+5. **`resolved-sos` goes out at once** when no node left in the
+   destination's set is `sos`. A later `sos` sends a new `sos` alert and
+   opens a new MMHotline incident. For example, `app-1` recovers, `app-2`
+   stays `warn`, and `app-3` reaches `sos`: the alert about `app-3` wakes
+   someone.
+6. **Closing.** When the destination's set for the key empties, the hub
+   queues the marked nodes' update and then the closing alert, in one
+   transaction. The closing alert claims recovery only for the nodes that
+   it covered: `CVE-2026-123158 openssh is ok again on the 3 nodes that
+   this alert covered`. Other nodes may still fail with an exact finding
+   that is [set aside](#set-a-finding-aside), or have alerts that go to
+   another destination. The closing alert says "ok on every node" only
+   when no node of the fleet has an open incident of the key. A key that
+   opens again starts with nothing announced. An incident that a report
+   opens again goes through the same rules.
+7. **Reminders, one schedule per destination and key.** The hub sends a
+   reminder of the key by the destination's `remind_every`, while at least
+   one node incident in the set is eligible: not in maintenance or quiet
+   time, and still routed to the destination at its current severity.
+   Each node incident in a node status report carries this eligibility as
+   `reminder_eligible`. A node of 0.2.0 makes no reminders of such a key
+   while its latest report reached the hub, and makes its own only while
+   it delivers without the hub. The hub drops a reminder of such a key that
+   a node older than 0.2.0 sends.
+
+The hub writes `at` of an update as the time when the update is sent, so
+the note about late delivery never applies to an update.
+
+**One message has a size limit.** An update names up to 20 nodes for each
+exact finding in `nodes_by_exact_finding`, with a count of each, and lists
+the exact findings that were not announced before first. The whole
+encoded message stays within 12 KiB, inside MMHotline's limit of 16 KiB.
+What does not fit is counted, together with the command that lists every
+node: `mmwatchdog fleet findings CHECK_GROUP/CHECK --finding ID`.
+
+**Scale.** The hub keeps one row for each open node incident and a small
+membership row for each destination, so each arriving alert or report is
+constant work. One exact finding on 5,000 nodes gives at most one first
+alert, one update for each shared tick (plus one each minute while `sos`
+nodes join), one message for each new exact finding, and one closing alert
+for each destination. `joined_node_limit` keeps its default of 1000, and
+[Set up a fleet](../../how-to/set-up-a-fleet.md#if-something-is-different)
+says how to raise it and `state_database_size_limit` for thousands of
+nodes.
+
+**The reason for the 6-hour tick.** Growth below `sos` asks a person to
+act within days. MMHotline's triage agent must look at the new nodes, but
+need not look within the hour. With one tick for every key, MMHotline gets
+at most four growth batches a day, which its agent covers in about four
+runs, well inside its default limit of 50 runs a day. An hourly tick could
+take 24 runs a day while a flaw spreads. A team that wants a faster look
+states `send_newly_affected_nodes_every: 1h`; the minimum is `1m`. A new
+exact finding, a higher severity, and every `sos` node go out at once
+anyway. Grouping by exact finding has no switch to turn it off.
 
 ## Silent nodes
 
@@ -1129,8 +1277,12 @@ destination of such a service one incident per check across the fleet.
 [`pushover`](../../../official_extra_modules/pushover/README.md) does, and so
 can a module of the project's own. The
 [`mmhotline` destination](../../reference/modules/mmhotline.md) always keeps incidents
-([MMHotline in a fleet](#mmhotline-in-a-fleet)). Every other destination, such
-as a chat or a mailbox, gets every node's alerts unchanged.
+([MMHotline in a fleet](#mmhotline-in-a-fleet)). For a key with an
+[exact finding](checks.md#exact-findings), every destination, also a chat
+or a mailbox, gets one incident per key, by the rules of
+[one alert per exact finding](#one-alert-per-exact-finding). For every
+other key, a destination whose service keeps no incidents gets every
+node's alerts unchanged.
 
 **The key.** Every alert about an incident carries `fleet_incident_key`: the
 same 32 lowercase hexadecimal digits for one check on every node of the
@@ -1165,7 +1317,9 @@ the key of its alerts.
 
 **One closing alert when the last node recovers.** The MMWatchdog fleet hub
 keeps a set for each destination whose service keeps incidents, and each
-key. The set contains open MMWatchdog incidents whose alerts went to the
+key, and for every destination and each key with an exact finding. The
+rules below hold for both; [one alert per exact finding](#one-alert-per-exact-finding)
+adds its own rules for the second, among them its closing wording. The set contains open MMWatchdog incidents whose alerts went to the
 destination, with each incident's severity. The hub updates the set from
 alerts the hub sends and from each node's latest report.
 
@@ -1325,6 +1479,23 @@ the hub's set holds the incident, in `incidents_known_to_the_hub`. So the
 hub, when back, knows the incident and sends the closing alert, even if
 the joined node recovered while the hub was down.
 
+For a key with an exact finding, the joined node keeps such a record for
+every destination, also a chat or a mailbox, and sends no recovery
+there, so the hub sends the closing alert later. For every other key, a
+chat or a mailbox gets the node's direct recovery, as from a standalone
+node.
+
+The hub settles each record whatever the sets hold. It records the direct
+delivery, decides the destination's closing alert, and then confirms the
+record. When the incident is [set aside](#set-a-finding-aside) on the hub,
+and nothing else of the key is open for the destination, the hub queues
+`closed_without_recovery` with `Set aside after investigation: <reason>`.
+So a set-aside incident never holds back the confirmation of a report's
+records. When the incident is not set aside, the hub marks the node
+`joined` for the next update of [one alert per exact finding](#one-alert-per-exact-finding),
+because MMHotline may have merged the node's direct warning into another
+node's ([MMHotline in a fleet](#mmhotline-in-a-fleet)).
+
 A report carries as many unconfirmed records as fit its request size;
 remaining records follow after earlier records are confirmed.
 A joined node learns which
@@ -1366,9 +1537,51 @@ nodes`. So 40 nodes going silent together and
 raised to `sos` produce one MMHotline incident and one notification of the
 person on call.
 
-A `warn` check failing on 40 nodes produces 40 `warn` alerts. A raise is a
+A `warn` check without an exact finding, failing on 40 nodes over an
+hour, produces up to 40 `warn` alerts. A finding with an exact finding
+produces one first alert and growth updates
+([one alert per exact finding](#one-alert-per-exact-finding)). A raise is a
 new alert for the key, so a `warn` key raised to `sos` opens the MMHotline
 incident then.
+
+**What MMHotline gets.** MMHotline refuses a request with a field that it
+does not know, so MMWatchdog adds no field to the signed request. Each
+kind of message maps to a severity and a key:
+
+| Message | MMHotline severity | `sender_incident_key` |
+| --- | --- | --- |
+| The first alert of a key | The alert's severity | The key |
+| An update that adds nodes: new nodes, or nodes whose exact finding changed to one already announced | The highest severity among the added nodes, on the shared tick, so MMHotline's triage agent investigates the new nodes | The key |
+| An update with only recovered nodes | `info` | The key |
+| An exact finding not announced before, or a finding no longer set aside | The severity of the node that brought it, never raised | The key |
+| An update that adds `sos` nodes | `sos`, each minute, joining the open incident | The key |
+
+Added nodes go at their own severity, not as `info`, because a triage
+agent's verdict without a [set-aside entry](#set-a-finding-aside) holds
+only for the nodes that it checked. A node that an entry covers joins no
+destination's set, so it is in no update. An `info` message with a key
+goes to the team's info destinations in MMHotline and starts no triage
+run. A `warn` after the key's triage session closed starts a new one.
+Every message has its own `sender_alert_id`; an update takes a new event
+ID.
+
+**The first line names the problem the same way on every node.** MMHotline
+merges a repeated warning from the alert source for nodes sending without
+the hub (**two alert sources**, below) by key and by the message's first
+line, within one hour. So the first line of every `warn` and `sos` message
+to MMHotline names the problem with no node name, from the hub and from a
+node that sends directly. Node names go in the title or in later lines.
+
+- For a key with an exact finding, the first line is the exact finding.
+- Otherwise the first line is the node's own failure message without the
+  node's name. Different causes have different first lines and are never
+  merged.
+
+A first line that holds something that differs from node to node, such as
+a number or a node's own address, is never merged. During a hub outage on a
+large fleet, such a check can use up MMHotline's hourly budget for
+warnings. A module whose message starts with a number that is not the
+cause moves that number off the first line.
 
 **One resolution when the last node recovers.** When a key's set empties,
 the fleet hub sends MMHotline one resolution. When incidents from several
@@ -1421,7 +1634,9 @@ secret into each joined node's `fleet-settings-from-the-hub.json` (under
 server passwords). An alert the fleet hub has not accepted within
 `send_alert_without_hub_after_waiting_for` goes from the joined node
 straight to MMHotline, at the destination's `mmhotline_url`, with the
-alert's `fleet_incident_key`, so the alert joins the fleet incident.
+alert's `fleet_incident_key`, so the alert joins the fleet incident. When
+the destination states `alert_source_for_nodes_sending_without_the_hub`,
+the node sends under that alert source (**two alert sources**, below).
 The direct alert's message ends `Sent directly by the
 MMWatchdog node app-2 because the MMWatchdog fleet hub did not accept the alert in
 time.` The joined node therefore needs an address that it reaches, which a
@@ -1450,8 +1665,146 @@ listed. MMHotline treats:
 If the fleet hub stops sending check-ins during a window, MMHotline
 keeps honoring the last windows it received until they end.
 
+**Two alert sources.** The hub sends under the destination's own alert source,
+`mmhotline_alert_source_id`, and MMHotline merges no warning from it, so a
+growth warning is never folded into the first warning and lost. A fleet
+can give the nodes that send without the hub a second alert source, in the
+`mmhotline` destination's optional block:
+
+```yaml
+# util, /etc/mmwatchdog/alert_destinations.yml: the node that is the hub
+destinations:
+  team_hotline:
+    mmhotline:
+      mmhotline_url: http://10.20.0.1:8484
+      mmhotline_alert_source_id: mmwatchdog_fleet
+      mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-fleet
+      alert_source_for_nodes_sending_without_the_hub:
+        mmhotline_alert_source_id: mmwatchdog_nodes_without_the_hub
+        mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-nodes-without-the-hub
+    alert_severities: [warn, sos]
+```
+
+- Only the second source merges repeats in MMHotline, so a hub outage on a
+  large fleet cannot use up MMHotline's hourly budget. Without the block,
+  direct sends use the hub's source.
+- The block may state its own `mmhotline_url` when the nodes reach
+  MMHotline at another address than the hub.
+- The block reaches the joined nodes in the fleet settings, like the main
+  signing secret. It is left out of the fleet settings' fingerprint when it
+  is not set, so fleets without it are unaffected. A fleet that sets it
+  needs 0.2.0 on every joined node, because an older node refuses the
+  changed fleet settings. `mmwatchdog validate` on the hub warns while a
+  joined node reports an older version.
+- MMHotline matches an incident by alert source and key. So while an
+  incident that a node opened on the second source is open, the hub sends
+  every further alert of that key, and its closing alert, under the second
+  source. The hub has both secrets. Otherwise an `sos` from the hub would
+  open a second incident and wake someone again.
+- Check-ins go on the hub's source only, because MMHotline never expects
+  check-ins from a source that has never sent one.
+- A resolution on the second source ends MMHotline's one-hour merge window
+  there, so the next outage starts fresh.
+
 Module pages that rely on "MMHotline in a fleet":
 [`mmhotline`](../../reference/modules/mmhotline.md).
+
+## Set a finding aside
+
+After an investigation, a team may decide that a finding needs no action
+on any node with that exact finding, such as a flaw that needs a library
+that none of the nodes use. The hub's optional file
+`/etc/mmwatchdog/set_aside_findings.yml` sets such a finding aside, keyed
+to its [exact finding](checks.md#exact-findings):
+
+```yaml
+# util, /etc/mmwatchdog/set_aside_findings.yml: the node that is the hub
+set_aside_findings:
+  - check: installed_packages/known_exploited_flaws
+    finding: CVE-2026-123158 openssh
+    exact_finding: "Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-CVE-2026-123158 modified 2026-11-20T08:12:00Z"
+    reason: Needs musl without PAM; every server with this exact finding runs glibc and sshd links PAM. Debian rates it unimportant.
+    investigation_note: triage_agent_notes/2026-11-23_openssh_package_warning_on_app001.md
+    set_aside_by: triage agent (MMHotline run b82fdd8b)
+    set_aside_on: 2026-11-23
+```
+
+- **The file is on the hub only.** A joined node and a standalone node
+  refuse it. It is not part of the fleet settings, so joined nodes never
+  get it, and nodes older than 0.2.0 are not affected.
+- **Every field of an entry is required and nonempty.** A missing field is
+  a validation error. `set_aside_findings: []` is valid and sets nothing
+  aside. There is no entry for a whole check, and no entry without an
+  exact finding. MMWatchdog defines only the format and the path; where the
+  file comes from, such as a file in Git that a deploy copies to the hub,
+  is the team's choice.
+- **An entry matches only an exact match** of the check, the finding's
+  `id`, and the exact finding. A finding without an exact finding never
+  matches. A new installed version, release, fix state, or advisory record
+  changes the exact finding, so the entry stops matching and the finding
+  alerts again. An entry has no expiry date.
+- **`sos` is never set aside.** An entry covers only incidents below
+  `sos`, in alerts, in the fleet view, and in the listing. A finding at
+  `sos` alerts, whatever the file says.
+- **The hub applies the file everywhere it handles alerts:** alert intake,
+  report reconciliation, reminders, and updates. A covered node incident
+  stays in the hub's records with the entry that covers it, and never
+  joins a destination's set. The exact finding with the highest sequence
+  number decides whether an entry covers the node incident.
+- **The hub settles the file at every start and every reload,** against
+  the open node incidents:
+  - An incident that is newly covered leaves each destination's set. A
+    destination whose set for the key empties gets one
+    `closed_without_recovery` alert, `Set aside after investigation:
+    <reason>`, so an MMHotline or Pushover incident that opened before the
+    verdict closes. A node whose exact finding moves onto an entry is
+    newly covered too.
+  - Incidents that are no longer covered, because an entry was removed or
+    changed or a node's exact finding moved off the entry, are applied
+    together first. Then each destination and key gets **one** opening
+    alert, with the note `an earlier exact finding was set aside: <reason>`.
+    The hub keeps the reason on the node incident while it is set aside,
+    so the reason is known after the entry is gone.
+- **Joined nodes never set anything aside.** While the hub is unreachable,
+  nodes send every alert themselves, so a hub outage can only add alerts.
+  `mmwatchdog status` on the node still shows the finding as failing,
+  because the node does not know the verdict.
+- **The fleet view counts set-aside findings apart.** A covered finding
+  below `sos` does not set the exit code of `mmwatchdog fleet` and does not
+  expand its node. `mmwatchdog fleet` shows one compressed line, such as
+  `Set aside: 1 finding on 5000 nodes`, and `mmwatchdog fleet NODE` shows
+  the finding as `set aside (reason …) until the exact finding changes`.
+- **An invalid file is a validation error.** `mmwatchdog validate` refuses
+  it, and `mmwatchdog reload` keeps the previous configuration.
+- **Removing the file.** A deploy that no longer has the file must remove
+  it from the hub. The example deploy playbook
+  `examples/deploy/playbooks/hub_and_standalone.yml` removes the hub's
+  `set_aside_findings.yml` when the project has none, as it removes check
+  group files that the project no longer has. A project whose deploy tool
+  refuses a missing source file keeps the file with
+  `set_aside_findings: []` instead.
+
+**Two commands on the hub show what is set aside and where a finding is.**
+
+- `mmwatchdog fleet set-aside-findings [--json]` lists each entry in
+  effect with its reason, investigation note, and date, and:
+  - `covered_node_count`, the number of nodes that it covers now, and
+    `covered_nodes`, up to 20 of them;
+  - `matches_no_node_now`, computed over every node's latest saved report,
+    also the hub's and silent nodes';
+  - `nodes_that_cannot_check_now`: nodes whose check is `unknown`, nodes
+    that wait for a first report, and nodes without a saved report. Remove
+    an entry only when `matches_no_node_now` is true and this count is 0.
+- `mmwatchdog fleet findings CHECK_GROUP/CHECK [--finding ID] [--json]`
+  lists every node with the check's findings, each with its exact finding
+  and its first failure time, with no limit on the count. An update that
+  names only 20 nodes for an exact finding points to this command.
+
+**Facts that MMWatchdog cannot see.** A verdict can rest on facts of the
+running nodes that the exact finding does not hold, such as which C
+library a node uses. An entry is safe only when the evidence holds for
+every node with that exact finding. MMWatchdog guarantees only that a
+changed package, release, fix state, or advisory record alerts again.
 
 ## Forget a node, rotate the join code, move the hub
 
@@ -1531,7 +1884,19 @@ a concrete workflow fails because of the decision.
 | A standalone node is watched from outside by MMHotline or by a second node in a fleet of two; MMWatchdog adds no other hub-outage alerter | A machine that died cannot report its own death, and two nodes that watch each other need nothing beyond the fleet |
 | A destination whose service keeps incidents, MMHotline among them, gets one incident per check across the fleet, and the hub closes it when no node still fails | One fleet-wide problem is one incident that notifies the person on call, and the service needs no knowledge of nodes |
 | The closing alert is the node's own when one node's incidents closed, and a new alert about the key when several nodes' did; either carries the severities that its destination got for the key | A standalone node and a single failing node send the closing alerts each would send without fleet incident tracking. A destination never closes what another destination using the first destination's service opened |
-| Fleet alert grouping key on check group, check, change, severity, and the destinations that the check names; silence on change and severity; maintenance on reason and user | Matching alerts compress without guessing at causes, and a grouped message never mixes a page with a notice or two sets of destinations |
+| Fleet alert grouping within one minute keys on check group, check, change, severity, and the destinations that the check names; silence on change and severity; maintenance on reason and user | Matching alerts compress without guessing at causes, and a grouped message never mixes a page with a notice or two sets of destinations |
+| Only a finding with a module-supplied exact finding joins a later node to an earlier alert; every other alert keeps grouping within one minute | One key can fail for different reasons on different nodes, such as a certificate error and an HTTP 503. Only the module knows the reason, so only an exact finding may join a later node to an earlier investigation |
+| The exact finding is a separate field beside the finding's `id` | `id` stays the incident's identity, so an upgrade from one affected version to another is never reported as ok again |
+| The announced severity and exact findings are written only with the outbox entry that carries them, and reset when that alert leaves the outbox undelivered | A report that arrives before its alert, or an alert that is dropped, must never hold back the first alert of a problem |
+| Covered growth below `sos` goes out on one shared tick for every key, every `send_newly_affected_nodes_every` (default `6h`); `sos` growth goes each minute; a new exact finding or a higher severity goes at once | MMHotline's triage agent covers every key's growth in one run, at most four a day by default, well inside its daily limit of runs. Nothing that asks for a faster look waits |
+| An update's severity is the highest severity among the nodes that it adds; only an update of recovered nodes is `info` | A `warn` node that joins an `sos` key never wakes the person on call, and a node added as `info` would never be investigated |
+| A new exact finding keeps the key's routed severity | An `info` or `warn` problem must not page someone because a version changed |
+| The closing alert of an exact-finding key claims recovery only for the nodes that it covered | Other nodes may still fail with a set-aside exact finding, or have alerts that go to another destination |
+| One reminder schedule per destination and key with an exact finding, kept by the hub, and only while a node incident is eligible | 5,000 nodes must not send 5,000 reminders, and a node in maintenance or quiet time must not keep a reminder going |
+| The hub's MMHotline alert source merges nothing; an optional second alert source for nodes sending without the hub merges repeats by key and first line | A growth warning folded into the first warning would leave the new node uninvestigated, while a hub outage on a large fleet must not use up MMHotline's hourly budget |
+| The first line of every `warn` and `sos` message to MMHotline names the problem with no node name | MMHotline can merge repeats from many nodes during a hub outage; different causes keep different first lines and are never merged |
+| Set-aside findings live in a hub-only file, keyed to every field of the exact finding, with every field required and no expiry | The file never reaches nodes, so older nodes and their fleet settings are unaffected. An exact match makes any change of package, release, fix state, or advisory alert again, and the weekly review lists every entry |
+| `sos` is never set aside, and nodes never set anything aside | A set-aside list must never hide an emergency, and a hub outage can only add alerts, never hide one |
 | Each node states the severity of its own silence, required, with no default by role | Large fleets must not page for one silent node, while a node that matters, and the hub that nothing else watches, still wake someone; the setting is visible on every node. |
 | A node can state `raise_to_sos_after_this_node_is_silent_for`, which raises its silence alert to `sos` after that time | A silent node that may wait a few minutes must not stay a warning all night; a check has the same kind of setting, `raise_to_sos_after_failing_for` |
 | A maintenance window holds a silent node's alert and its raise, and the time of `raise_to_sos_after_this_node_is_silent_for` keeps counting through the window | A silent node's maintenance window marks silence as expected until the window ends, without confirming recovery. If the node has already been silent for `raise_to_sos_after_this_node_is_silent_for`, the hub sends an `sos` alert when maintenance ends. A check's `raise_to_sos_after_failing_for` also keeps counting through maintenance |
@@ -1563,4 +1928,3 @@ omitted setting must not choose them.
 ## Beyond release 1
 
 - Several hubs or hub high availability.
-- Fleet alert grouping by shared cause beyond matching check groups.

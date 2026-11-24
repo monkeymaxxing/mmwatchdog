@@ -130,6 +130,9 @@ configuration directory:
   with `join_fleet_hub`, `alert_destinations.yml` must not exist.
   MMWatchdog rejects `alert_destinations.yml` on a joined node because the
   joined node gets alert settings from the hub.
+- `set_aside_findings.yml` is optional, and only the hub may have it. It
+  lists the findings that a team [set aside](fleet.md#set-a-finding-aside).
+  A joined node and a standalone node refuse it.
 
 ```yaml
 # /etc/mmwatchdog/mmwatchdog_node_settings.yml
@@ -272,6 +275,9 @@ and asks for an address that every node reaches
 | A check's alert title would be longer than 120 characters | Validation warning naming the check and the length of its title. A title starts with the node's name, so `mmwatchdog validate` uses the name of the machine it runs on | [Title and body](alerts.md#title-and-body) |
 | A systemd unit has its own `systemd_unit_state` check and is missing from `systemd_units_to_ignore` | Validation warning naming the unit: a failure of the unit would send two alerts | [`every_systemd_unit`](../../reference/modules/every_systemd_unit.md) |
 | A fleet hub's `mmhotline` destination has a loopback `mmhotline_url` | Validation warning; joined nodes need an address that every node reaches for direct delivery | [`mmhotline`](../../reference/modules/mmhotline.md#errors-and-what-they-mean) |
+| A fleet hub's `mmhotline` destination states `alert_source_for_nodes_sending_without_the_hub` while a joined node reports a version older than 0.2.0 | Validation warning naming the nodes: an older node refuses the changed fleet settings until it runs 0.2.0 | [MMHotline in a fleet](fleet.md#mmhotline-in-a-fleet) |
+| `set_aside_findings.yml` exists on a joined node or a standalone node | Error: only the hub sets findings aside | [Set a finding aside](fleet.md#set-a-finding-aside) |
+| An entry of `set_aside_findings.yml` lacks a field, or a field is empty | Error naming the entry and the field | [Set a finding aside](fleet.md#set-a-finding-aside) |
 | A filesystem has its own `node_filesystem` check with a limit and is missing from `filesystems_to_ignore` | Validation warning naming the filesystem: a full filesystem would send two alerts | [`every_disk_and_network_filesystem`](../../reference/modules/every_disk_and_network_filesystem.md) |
 
 ### Credential file permissions
@@ -391,6 +397,8 @@ command on the machine where MMX runs.
 | `mmwatchdog fleet --node-group NODE_GROUP [--json]` | On the hub: the fleet view of the nodes of one [node group](fleet.md#node-groups) |
 | `mmwatchdog fleet readings NODE CHECK_GROUP [CHECK] [--last DURATION or --since TIME [--until TIME]] [--json or --chart]` | On the hub: one node's retained readings |
 | `mmwatchdog fleet readings --node-group NODE_GROUP CHECK_GROUP CHECK [--last DURATION or --since TIME [--until TIME]] [--json or --chart]` | On the hub: one check across a node group, worst first with healthy nodes compressed |
+| `mmwatchdog fleet findings CHECK_GROUP/CHECK [--finding ID] [--json]` | On the hub: every node with a finding of the check, each with its exact finding and first failure time, with no limit on the count ([set a finding aside](fleet.md#set-a-finding-aside)) |
+| `mmwatchdog fleet set-aside-findings [--json]` | On the hub: each entry of `set_aside_findings.yml` in effect, with the nodes that it covers now, whether it matches no node, and how many nodes cannot check now ([set a finding aside](fleet.md#set-a-finding-aside)) |
 | `mmwatchdog fleet join-code [--json]` | On the hub: print the join code |
 | `mmwatchdog fleet rotate-join-code [--json]` | On the hub: replace the join secret and print the new code |
 | `mmwatchdog fleet forget NODE` | On the hub: delete a node and its data |
@@ -399,7 +407,7 @@ command on the machine where MMX runs.
 | `mmwatchdog run-starlark-module MODULE_DIR` | Run the script of one Starlark module once: read one request from stdin and write one result to stdout, by the [JSON protocol](checks.md#executables-and-the-json-protocol). The daemon starts `mmwatchdog run-starlark-module` for each run of a script. A person can use `mmwatchdog run-starlark-module` to try a script by hand |
 | `mmwatchdog module-json get [--type TYPE] POINTER` | Read a value from the request of an executable module by JSON Pointer |
 | `mmwatchdog module-json request [--inputs NAME,...]` | Check the request of an executable module and print it |
-| `mmwatchdog module-json result --status ok\|failed\|unknown\|delivered (--message TEXT \| --message-stdin) [--measurement NAME VALUE]... [--finding ID MESSAGE]...` | Build the result of an executable module. A module of a check answers `ok`, `failed`, or `unknown`; a [destination module](alerts.md#destination-modules) answers `delivered` or `failed` |
+| `mmwatchdog module-json result --status ok\|failed\|unknown\|delivered (--message TEXT \| --message-stdin) [--measurement NAME VALUE]... [--finding ID MESSAGE]... [--exact-finding ID TEXT]...` | Build the result of an executable module. A module of a check answers `ok`, `failed`, or `unknown`; a [destination module](alerts.md#destination-modules) answers `delivered` or `failed`. `--exact-finding` gives the finding named by `ID` its [exact finding](checks.md#exact-findings) |
 | `mmwatchdog module-json object [--string NAME TEXT]... [--string-stdin NAME] [--json NAME JSON]...` | Build a JSON object, for a module that sends JSON to a service |
 
 An executable module finds the helper through `MMWATCHDOG_MODULE_HELPER`; the
@@ -854,6 +862,18 @@ incident transition and its outbox entries commit
 atomically. On restart, confirmed incidents stay open.
 Unfinished confirmation starts fresh, so restarting MMWatchdog never
 manufactures a recovery or a second failure alert.
+
+`state.db` records the format of its layout. A release that changes the
+layout migrates `state.db` in place the first time it opens it, on every
+node, whatever its role, so no open incident is lost. The migration to
+format 21 (MMWatchdog 0.2.0) records the hub's announced severity of each
+open key, with no exact finding announced. For the three security-update
+checks, whose result changed from one incident to one incident per
+[finding](checks.md#findings), the migration counts the check as changed:
+its old single incident closes once with `closed_without_recovery`, and
+its findings open as new incidents. A `state.db` of a format that the
+running build cannot migrate is refused, with a message that names both
+formats.
 
 Storage is bounded so monitoring never exhausts the disk it watches.
 Preventing monitoring from exhausting the monitored disk requires a storage

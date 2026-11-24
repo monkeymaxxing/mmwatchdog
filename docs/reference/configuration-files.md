@@ -28,6 +28,7 @@ MMWatchdog reads one directory, `/etc/mmwatchdog`, on each node:
 /etc/mmwatchdog/
 ├── mmwatchdog_node_settings.yml    the settings of this node
 ├── alert_destinations.yml          where alerts go (not on a node that joins a hub)
+├── set_aside_findings.yml          optional, on the hub only: findings set aside after an investigation
 ├── check_groups/                   the check groups
 │   ├── myapp.yml
 │   └── machine.yml
@@ -47,6 +48,9 @@ MMWatchdog reads one directory, `/etc/mmwatchdog`, on each node:
   and a fleet hub need the file. A node that joins a hub gets its
   destinations from the hub, so `alert_destinations.yml` on that node is a
   validation error. See [The alert destinations file](#the-alert-destinations-file).
+- **`set_aside_findings.yml`** is optional, and only a fleet hub may have
+  it. It lists the findings that the hub sends no alert for below `sos`.
+  See [The set-aside findings file](#the-set-aside-findings-file).
 - **`secrets/`** is where the release's MMX project puts the files that
   settings ending in `_file` name, such as a Slack address. MMWatchdog
   itself reads a secret file from any path that a setting names. See
@@ -322,6 +326,7 @@ fleet_hub_role:
 | `event_history_of_nodes_content_size_limit` | size | `4GiB` | How much of the nodes' event content the hub keeps |
 | `raise_to_sos_when_silent_nodes_reach_count` | whole number, from 1 | None | Raises the silence alerts to `sos` when this many joined nodes are silent at the same time |
 | `raise_to_sos_when_silent_nodes_reach_percent` | number above 0, at most 100 | None | The same, as a percentage of the joined nodes, written without `%`, such as `20` |
+| `send_newly_affected_nodes_every` | duration, at least `1m` | `6h` | How often the hub sends the updates about nodes that an exact finding already announced newly affects, for every key together, on the multiples of this time since 1970-01-01 00:00 UTC, such as 00:00, 06:00, 12:00, and 18:00 UTC. The default gives MMHotline's triage agent at most four batches of new nodes a day. A new exact finding, a higher severity, and every `sos` node go out at once anyway. [One alert per exact finding](../changing-mmwatchdog/design/fleet.md#one-alert-per-exact-finding) |
 | `joined_node_limit` | whole number, from 1 | `1000` | How many nodes may join. The default is far above the fleets that MMWatchdog is tested with and well within the hub's database, so that a leaked join code cannot fill the database with nodes. A join beyond the limit is refused with a message that says to raise it |
 
 - **The three fleet timings have no upper limit,** so a fleet with slow
@@ -764,6 +769,65 @@ destinations: {}
 
 [Send alerts where your team sees them](../how-to/send-alerts-somewhere.md)
 says which alert goes to which destination.
+
+## The set-aside findings file
+
+On a fleet hub, the optional file `/etc/mmwatchdog/set_aside_findings.yml`
+sets findings aside after an investigation. The hub sends no alert below
+`sos` for a node incident whose check, finding, and
+[exact finding](../changing-mmwatchdog/design/checks.md#exact-findings)
+match an entry:
+
+```yaml
+# /etc/mmwatchdog/set_aside_findings.yml
+set_aside_findings:
+  - check: installed_packages/known_exploited_flaws
+    finding: CVE-2026-123158 openssh
+    exact_finding: "Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-CVE-2026-123158 modified 2026-11-20T08:12:00Z"
+    reason: Needs musl without PAM; every server with this exact finding runs glibc and sshd links PAM. Debian rates it unimportant.
+    investigation_note: triage_agent_notes/2026-11-23_openssh_package_warning_on_app001.md
+    set_aside_by: triage agent (MMHotline run b82fdd8b)
+    set_aside_on: 2026-11-23
+```
+
+| Field | Value |
+|---|---|
+| `check` | The check, as `CHECK_GROUP/CHECK`. |
+| `finding` | The finding's `id`, as `mmwatchdog fleet findings` shows it. |
+| `exact_finding` | The finding's exact finding, copied whole from `mmwatchdog fleet findings`. |
+| `reason` | Why the finding needs no action. The hub's closing alert says `Set aside after investigation: ` and this text. |
+| `investigation_note` | Where the investigation is written down, such as a file in the project. |
+| `set_aside_by` | Who set it aside: a person, or an agent with its run. |
+| `set_aside_on` | The date. |
+
+- **Every field is required and nonempty.** A missing or empty field is a
+  validation error. `set_aside_findings: []` is valid and sets nothing
+  aside. An entry always names one exact finding: there is no entry for a
+  whole check.
+- **An entry matches only when all three of `check`, `finding`, and
+  `exact_finding` are equal.** A new installed version, release, fix
+  state, or advisory record changes the exact finding, so the finding
+  alerts again. An entry has no expiry date.
+- **`sos` is never set aside.** A finding at `sos` alerts, whatever the
+  file says.
+- **Only the hub reads the file.** On a joined node or a standalone node
+  the file is a validation error. Joined nodes never get a copy, so a node
+  that sends without the hub sends every alert.
+- **A reload applies a changed file,** and the hub applies it again at
+  each start. An incident that an entry newly covers closes with
+  `closed_without_recovery`; incidents that an entry no longer covers open
+  with one alert for each destination and key
+  ([`mmwatchdog reload`](commands.md#mmwatchdog-reload)).
+- **Deleting the file in your project must remove it from the hub.** The
+  example playbook `examples/deploy/playbooks/hub_and_standalone.yml`
+  removes the hub's file when the project has none. If your deploy tool
+  refuses a missing source file, keep the file with
+  `set_aside_findings: []`.
+- `sudo mmwatchdog fleet set-aside-findings` shows the entries that the
+  hub uses ([commands](commands.md#mmwatchdog-fleet-set-aside-findings)).
+
+[Set a finding aside](../changing-mmwatchdog/design/fleet.md#set-a-finding-aside)
+gives the rules and their reasons.
 
 ## Secret files
 

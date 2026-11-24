@@ -346,6 +346,36 @@ node):
 - The hub's alert about a silent node is a check of the built-in check
   group `node_reports`, named after the silent node.
 
+**One alert per exact finding.** For a finding whose module supplies an
+[exact finding](../changing-mmwatchdog/design/checks.md#exact-findings),
+the hub does not group within one minute. Each destination gets:
+
+- the first node's alert at once;
+- for nodes that a known exact finding newly affects, one
+  `finding_nodes_changed` update per key on the shared tick, every
+  `send_newly_affected_nodes_every` (6 hours by default), at the highest
+  severity among the nodes that the update adds, or `info` when it only
+  names recovered nodes. An update that adds `sos` nodes goes within a
+  minute;
+- one alert at once for each exact finding that was not announced before,
+  at the key's severity;
+- one closing alert when the last node that the destination got recovers,
+  such as `CVE-2026-123158 openssh is ok again on the 3 nodes that this
+  alert covered`. It says "ok on every node" only when no node of the fleet
+  still has the problem.
+
+The whole message stays within 12 KiB. Nodes that do not fit are counted,
+with the command that lists them all,
+`mmwatchdog fleet findings CHECK_GROUP/CHECK --finding ID`.
+
+**The first line of a message to MMHotline names the problem.** The first
+line of every `warn` and `sos` message to an
+[`mmhotline`](modules/mmhotline.md) destination names the problem with no
+node name, the same on every node: the exact finding when the finding has
+one, or else the failure message without the node's name. The node names
+are in the title and in later lines. MMHotline merges repeated warnings
+that nodes send without the hub by this first line.
+
 **One closing alert for the fleet.** A destination whose service keeps
 incidents of its own, such as [`mmhotline`](modules/mmhotline.md), opens
 one incident for each check across the fleet. The hub closes that incident
@@ -485,6 +515,7 @@ The webhook body, the request to a destination module, and each entry of
 | `node` | The host name of the node that the alert is about. On a grouped message of the hub, empty when the nodes differ |
 | `check_group`, `check` | The check group and the check, such as `myapp` and `health_page_answers`. `check` is empty for an alert about no check. A `rebooted` and a `notice` event have no `check_group` |
 | `finding` | On an alert about one finding of a check, the finding's ID, such as the failed unit `backup.service` of an `every_systemd_unit` check |
+| `exact_finding`, `exact_finding_sequence` | On an alert about one finding whose module supplies an [exact finding](../changing-mmwatchdog/design/checks.md#exact-findings): the exact finding, such as `backup.service exit-code`, and its sequence number, which rises by one each time the exact finding of the incident changes |
 | `check_groups` | On a maintenance event, the check groups of the maintenance command, or `["every_check_group"]` for the whole node |
 | `alert_severity` | `info`, `warn`, or `sos`. On a recovery or a closed incident, the highest severity that the incident reached |
 | `alert_severities_sent_for_incident` | On a recovery or a closed incident, every severity that the incident's alerts went out with, so the recovery goes where those alerts went |
@@ -498,7 +529,9 @@ The webhook body, the request to a destination module, and each entry of
 | `fleet_incident_key` | 32 hexadecimal digits, the same for one check, or one finding, and one kind of incident, on every node of a fleet and on a standalone node. A notice, a reboot, and a maintenance alert have none |
 | `evidence` | On an incident's alerts, the run that confirmed the incident. See [Evidence fields](#evidence-fields) |
 | `maintenance` | On a maintenance event: `until`, `reason`, `user`, and `without_maintenance_on_and_off_alerts` |
-| `nodes`, `node_count` | On a grouped message or a fleet closing alert: up to 20 node names, and the count of all nodes |
+| `nodes`, `node_count` | On a grouped message or a fleet closing alert: up to 20 node names, and the count of all nodes. On a `finding_nodes_changed` update: the nodes that the update adds or changes |
+| `nodes_by_exact_finding` | On a `finding_nodes_changed` update: for each exact finding, `exact_finding`, up to 20 `nodes`, and `node_count`. Exact findings that were not announced before come first |
+| `recovered_nodes`, `recovered_node_count` | On a `finding_nodes_changed` update: up to 20 nodes whose incident of the key closed since the last update, and how many in all |
 | `destination` | On a `reminder`, the one destination that the reminder is for |
 | `send_alerts_only_to_destinations` | The destinations that the alert's check names, or the one destination that `mmwatchdog send-notice --destination` names |
 | `no_alerts_or_recovery_actions_for_these_checks_while_this_check_fails` | On a failure alert, its raise, and its reminders: up to 20 checks that the failing check keeps quiet, each as `CHECK_GROUP/CHECK` |
@@ -535,7 +568,9 @@ These types go to destinations:
 | `cannot_check`, `can_check_again` | MMWatchdog cannot run a check for `alert_after_failing_for`, or can run the check again |
 | `failure_alert_severity_raised`, `cannot_check_alert_severity_raised` | An open incident is raised to a higher severity |
 | `reminder` | An incident is still open after the destination's `remind_every` |
-| `closed_without_recovery` | A configuration change, or a node that the hub forgets, closes an incident without a recovery |
+| `closed_without_recovery` | A configuration change, or a node that the hub forgets, closes an incident without a recovery. On the hub, also an incident whose finding is [set aside](configuration-files.md#the-set-aside-findings-file): `Set aside after investigation: <reason>` |
+| `exact_finding_changed` | The exact finding of an open finding that an alert already announced changed, such as after an upgrade to another affected version |
+| `finding_nodes_changed` | On the hub: nodes joined a key whose exact finding was already announced, changed to an exact finding already announced, or are ok again. Sent on the shared tick, or within a minute for nodes at `sos` |
 | `maintenance_on`, `maintenance_off` | A maintenance window starts or changes, and ends, expires, or ends because its check group was removed |
 | `rebooted` | MMWatchdog starts for the first time after the node rebooted |
 | `notice` | A person or a program ran `mmwatchdog send-notice` |

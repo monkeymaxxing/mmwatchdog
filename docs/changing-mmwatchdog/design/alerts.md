@@ -54,6 +54,8 @@ Every alert is one event with a common shape, whatever the destination:
 | `node` | The monitored node's hostname |
 | `check_group`, `check` | The named check group and check, such as `myapp` and `http` |
 | `finding` | On an alert about one [finding](checks.md#findings) of a check, the `id` of that finding. For an [`every_systemd_unit`](../../reference/modules/every_systemd_unit.md) check, the `finding` field contains the failed unit's name, such as `backup.service` |
+| `exact_finding` | On an alert about one finding whose module supplies an [exact finding](checks.md#exact-findings), the exact finding that the alert announces, such as `backup.service exit-code` |
+| `exact_finding_sequence` | With `exact_finding`: the incident's sequence number of the exact finding, which rises by one with each change, so a receiver can tell the newer of two exact findings |
 | `type` | The change, listed below |
 | `alert_severity` | `info`, `warn`, or `sos` ([alert severity](#alert-severity)) |
 | `alert_severities_sent_for_incident` | On a recovery or closure without recovery (`closed_without_recovery`), every severity the incident's alerts went out with |
@@ -65,7 +67,9 @@ Every alert is one event with a common shape, whatever the destination:
 | `message` | A readable explanation of the observation, such as `expected 200, received 503`. For a hub's grouped alert, `message` names the nodes covered by the alert. For a [notice](#send-a-notice), `message` contains the title text that the sender gave, without the node's name |
 | `evidence` | The confirming observation, for incident events |
 | `maintenance` | The window's `until`, `reason`, and `user`, for maintenance events |
-| `nodes`, `node_count` | The nodes a hub's grouped message covers, or whose incidents a closing alert of the fleet closes |
+| `nodes`, `node_count` | The nodes a hub's grouped message covers, or whose incidents a closing alert of the fleet closes. In a `finding_nodes_changed` update, the nodes that the update adds or changes |
+| `nodes_by_exact_finding` | In a `finding_nodes_changed` update: for each exact finding, `exact_finding`, up to 20 `nodes`, and `node_count` ([one alert per exact finding](fleet.md#one-alert-per-exact-finding)) |
+| `recovered_nodes`, `recovered_node_count` | In a `finding_nodes_changed` update: up to 20 nodes whose incidents closed since the previous update, and their count |
 | `destination` | The one destination a `reminder` is for |
 | `send_alerts_only_to_destinations` | The destinations that the alert's check names, when it names its destinations ([which alert goes to whom](#which-alert-goes-to-whom)), or the one destination that an `mmwatchdog send-notice` command names with `--destination` |
 | `no_alerts_or_recovery_actions_for_these_checks_while_this_check_fails` | On a failure alert, its raise, and its reminders: the checks that MMWatchdog keeps quiet while the alert's check fails. The field lists at most 20 quiet checks, each as check group, slash, check ([one cause, one alert](checks.md#one-cause-one-alert)) |
@@ -76,7 +80,9 @@ Every alert is one event with a common shape, whatever the destination:
 | `failed`, `recovered` | A failure incident opens or resolves |
 | `cannot_check`, `can_check_again` | MMWatchdog cannot observe a check for its confirmation period, or produces the first known observation again |
 | `failure_alert_severity_raised`, `cannot_check_alert_severity_raised` | An announced failure or cannot-check incident is [raised](#alert-severity) to a higher severity |
-| `closed_without_recovery` | A configuration change or a forgotten node closes an announced incident without claiming recovery |
+| `closed_without_recovery` | A configuration change or a forgotten node closes an announced incident without claiming recovery, or the hub [sets a finding aside](fleet.md#set-a-finding-aside) |
+| `exact_finding_changed` | The [exact finding](checks.md#exact-findings) of an announced, open finding changed, such as after a package moved to another affected version |
+| `finding_nodes_changed` | On the hub: the nodes of a key with an exact finding changed since the last update: nodes joined, changed their exact finding to one already announced, or are ok again ([one alert per exact finding](fleet.md#one-alert-per-exact-finding)) |
 | `maintenance_on`, `maintenance_off` | A [maintenance window](recovery.md#maintenance-windows) is turned on or changed, and is turned off, expires, or ends when its check group is removed |
 | `rebooted` | MMWatchdog starts for the first time in a new boot; the message names the boot time and when MMWatchdog last ran |
 | `reminder` | An announced incident is still open after a destination's `remind_every` |
@@ -292,8 +298,8 @@ The body is readable text that MMWatchdog builds from the event's `message` and
   those checks, as the line `no alerts and no recovery actions for these
   checks while this check fails: myapp/myapp_answers_health_request`
   ([one cause, one alert](checks.md#one-cause-one-alert));
-- for a grouped message from the hub, the nodes covered by the message
-  ([fleet alert grouping](fleet.md#fleet-alert-grouping)). Below the node
+- for a grouped message or an update from the hub, the nodes covered by the
+  message ([fleet alert grouping](fleet.md#fleet-alert-grouping)). Below the node
   list, MMWatchdog shows the message, time, and evidence of the grouped
   message's first node, under `from app-1:`;
 - a short excerpt of the evidence: the exit status and the first five lines
@@ -1106,6 +1112,15 @@ destination.
   delivery that expires or overflows is dropped with a durable `delivery_gap`
   event, and the gap count appears in status with the time of the first and
   of the newest drop. MMWatchdog never drops a delivery silently.
+- **An `sos` goes first.** An `sos` delivery goes ahead of every
+  undelivered delivery below `sos` to the same destination, of every key,
+  and replaces an undelivered lower-severity delivery of its own key.
+  Within one key, closing and opening alerts keep their order. While the
+  destination fails or limits the rate (HTTP `429` with `Retry-After`), the
+  wait before the next attempt stays the same for the whole destination,
+  and the `sos` goes first once the next attempt is allowed, so many keys
+  cannot start a storm of retries. A [notice](#send-a-notice) keeps its
+  place in the order.
 - **Reminders never crowd out alerts.**
   The outbox holds at most one undelivered reminder for each incident and
   destination ([reminders](#reminders)).
@@ -1291,6 +1306,10 @@ destinations:
 - In a fleet the owning node sends each reminder through the hub, which
   delivers it to the destination it names and
   [groups](fleet.md#fleet-alert-grouping) matching reminders from other nodes.
+  For a key with an [exact finding](checks.md#exact-findings), the hub
+  keeps one reminder schedule per destination and key itself, and the
+  nodes send no reminders while the hub is reachable
+  ([one alert per exact finding](fleet.md#one-alert-per-exact-finding)).
 
 **A reminder interval for one check.** `remind_every` belongs to a
 destination. For more frequent reminders of a particular check, the check
@@ -1334,6 +1353,7 @@ with a concrete workflow that the decision does not support.
 | Delivery is at least once, not exactly once | Exactly-once delivery needs cooperation from every receiver. Stable event IDs let receivers detect and ignore duplicate deliveries. |
 | One durable outbox serves every destination, whatever its module | Ordering, retries, and gaps behave the same whatever the channel. |
 | Each destination is ordered and independent | Failure precedes recovery, and one broken receiver cannot delay the others. |
+| An `sos` passes the waiting deliveries below `sos` of the same destination, while the wait before a retry stays destination-wide | A warning that waits for a retry must never delay a page, and one rate-limited destination must not get a retry for each key at once. |
 | Every alert has a title and a body, written once by MMWatchdog | An alert reads the same on every channel. A short channel gets a complete line, and no module needs wording of its own. |
 | A title has at most 120 characters, and MMWatchdog cuts inside the longest name | The title fits an SMS together with the words and the link that a service adds, and the words that say what changed survive the cut. |
 | MMWatchdog writes the title a second time with the alert's severity in front, in the labels that MMHotline shows, and an email and a chat show that line | A team that sends every severity to one channel sees which message is urgent. A recovery reads `Resolved SOS`, which says the incident is over and how urgent the incident was. An incident closed without recovery reads `Closed SOS`, because MMWatchdog does not know whether the problem is fixed. A person must not read the closure as proof of recovery. MMWatchdog writes the title with severity once, so no module needs wording of its own. An alert reads the same in email, chat, and MMHotline. |
@@ -1378,4 +1398,3 @@ page, under "Why it works this way".
   [destination module](#destination-modules).
 - Filtering a destination by the type of event, such as a destination that
   takes failures and no maintenance alerts.
-- Fleet alert grouping by shared cause beyond matching check groups.

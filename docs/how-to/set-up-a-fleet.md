@@ -550,7 +550,11 @@ install them with `mmx run join_hub --inventory hub_members`.
   nodes within a minute, the hub sends the first alert at once and the
   others together in one message, such as
   `myapp/http failed on 7 nodes: app-2, app-3, …, and 2 more`.
-  [Alerts in a fleet](set-up-a-fleet.md#where-alerts-go-in-a-fleet) gives every rule.
+  A security flaw or another finding with an exact finding gets one alert
+  across the fleet, however many hours the nodes take to report it: later
+  nodes come in one update every 6 hours
+  ([one alert per exact finding](../how-it-works.md#one-alert-per-exact-finding)).
+  [Fleet alert grouping](../changing-mmwatchdog/design/fleet.md#fleet-alert-grouping) gives every rule.
 - **A joined node has no destinations of its own.** MMWatchdog on a joined
   node refuses to start while `/etc/mmwatchdog/alert_destinations.yml`
   exists, and `join_hub` removes that file from each node.
@@ -662,6 +666,24 @@ install them with `mmx run join_hub --inventory hub_members`.
   without readings. The readings add one write to the hub's disk for each
   report, and take up to `measurement_history_of_nodes_size_limit`. The hub
   saves every report before it answers, so give it a reliable disk.
+  For a fleet of more than 1,000 nodes, change two settings in
+  `files/hub_and_standalone/mmwatchdog_node_settings.yml`:
+  - **`fleet_hub_role.joined_node_limit`**, 1000 by default, is how many
+    nodes may join. A join beyond it is refused. Raise it to the fleet's
+    size with room to grow, such as `joined_node_limit: 6000` for 5,000
+    nodes. The limit keeps a leaked join code from filling the hub's
+    database with nodes, so do not raise it far beyond the fleet.
+  - **`state_database_size_limit`**, `128MiB` by default, bounds the hub's
+    `state.db`, which holds one row for each open incident of each node,
+    so that the hub can send one alert per exact finding. Each open node
+    incident takes about BYTES_PER_OPEN_INCIDENT bytes, as measured with
+    5,000 simulated nodes. Add the open incidents that the fleet can have
+    at once to the limit that the hub needs already: for 5,000 nodes with
+    up to 40 open findings each, such as packages with a waiting security
+    update, add 200,000 × BYTES_PER_OPEN_INCIDENT bytes. A changed
+    `state_database_size_limit` takes effect at the next restart of
+    MMWatchdog, which `mmx run hub_and_standalone` does
+    ([storage limits](../reference/configuration-files.md#storage-limits)).
 - **You update MMWatchdog later.** Update the hub first, then the joined
   nodes: [Update a fleet](update-mmwatchdog.md#update-a-fleet).
 - **The nodes must not be installed by MMX.** The

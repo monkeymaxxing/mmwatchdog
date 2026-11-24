@@ -291,10 +291,10 @@ doesn't cover your situation, extend it."
 
 | Document | Owns |
 | --- | --- |
-| [Check groups and checks](checks.md) | Named check groups and checks, timing and the failing time, limits on measurements, the rules that the protocol checks share, modules of every kind (core modules, official extra modules, and the project's own modules), the primitives, the module description, findings, keeping a check quiet while its cause fails, and heartbeats |
+| [Check groups and checks](checks.md) | Named check groups and checks, timing and the failing time, limits on measurements, the rules that the protocol checks share, modules of every kind (core modules, official extra modules, and the project's own modules), the primitives, the module description, findings and exact findings, keeping a check quiet while its cause fails, and heartbeats |
 | [Recovery and maintenance](recovery.md) | Restarts of a systemd unit, recovery commands, recovery attempts, and maintenance windows |
 | [Alerts](alerts.md) | Alert ownership, events, the title and body of an alert, destinations and destination modules, which alert goes to whom, notices, durable delivery, and reminders |
-| [Fleet](fleet.md) | The hub, joining, reports, the fleet view, node groups, measurement history on the hub, fleet alerts and fleet alert grouping, silence, the hub-outage alerter nodes, and MMHotline in a fleet |
+| [Fleet](fleet.md) | The hub, joining, reports, the fleet view, node groups, measurement history on the hub, fleet alerts and fleet alert grouping, one alert per exact finding, silence, the hub-outage alerter nodes, MMHotline in a fleet, and setting a finding aside |
 | [Operation](operation.md) | Runtime and state, configuration and activation, the CLI, measurement history and storage, running your own program as a systemd unit, and MMX deployment |
 
 The design of one module, from what it reads to why it works that way, is on
@@ -336,6 +336,7 @@ names what the build still lacks of the feature in the row.
 | [Executables and the JSON protocol](checks.md#executables-and-the-json-protocol), and the [JSON helper](checks.md#json-helper-for-bash-executables) | Built |
 | [State kept between runs](checks.md#state-kept-between-runs) | Built, including preservation across timing-only reloads |
 | [Findings](checks.md#findings) | Built |
+| [Exact findings](checks.md#exact-findings), from every core module that reports findings and from modules of the project's own; `apt_security_updates`, `dnf_security_updates`, and `zypper_security_patches` report one finding per source package, advisory, or patch | Built |
 | [Official extra modules](checks.md#official-extra-modules) | Built: Starlark scripts in `official_extra_modules/` of the repository and of every release, the version check, and a directory for official extra modules on a node. Five modules deliver alerts: `discord`, `mattermost`, `pushover`, `slack`, and `telegram`. Three modules check a tool: `zfs_pool`, `apache_status`, and `mongodb`. The destination scripts support configuration-time input validation and quiet verification |
 | [One cause, one alert](checks.md#one-cause-one-alert) | Built |
 | [Heartbeats](checks.md#heartbeats) | Built |
@@ -362,11 +363,13 @@ names what the build still lacks of the feature in the row.
 | [Node groups](fleet.md#node-groups) | Built |
 | [Measurement history on the hub](fleet.md#measurement-history-on-the-hub) | Built |
 | [Alerts in a fleet](fleet.md#alerts-in-a-fleet) and [fleet alert grouping](fleet.md#fleet-alert-grouping) | Built |
+| [One alert per exact finding](fleet.md#one-alert-per-exact-finding): per destination and key, growth on the shared tick, one reminder schedule per key, and an `sos` first in each destination's queue | Built |
+| [Set a finding aside](fleet.md#set-a-finding-aside), with `mmwatchdog fleet findings` and `mmwatchdog fleet set-aside-findings` | Built |
 | [Silent nodes](fleet.md#silent-nodes) and [the hub-outage alerter nodes](fleet.md#the-hub-outage-alerter-nodes) | Built |
 | [Maintenance and deploys in a fleet](fleet.md#maintenance-and-deploys-in-a-fleet) | Built |
 | [Forget, rotate, and move](fleet.md#forget-a-node-rotate-the-join-code-move-the-hub) | Built |
 | [One incident per check across the fleet](fleet.md#one-incident-per-check-across-the-fleet), for MMHotline and every destination whose service keeps incidents | Built |
-| [MMHotline in a fleet](fleet.md#mmhotline-in-a-fleet) | Built |
+| [MMHotline in a fleet](fleet.md#mmhotline-in-a-fleet), including the optional alert source for nodes sending without the hub | Built |
 | [Install and run](operation.md#install-and-run) | Built |
 | [Configuration files and validation](operation.md#configuration-files-and-validation) | Built: explicit recovery, queue, fleet, reminder, and module settings; node prerequisites checked by validation and reload; `--config-only` for authoring elsewhere. Not built: the validation messages for the parts that are not built |
 | [Activate a configuration](operation.md#activate-a-configuration) | Built |

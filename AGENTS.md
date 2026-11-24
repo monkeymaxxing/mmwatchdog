@@ -46,7 +46,8 @@ for users.
 | fleet settings | The settings that joined nodes copy from the hub: alert destinations and the destinations' credential file contents. Fleet settings also include the destinations whose services keep incidents, fleet timings, the hub's silence severity, the hub's raise to `sos`, and the destinations for the hub's silence alerts. |
 | hub-outage alerter node | A joined node that the fleet hub selects to send a direct alert when the hub stays unreachable. The hub selects two joined nodes from the fleet. In a fleet of two nodes including the hub, the hub selects the only joined node. |
 | node status report | The snapshot of its current monitoring status that each joined node sends to the hub, with a bounded batch of its events and readings. |
-| fleet alert grouping | The hub sends the first matching alert at once and combines nearby matching alerts from several nodes into one message. |
+| fleet alert grouping | The hub sends the first matching alert at once and combines nearby matching alerts from several nodes into one message. For a finding with an exact finding, the hub sends one alert per exact finding across the fleet, and later nodes in updates on the shared tick. |
+| shared tick | The times at which the hub sends the updates about nodes newly affected by an exact finding already announced: the multiples of `send_newly_affected_nodes_every` since 1970-01-01 00:00 UTC, such as 00:00, 06:00, 12:00, and 18:00 UTC with the default `6h`, the same for every key. |
 | run | One execution of a check. A run produces one observation. |
 | observation | The result of one run: `ok`, `failed`, or `unknown`, with its time and evidence. |
 | failing time | The time from a check's first failed run until the check has been healthy for `recovered_after_healthy_for`. |
@@ -74,6 +75,8 @@ for users.
 | primitive | One of the functions through which every module reads the node, such as `read_file`, `run_command`, and `http_request`. |
 | module description | What a module's inputs, measurements, and examples are. A core module's description is built into the `mmwatchdog` program. Every module that is not core has the file `module_description.yml`. |
 | finding | One of several things that one run of a check reports as failed, such as one failed systemd unit. Each finding is a separate incident. |
+| exact finding | One line, beside a finding's `id`, that names the finding's problem precisely, such as the package, its installed version, and the advisory. Two nodes with the same exact finding have the same problem. Only a module supplies an exact finding. |
+| set-aside entry | An entry of the hub's `set_aside_findings.yml` that sets one exact finding of one check's finding aside after an investigation: the hub sends no alert below `sos` for a node incident with that exact finding. |
 | controller machine | MMX's term for the machine where a person runs `mmx`, such as a laptop. MMWatchdog runs nothing on the controller machine. The `mmwatchdog` file in a deployment project is the Linux program for the nodes. |
 | title | The one short line of an alert. |
 | body | Everything of an alert except its title. |
