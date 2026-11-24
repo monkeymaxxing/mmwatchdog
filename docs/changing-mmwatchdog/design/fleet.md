@@ -874,8 +874,14 @@ For one destination and one key:
    Each node incident in a node status report carries this eligibility as
    `reminder_eligible`. A node of 0.2.0 makes no reminders of such a key
    while its latest report reached the hub, and makes its own only while
-   it delivers without the hub. The hub drops a reminder of such a key that
-   a node older than 0.2.0 sends.
+   it delivers without the hub. The hub drops a node's reminder only when
+   its own reminder covers the node's incident: the set of the destination
+   that the reminder names holds the incident open, grouped by exact
+   finding, and the hub keeps a reminder schedule of the key for that
+   destination. Any other reminder goes on, such as one of an incident
+   without an exact finding, from a node older than 0.2.0 or from a module
+   that could not name the cause, routed to a destination where only other
+   nodes' incidents of the key have an exact finding.
 
 The hub writes `at` of an update as the time when the update is sent, so
 the note about late delivery never applies to an update.

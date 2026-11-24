@@ -11,9 +11,10 @@ import (
 
 // The hub keeps one reminder schedule per destination and key, following
 // the destination's remind_every, and reminds only while a member is
-// eligible: not in maintenance or quiet time, as its node reports. Nodes'
-// own reminders of the key are dropped at intake, also those of a 0.1.x
-// node, which knows no exact finding. MMHotline gets no reminders.
+// eligible: not in maintenance or quiet time, as its node reports. A
+// node's own reminder that the hub's reminder covers is dropped at intake;
+// that of a 0.1.x node, which knows no exact finding and so is in no
+// grouped reminder, goes on. MMHotline gets no reminders.
 func TestOneReminderPerDestinationAndKeyWhileAMemberIsEligible(t *testing.T) {
 	t.Parallel()
 	chat := chatTaking("https://chat.example.com", "warn")
@@ -49,15 +50,58 @@ func TestOneReminderPerDestinationAndKeyWhileAMemberIsEligible(t *testing.T) {
 	if !slices.Equal(got[0].Nodes, []string{"app-1", "app-2"}) {
 		t.Fatal(got[0].Nodes)
 	}
-	// A node's own reminder of the key never reaches a destination.
+	// A node's own reminder that the hub's reminder covers never reaches
+	// the destination; the 0.1.x node's does.
 	old := h.alert("old-1", "reminder", "warn", "", 0, tenOFive.Add(3*time.Hour))
 	old.Destination = "chat"
 	current := h.alert("app-2", "reminder", "warn", versionA, 0, tenOFive.Add(3*time.Hour))
 	current.Destination = "chat"
 	h.arrive(tenOFive.Add(3*time.Hour), old, current)
-	expectKinds(t, h.take("chat"))
+	got = h.take("chat")
+	expectKinds(t, got, "reminder warn")
+	if got[0].Node != "old-1" {
+		t.Fatal("the reminder that went on is", got[0].Node)
+	}
 	// MMHotline got the growth update of 12:00, and no reminder.
 	expectKinds(t, h.take("hotline"), "finding_nodes_changed warn")
+}
+
+// A node's reminder to a destination whose grouped reminder does not
+// cover the node's incident goes on: node app-1 has no exact finding and
+// sends to ops, while app-2 has one for the same key and sends only to
+// security. The hub reminds security of app-2 and drops app-2's own
+// reminder there, and app-1's reminder reaches ops.
+func TestOnlyANodesReminderThatTheHubsReminderCoversIsDropped(t *testing.T) {
+	t.Parallel()
+	ops, security := chatTaking("https://ops.example.com", "warn"), chatTaking("https://security.example.com", "warn")
+	ops.RemindEvery, security.RemindEvery = "1h", "1h"
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"ops": ops, "security": security})
+	to := func(alert checksandalerts.Event, destination string) checksandalerts.Event {
+		alert.SendAlertsOnlyToDestinations = &[]string{destination}
+		return alert
+	}
+	h.arrive(tenOFive, to(h.alert("app-2", "failed", "warn", versionA, 0, tenOFive), "security"))
+	h.arrive(tenOFive.Add(time.Minute), to(h.alert("app-1", "failed", "warn", "", 0, tenOFive.Add(time.Minute)), "ops"))
+	expectKinds(t, h.take("security"), "failed warn")
+	expectKinds(t, h.take("ops"), "failed warn")
+	reminders := []checksandalerts.Event{}
+	for _, r := range []struct{ node, exactFinding, destination string }{{"app-1", "", "ops"}, {"app-2", versionA, "security"}} {
+		reminder := to(h.alert(r.node, "reminder", "warn", r.exactFinding, 0, tenOFive.Add(time.Hour)), r.destination)
+		reminder.Destination = r.destination
+		reminders = append(reminders, reminder)
+	}
+	h.arrive(tenOFive.Add(time.Hour), reminders...)
+	got := h.take("ops")
+	expectKinds(t, got, "reminder warn")
+	if got[0].Node != "app-1" {
+		t.Fatal("ops got the reminder of", got[0].Node)
+	}
+	h.tick(tenOFive.Add(time.Hour + time.Minute))
+	got = h.take("security")
+	expectKinds(t, got, "reminder warn")
+	if got[0].Node != "app-2" || got[0].ID == reminders[1].ID {
+		t.Fatal("security got a reminder other than the hub's own", got[0])
+	}
 }
 
 // A key that the destination got only from a node sending without the hub,

@@ -67,9 +67,9 @@ func queueIntake(tx *sql.Tx, node string, event checksandalerts.Event, b []byte,
 		group = checksandalerts.CannotCheckIncidentEvents.Failed
 	}
 	// The hub reminds of a key grouped by exact finding itself, once per
-	// destination and key, so a node's reminder of it is dropped: one of
-	// a 0.1.x node, which knows no exact finding, too.
-	if drop, e := hubRemindsOf(tx, event); drop || e != nil {
+	// destination and key, so a node's reminder that the hub's reminder
+	// covers is dropped.
+	if drop, e := hubRemindsOf(tx, node, event); drop || e != nil {
 		return e
 	}
 	// A node's new reminder replaces its undelivered one for the same
@@ -96,19 +96,23 @@ func queueIntake(tx *sql.Tx, node string, event checksandalerts.Event, b []byte,
 	return addIntakeBytes(tx, node, int64(len(b)))
 }
 
-// hubRemindsOf reports a node's reminder of a key that the hub reminds of
-// itself: a reminder with an exact finding, or one of a failure key that
-// some node has open with an exact finding on the hub.
-func hubRemindsOf(tx *sql.Tx, event checksandalerts.Event) (bool, error) {
-	if event.Type != "reminder" || event.Finding == "" || checksandalerts.ReminderIsAboutCannotCheck(event) {
+// hubRemindsOf reports a node's reminder that the hub's own reminder
+// covers: the set of the destination that the reminder names holds the
+// node's incident open, grouped by exact finding, and the hub keeps a
+// reminder schedule of its key for that destination. Any other reminder,
+// such as one of an incident without an exact finding routed to a
+// destination where only other nodes' incidents of the key have one, goes
+// on.
+func hubRemindsOf(tx *sql.Tx, node string, event checksandalerts.Event) (bool, error) {
+	if event.Type != "reminder" || event.Incident == "" || checksandalerts.ReminderIsAboutCannotCheck(event) {
 		return false, nil
 	}
-	if checksandalerts.HasExactFinding(event) {
-		return true, nil
-	}
-	var grouped bool
-	e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_node_incidents WHERE incident_key=? AND exact_finding!='')", checksandalerts.ReadableFleetIncidentKey(event, "failed", "")).Scan(&grouped)
-	return grouped, e
+	var covered bool
+	e := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM fleet_incident_set s JOIN fleet_incident_keys k
+ ON k.destination=s.destination AND k.alert_source=s.alert_source AND k.incident_key=s.incident_key
+ WHERE s.destination=? AND s.reporter=? AND s.incident_id=? AND s.state=? AND s.grouped_by_exact_finding=1 AND k.next_reminder_due!=0)`,
+		event.Destination, node, event.Incident, FleetIncidentOpen).Scan(&covered)
+	return covered, e
 }
 
 // addIntakeBytes changes the running totals of the bytes of the alerts that
