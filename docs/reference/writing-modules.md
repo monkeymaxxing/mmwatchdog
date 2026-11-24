@@ -630,6 +630,7 @@ so you see the `id` of each incident.
 | `id` | Required. The finding's identity: the same thing has the same `id` at every run. Text on one line, of at most 255 bytes. No two findings of one result have the same `id`. For a thing whose name can be longer, use a stable checksum as the `id` and name the thing in the message. |
 | `message` | Required. What is wrong, such as `the job nightly_report failed`. |
 | `recovery_message` | Optional. The text to use when the finding becomes healthy. MMWatchdog keeps it with the finding's incident, also across restarts, so a finding with a checksum `id` still names its thing in the recovery. |
+| `exact_finding` | Optional. One line of plain text, of at most 255 bytes, that names the finding's problem precisely, such as `nightly_report exit 3 at step export`. Two nodes with the same exact finding have the same problem. MMWatchdog removes credential file contents from it, as from `message`. |
 
 - A `failed` result holds at least one finding, and an `ok` or `unknown`
   result holds none. A result holds at most 500 findings.
@@ -643,6 +644,21 @@ so you see the `id` of each incident.
 - A result that breaks a rule makes the observation `unknown`, with a
   message such as
   `the module failed_jobs answered failed without a finding, and its description states one_incident_for_each_finding`.
+
+**Give an exact finding when you can name the cause.** In a fleet, the hub
+sends one alert per exact finding across the fleet, and later nodes with
+the same exact finding in updates on the shared tick, every 6 hours by
+default. A team can also
+[set a finding aside](../changing-mmwatchdog/design/fleet.md#set-a-finding-aside)
+by its exact finding. A finding without an exact finding keeps the
+one-minute grouping, one alert for each node that reports it more than a
+minute after the first. So write into the exact finding everything that
+decides whether one investigation covers two nodes, such as a version or
+a kind of failure, and nothing that differs from node to node without
+changing the problem, such as a node's name, a time, or a count. When the
+exact finding of an open, announced finding changes, MMWatchdog sends
+`exact_finding_changed`
+([exact findings](../changing-mmwatchdog/design/checks.md#exact-findings)).
 
 ## Destination modules
 
@@ -1037,7 +1053,7 @@ node, and the module's account needs access to the file.
 | --- | --- |
 | `module-json request [--inputs NAME,...]` | Reads the request from standard input, checks its protocol and that it holds only the listed inputs, and prints it for the `get` calls that follow. |
 | `module-json get [--type TYPE] POINTER` | Reads one value from the request on standard input by JSON Pointer, such as `/inputs/file_path` or `/alert/title`. `TYPE` is `string`, `integer`, `number`, `boolean`, `array`, `object`, `null`, or `json`. A missing value or a value of another type is an error. |
-| `module-json result --status STATUS (--message TEXT \| --message-stdin) [--measurement NAME VALUE]... [--finding ID MESSAGE]...` | Writes a valid result. `STATUS` is `ok`, `failed`, or `unknown` for a check, and `delivered` or `failed` for a destination. |
+| `module-json result --status STATUS (--message TEXT \| --message-stdin) [--measurement NAME VALUE]... [--finding ID MESSAGE]... [--exact-finding ID TEXT]...` | Writes a valid result. `STATUS` is `ok`, `failed`, or `unknown` for a check, and `delivered` or `failed` for a destination. |
 | `module-json object [--string NAME TEXT]... [--string-stdin NAME] [--json NAME JSON]...` | Writes one JSON object with the members in the order given, for a module that sends JSON to a service. |
 
 - **A text needs no escaping by hand.** The helper writes quotes,
@@ -1046,8 +1062,9 @@ node, and the module's account needs access to the file.
   substitution, as above, is right for ordinary values. When line breaks at
   the end of a value matter, send the output straight to a file.
 - **Each measurement has its own `--measurement NAME VALUE`,** and each
-  finding its own `--finding ID MESSAGE`. A measurement takes no unit: the
-  unit is in the description.
+  finding its own `--finding ID MESSAGE`. `--exact-finding ID TEXT` gives
+  the finding named by `ID` its exact finding. A measurement takes no unit:
+  the unit is in the description.
 - **`--message-stdin` reads the message from standard input,** for a long
   message. Use exactly one of `--message` and `--message-stdin`.
 - **Keep a secret out of the arguments.** Every account of a machine can

@@ -1368,9 +1368,84 @@ findings:
   incident of a finding stays open, and the time in which the module could
   not check counts as healthy time for no finding.
 
+#### Exact findings
+
+A finding may carry an **exact finding**, `exact_finding`: one line of at
+most 255 bytes that names the problem precisely. Two nodes with the same
+exact finding have the same problem, and one investigation covers both.
+The finding's `id` stays the identity of its incident, so a move from one
+affected version to another is never reported as ok again; the exact
+finding changes instead.
+
+In a fleet, the hub sends one alert per exact finding across the fleet,
+instead of one per node ([one alert per exact finding](fleet.md#one-alert-per-exact-finding)),
+and a team can [set a finding aside](fleet.md#set-a-finding-aside) by its
+exact finding. A finding without an exact finding keeps
+[grouping within one minute](fleet.md#fleet-alert-grouping).
+
+The core modules that report findings supply these exact findings:
+
+| Module | Finding `id` | `exact_finding` |
+| --- | --- | --- |
+| [`known_exploited_vulnerabilities_in_installed_packages`](../../reference/modules/known_exploited_vulnerabilities_in_installed_packages.md) | The CVE and the source package | The release ecosystem, the CVE, the source package, the installed version, the fix state, and the `modified` time of the release's own OSV record, such as `Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-CVE-2026-123158 modified 2026-11-20T08:12:00Z` |
+| [`apt_security_updates`](../../reference/modules/apt_security_updates.md) | The source package | The release, the source package, the installed version, and the candidate version |
+| [`dnf_security_updates`](../../reference/modules/dnf_security_updates.md) | The advisory, such as `RHSA-2026:1234` | The release, the advisory, and the advisory's severity |
+| [`zypper_security_patches`](../../reference/modules/zypper_security_patches.md) | The patch | The release, the patch, the patch's severity, and whether a reboot is needed |
+| [`ubuntu_pro_security_fixes`](../../reference/modules/ubuntu_pro_security_fixes.md) | The source package | The release, the source package, the installed version, the fixed version, and the Ubuntu Pro service |
+| [`every_systemd_unit`](../../reference/modules/every_systemd_unit.md) | The unit | The unit and systemd's `Result`, such as `backup.service exit-code` |
+| [`every_disk_and_network_filesystem`](../../reference/modules/every_disk_and_network_filesystem.md) | The mount point | The mount point and the kind of failure: `space`, `inodes`, `read-only`, or `unreadable` |
+
+- **The three security-update checks report one finding per source
+  package, advisory, or patch,** so a security update across the fleet is
+  one alert.
+- **A flaw's fix state** has one of four forms: `fixed version: none`,
+  `fixed version waits: X`, `fix needs Ubuntu Pro: X`, and
+  `fixed kernel installed, runs after a reboot: X`.
+- **An advisory change is a new exact finding.** The release's own OSV
+  record, such as `DEBIAN-CVE-…`, changes when the distribution changes its
+  assessment of the flaw, so its `modified` time is part of the exact
+  finding, even when the fix state stays the same. The record also changes
+  for small edits, which costs an occasional repeat investigation; a
+  missed reassessment would hide a flaw. The records of other ecosystems
+  are not part of the exact finding.
+- **A longer text is shortened with a hash.** Text longer than 255 bytes
+  keeps its first 180 bytes, cut on a UTF-8 character boundary, followed by
+  ` sha256:` and the SHA-256 of the whole text as 64 hexadecimal digits.
+- **A module of the project's own** may return `exact_finding` beside a
+  finding's `id`. It must be plain text on one line, and MMWatchdog removes
+  credential file contents from it, as from `message`. An executable
+  module builds it with
+  `mmwatchdog module-json result --exact-finding ID TEXT`, where `ID` names
+  the finding ([writing modules](../../reference/writing-modules.md)).
+
+**On the node,** each finding's incident keeps two exact findings: the
+**current** one, from the latest run, and the **announced** one, which the
+incident's latest alert carried.
+
+- When the incident is open and announced, is not held back by maintenance
+  or quiet time, and its current exact finding differs from the announced
+  one, the node sends an `exact_finding_changed` alert and records the
+  current exact finding as announced.
+- A change during maintenance or quiet time goes out when that time ends,
+  if the exact finding still differs.
+- Each change of the current exact finding raises the incident's exact
+  finding sequence number by one. Reports and alerts carry the number, so
+  the hub never takes an older exact finding over a newer one.
+- `exact_finding_changed` belongs to its incident: it carries the
+  incident's key and follows the incident's recorded destinations, the
+  record of incidents sent without the hub, and the fallback rules of
+  [alerts in a fleet](fleet.md#alerts-in-a-fleet).
+- A standalone node sends `exact_finding_changed` to its destinations like
+  any alert of the incident.
+
 Module pages that rely on the findings section:
 [`every_systemd_unit`](../../reference/modules/every_systemd_unit.md),
-[`every_disk_and_network_filesystem`](../../reference/modules/every_disk_and_network_filesystem.md).
+[`every_disk_and_network_filesystem`](../../reference/modules/every_disk_and_network_filesystem.md),
+[`known_exploited_vulnerabilities_in_installed_packages`](../../reference/modules/known_exploited_vulnerabilities_in_installed_packages.md),
+[`apt_security_updates`](../../reference/modules/apt_security_updates.md),
+[`dnf_security_updates`](../../reference/modules/dnf_security_updates.md),
+[`zypper_security_patches`](../../reference/modules/zypper_security_patches.md),
+[`ubuntu_pro_security_fixes`](../../reference/modules/ubuntu_pro_security_fixes.md).
 
 ### Which modules a node uses
 

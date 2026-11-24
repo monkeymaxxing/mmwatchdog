@@ -33,6 +33,8 @@ the service is stopped.
 | [`mmwatchdog heartbeat CHECK_GROUP`](#mmwatchdog-heartbeat) | Reports from a scheduled job that the job succeeded. | No | Yes, through the heartbeat socket, or a receiver on another machine |
 | [`mmwatchdog fleet`](#mmwatchdog-fleet) | On the hub: shows every node of the fleet, one node, or one node group. | Yes | Yes |
 | [`mmwatchdog fleet readings`](#mmwatchdog-fleet-readings) | On the hub: shows the measurement history of a joined node or of a node group. | Yes | No |
+| [`mmwatchdog fleet findings CHECK_GROUP/CHECK`](#mmwatchdog-fleet-findings) | On the hub: lists every node with a finding of one check, and each node's exact finding. | Yes | Yes |
+| [`mmwatchdog fleet set-aside-findings`](#mmwatchdog-fleet-set-aside-findings) | On the hub: lists the findings set aside, and the nodes that each one covers now. | Yes | Yes |
 | [`mmwatchdog fleet join-code`, `rotate-join-code`, `forget`](#mmwatchdog-fleet-join-code-rotate-join-code-and-forget) | On the hub: prints or changes the join code, or removes a node from the fleet. | Yes | Yes |
 | [`mmwatchdog describe-module [NAME]`](#mmwatchdog-describe-module) | Lists the modules that the node has, or prints the page of one module. | No | No |
 | [`mmwatchdog module-usage [NAME]`](#mmwatchdog-module-usage) | Shows which modules the configuration uses, and where. | No | No |
@@ -563,6 +565,13 @@ test message itself.
   attempt. An action that saved its attempt goes ahead.
 - The measurement history settings of the node and of the hub take effect
   at once.
+- On the hub, a changed `set_aside_findings.yml` takes effect at once. An
+  incident that an entry now covers closes with one
+  `closed_without_recovery` alert for each destination and key,
+  `Set aside after investigation: <reason>`. Incidents that an entry no
+  longer covers send one opening alert for each destination and key, with
+  the note `an earlier exact finding was set aside: <reason>`. The hub
+  does the same when it starts, for changes made while it was stopped.
 
 **What needs a restart instead.** These settings take effect only when
 the service restarts: `max_concurrent_checks`, `socket`, `state_dir`,
@@ -791,7 +800,10 @@ Hub-outage alerter nodes: web01, web02
 ```
 
 The first line counts the nodes and the healthy ones. Each node that is
-not healthy gets its own lines, with its state and its problems. Below
+not healthy gets its own lines, with its state and its problems. A finding
+below `sos` that the hub [sets aside](#mmwatchdog-fleet-set-aside-findings)
+does not make its node unhealthy: all such findings share one line, such
+as `Set aside: 1 finding on 5000 nodes`. Below
 come the hub-outage alerter nodes, the joined nodes that alert when the
 hub stays unreachable, and then maintenance windows, the hub's
 measurement history when its size limit cut it short, refused joins, and
@@ -831,7 +843,10 @@ Recent events:
 Below `Alert deliveries:`, a line for each failing destination of the
 node follows, and then `Last delivery error:` with the node's latest
 delivery error, when no line about a failing destination shows that
-error.
+error. A finding that the hub sets aside reads
+`set aside (reason …) until the exact finding changes`. On the node
+itself, `mmwatchdog status` still shows the finding as failing, because
+only the hub knows what is set aside.
 
 **The state of a node:**
 
@@ -932,7 +947,8 @@ The program reads these fields of each entry in `nodes`:
 alert themselves when they cannot reach the hub.
 
 Exit codes: the worst exit code of the nodes shown, 1 before 3, and 3 for
-a storage problem of the hub. `fleet NODE` exits with that node's code. 4
+a storage problem of the hub. A finding below `sos` that is set aside
+counts for neither. `fleet NODE` exits with that node's code. 4
 on a node that is not the hub, or for a wrong argument.
 [Watch a fleet](../how-to/watch-a-fleet.md) reads each form.
 
@@ -971,6 +987,63 @@ memory_used_percent, percent · fails above 90
   [`mmwatchdog readings`](#mmwatchdog-readings).
   [Read the readings of every node on the hub](../how-to/look-back-at-measurements.md#read-the-readings-of-every-node-on-the-hub)
   explains the node group view.
+
+## mmwatchdog fleet findings
+
+`mmwatchdog fleet findings` runs on the hub and lists every node with a
+finding of one check, with no limit on the count. An update about nodes
+that a known exact finding newly affects names at most 20 nodes for each
+exact finding, and this command lists all of them.
+
+```text
+mmwatchdog fleet findings CHECK_GROUP/CHECK [--finding ID] [--json]
+```
+
+- For each finding, the command lists each node with its exact finding and
+  the time of its first failure.
+- `--finding ID` lists only the finding with that `id`, such as
+  `--finding "CVE-2026-123158 openssh"`.
+- A finding without an exact finding, such as one from a node older than
+  0.2.0, is listed without one.
+
+Exit codes: 0, or 4 on a node that is not the hub, or for a wrong
+argument. [Exact findings](../changing-mmwatchdog/design/checks.md#exact-findings)
+says which modules supply an exact finding.
+
+## mmwatchdog fleet set-aside-findings
+
+`mmwatchdog fleet set-aside-findings` runs on the hub and lists each entry
+of `/etc/mmwatchdog/set_aside_findings.yml` that the hub uses now, so a
+deploy can check that the hub has the entries that the project holds:
+
+```text
+mmwatchdog fleet set-aside-findings [--json]
+```
+
+For each entry the command shows its check, finding, exact finding,
+reason, investigation note, who set it aside, and when, and:
+
+- how many nodes the entry covers now, with up to 20 of them;
+- whether the entry matches no node now, over every node's latest saved
+  report, also the hub's and those of silent nodes;
+- how many nodes cannot check now: nodes whose check is `unknown`, nodes
+  that wait for their first report, and nodes without a saved report.
+  Remove an entry only when it matches no node and this count is 0,
+  because one of those nodes may still have the exact finding.
+
+An entry covers only incidents below `sos`; a node whose finding is `sos`
+alerts, whatever the file says, and is not counted as covered.
+
+**JSON.** Each entry has `check`, `finding`, `exact_finding`, `reason`,
+`investigation_note`, `set_aside_by`, `set_aside_on`,
+`covered_node_count`, `covered_nodes` (up to 20), `matches_no_node_now`,
+and `nodes_that_cannot_check_now`.
+
+Exit codes: 0, or 4 on a node that is not the hub.
+[Set a finding aside](../changing-mmwatchdog/design/fleet.md#set-a-finding-aside)
+gives every rule, and the
+[configuration files reference](configuration-files.md#the-set-aside-findings-file)
+the format of the file.
 
 ## mmwatchdog fleet join-code, rotate-join-code, and forget
 
@@ -1095,7 +1168,7 @@ and no `sudo`.
 | Command | What it does |
 |---|---|
 | `mmwatchdog run-starlark-module MODULE_DIR` | Runs the script `module.star` of the module in `MODULE_DIR` once: it reads one request from standard input and writes the result to standard output. MMWatchdog runs every Starlark module this way. |
-| `mmwatchdog module-json request`, `get`, `result`, `object` | Read the request and write the result of an executable module, from a Bash script. MMWatchdog gives the executable the path of the program in `MMWATCHDOG_MODULE_HELPER`. |
+| `mmwatchdog module-json request`, `get`, `result`, `object` | Read the request and write the result of an executable module, from a Bash script. `result --exact-finding ID TEXT` gives a finding its exact finding. MMWatchdog gives the executable the path of the program in `MMWATCHDOG_MODULE_HELPER`. |
 
 [Writing modules](writing-modules.md) describes the request, the result,
 and each `module-json` command with its flags.
