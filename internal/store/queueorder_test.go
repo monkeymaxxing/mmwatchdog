@@ -13,10 +13,10 @@ import (
 )
 
 // An sos alert goes ahead of every alert below sos for the same
-// destination, across keys, and supersedes an alert below sos of its own
-// key that waits to be retried. Within one key a resolution and what
-// follows it keep their order, and a notice keeps its place among the
-// alerts below sos.
+// destination, across keys and of its own key, and never removes one: an
+// alert below sos of its own key that waits to be retried goes after it.
+// Within one key a resolution and what follows it keep their order, and a
+// notice keeps its place among the alerts below sos.
 func TestSosGoesFirstAndKeepsTheOrderWithinItsKey(t *testing.T) {
 	t.Parallel()
 	s, e := store.OpenStore(filepath.Join(t.TempDir(), "state"), config.DefaultStorageLimits)
@@ -78,19 +78,19 @@ func TestSosGoesFirstAndKeepsTheOrderWithinItsKey(t *testing.T) {
 			t.Fatal(e)
 		}
 	}
-	// http raised supersedes the http failure that waits to be retried; dns
-	// raised goes ahead of the dns failure that was not attempted yet; disk
-	// failed again waits for the resolution of its key.
-	want := []string{"http raised", "tls failed", "dns raised", "notice", "dns failed", "disk failed", "disk recovered", "disk failed again"}
+	// http raised goes ahead of the http failure that waits to be retried,
+	// which still goes; dns raised goes ahead of the dns failure that was
+	// not attempted yet; disk failed again waits for the resolution of its
+	// key.
+	want := []string{"http raised", "tls failed", "dns raised", "http failed", "notice", "dns failed", "disk failed", "disk recovered", "disk failed again"}
 	if !slices.Equal(delivered, want) {
 		t.Fatalf("delivered in the order %q, want %q", delivered, want)
 	}
 }
 
-// An sos never supersedes the alert that announces an exact finding of its
-// key, waiting to be retried: that alert alone names the exact finding and
-// its node, which the destination would otherwise never hear of, while the
-// key counts the exact finding as announced. It goes after the sos.
+// An sos goes ahead of the alert that announces an exact finding of its
+// key, waiting to be retried, and that alert still goes after it: it alone
+// names the exact finding and its node.
 func TestSosKeepsTheAlertThatAnnouncesAnExactFinding(t *testing.T) {
 	t.Parallel()
 	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn", "sos")})

@@ -1114,9 +1114,9 @@ destination.
   of the newest drop. MMWatchdog never drops a delivery silently.
 - **An `sos` goes first.** An `sos` delivery goes ahead of every
   undelivered delivery below `sos` to the same destination, of every key,
-  and replaces an undelivered lower-severity delivery of its own key,
-  except one that is the first to name an exact finding to the
-  destination: that one goes after the `sos`.
+  its own key included. It never removes another delivery: each one that
+  waits goes after the `sos`, because it may be the only alert that names
+  a node or an exact finding. At most one extra `warn` follows an `sos`.
   Within one key, closing and opening alerts keep their order. While the
   destination fails or limits the rate (HTTP `429` with `Retry-After`), the
   wait before the next attempt stays the same for the whole destination,
