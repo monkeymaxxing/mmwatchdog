@@ -915,15 +915,16 @@ func scanEvents(rows *sql.Rows, maxBytes int) ([]checksandalerts.Event, error) {
 // head: one head per destination preserves ordering while allowing
 // destinations to proceed independently. The head is the oldest alert,
 // unless an sos alert of an incident waits behind alerts below sos: then
-// the oldest such sos alert that no earlier closing alert of its own key
-// precedes goes first (queueorder.go). Whether a head is due for an
+// the oldest such sos alert goes first that no earlier alert of its own
+// key precedes, other than one below sos that waits to be retried
+// (queueorder.go). Whether a head is due for an
 // attempt the notifications worker decides on the monotonic clock
 // (Daemon.attemptDue), for the destination as a whole; Next is for display
 // and for the first wait after a start.
 func (s *Store) Pending() ([]Delivery, error) {
 	rows, e := s.DB.Query(`SELECT seq,destination,event,target,attempts,next,error,sent_without_the_hub FROM outbox WHERE seq IN (
  SELECT COALESCE((SELECT MIN(u.seq) FROM outbox u WHERE u.destination=o.destination AND u.urgent=1
-  AND NOT EXISTS (SELECT 1 FROM outbox c WHERE c.destination=u.destination AND c.incident_key=u.incident_key AND c.closes=1 AND c.seq<u.seq)), MIN(o.seq))
+  AND NOT EXISTS (SELECT 1 FROM outbox c WHERE c.destination=u.destination AND c.incident_key=u.incident_key AND (c.closes=1 OR c.attempts=0) AND c.seq<u.seq)), MIN(o.seq))
  FROM outbox o GROUP BY o.destination) ORDER BY seq`)
 	if e != nil {
 		return nil, e

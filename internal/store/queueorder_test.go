@@ -12,9 +12,11 @@ import (
 	"mmwatchdog/internal/testhelpers"
 )
 
-// An sos alert goes ahead of every alert below sos for the same
-// destination, across keys and of its own key, and never removes one: an
-// alert below sos of its own key that waits to be retried goes after it.
+// An sos alert goes ahead of every alert below sos of other keys for the
+// same destination, and never removes one. Within its own key it goes
+// ahead only of an alert below sos that waits to be retried, which goes
+// after it; an alert of its key not attempted yet keeps its place, so an
+// incident's opening reaches a healthy destination before its raise.
 // Within one key a resolution and what follows it keep their order, and a
 // notice keeps its place among the alerts below sos.
 func TestSosGoesFirstAndKeepsTheOrderWithinItsKey(t *testing.T) {
@@ -79,10 +81,10 @@ func TestSosGoesFirstAndKeepsTheOrderWithinItsKey(t *testing.T) {
 		}
 	}
 	// http raised goes ahead of the http failure that waits to be retried,
-	// which still goes; dns raised goes ahead of the dns failure that was
-	// not attempted yet; disk failed again waits for the resolution of its
-	// key.
-	want := []string{"http raised", "tls failed", "dns raised", "http failed", "notice", "dns failed", "disk failed", "disk recovered", "disk failed again"}
+	// which still goes; dns raised waits for the dns failure that was not
+	// attempted yet, and then goes ahead of the alerts below sos of other
+	// keys; disk failed again waits for the resolution of its key.
+	want := []string{"http raised", "tls failed", "http failed", "notice", "dns failed", "dns raised", "disk failed", "disk recovered", "disk failed again"}
 	if !slices.Equal(delivered, want) {
 		t.Fatalf("delivered in the order %q, want %q", delivered, want)
 	}

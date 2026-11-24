@@ -11,10 +11,14 @@ import (
 
 // The order of each destination's queue in the outbox. A destination gets
 // its alerts oldest first, except that an sos alert of an incident goes
-// ahead of every alert below sos, across keys and of its own key. It never
-// removes another queued alert. Within one key a resolution and what
-// follows it keep their order, and a notice keeps its place. The rules are
-// in the design of grouping by exact finding, "Queue order".
+// ahead of every alert below sos of other keys. Within its own key it goes
+// ahead only of an alert below sos that has had a failed attempt and waits
+// to be retried, so an alert stuck behind a refusal never holds it back,
+// while an incident's opening, not attempted yet, still reaches a healthy
+// destination before its raise. It never removes another queued alert.
+// Within one key a resolution and what follows it keep their order, and a
+// notice keeps its place. The rules are in the design of grouping by exact
+// finding, "Queue order".
 
 // outboxOrderOf says where a queued delivery stands: urgent for an sos
 // alert of an incident that does not close it, key for its fleet incident

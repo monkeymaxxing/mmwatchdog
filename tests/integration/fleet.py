@@ -1134,8 +1134,8 @@ def suite(mark=print):
         assert '  Alert severity: warn\n  Raise to SOS after failing for: 5s\n' in mmwatchdog('status severity_by_time').stdout
         raised = wait(lambda: sos_only(by_time('failure_alert_severity_raised')), 'the check raised to sos reaches the sos-only destination', timeout=75)
         assert raised[0]['alert_severity'] == 'sos' and raised[0]['message'] == 'severity_by_time/shell has been failing for 5s, so this alert is now SOS (raise_to_sos_after_failing_for: 5s)', raised
-        failed = to_capture(by_time('failed'))
-        assert failed and failed[0]['alert_severity'] == 'warn' and failed[0]['incident_id'] == raised[0]['incident_id'], failed
+        failed = wait(lambda: [e for e in to_capture(by_time('failed')) if e['incident_id'] == raised[0]['incident_id']], 'the warn alert reaches capture', timeout=75)
+        assert failed[0]['alert_severity'] == 'warn', failed
         # The warn alert went out 3s into the failing time, so the raise at 5s
         # follows it by about 2s, not by another 5s.
         raised_after_alert = (datetime.fromisoformat(raised[0]['at']) - datetime.fromisoformat(failed[0]['at'])).total_seconds()
@@ -1163,8 +1163,8 @@ def suite(mark=print):
         escalated = wait(lambda: sos_only(silence_alert('failure_alert_severity_raised')), 'the count escalation reaches the sos-only destination', timeout=75)
         assert escalated[0]['alert_severity'] == 'sos' and escalated[0]['message'] == '1 of 1 nodes are not reporting to the hub at the same time, so this alert is now SOS (raise_to_sos_when_silent_nodes_reach_percent: 100)', escalated
         assert not sos_only(silence_alert('failed'))
-        warned = [e for e in to_capture(silence_alert('failed')) if e['incident_id'] == escalated[0]['incident_id']]
-        assert warned and warned[0]['alert_severity'] == 'warn', warned
+        warned = wait(lambda: [e for e in to_capture(silence_alert('failed')) if e['incident_id'] == escalated[0]['incident_id']], 'the warn silence alert reaches capture', timeout=75)
+        assert warned[0]['alert_severity'] == 'warn', warned
         loud = wait(mmhotline_alert(name + ' still not reporting to the MMWatchdog fleet hub, now SOS'), 'the escalated silence reaches MMHotline', timeout=75)
         assert loud[0]['severity'] == 'sos' and loud[0]['sender_incident_key'] == fleet_key('node_reports stopped reporting'), loud
         vm.console('systemctl start mmwatchdog', guest=peer_guest)
