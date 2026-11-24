@@ -3,11 +3,14 @@ package checksandalerts
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"time"
+	"unicode/utf8"
 
 	"mmwatchdog/internal/primitives"
 )
@@ -80,6 +83,46 @@ type Finding struct {
 	// RecoveryMessage names the finding when it becomes healthy, including
 	// when ID is a checksum. Its incident state keeps it across restarts.
 	RecoveryMessage string `json:"recovery_message,omitempty"`
+	// ExactFinding names the problem precisely, on one line of at most
+	// ExactFindingLimit bytes, such as the installed version and the fix
+	// state of a flaw: two nodes with the same exact finding have the same
+	// problem, and one investigation covers both. ID stays the incident's
+	// identity, so a change of the exact finding never resolves the
+	// incident. Only a finding with an exact finding joins a later node to
+	// an earlier investigation at the hub (HasExactFinding).
+	ExactFinding string `json:"exact_finding,omitempty"`
+}
+
+// ExactFindingLimit is the most bytes that the exact finding of a finding
+// has, as many as the ID of a finding.
+const ExactFindingLimit = 255
+
+// exactFindingKept is how many bytes of a longer exact finding
+// FitExactFinding keeps in front of the checksum of the whole text. With
+// " sha256:" and the 64 digits of the checksum, the result stays within
+// ExactFindingLimit.
+const exactFindingKept = 180
+
+// ValidExactFinding reports an exact finding that a finding can have: none,
+// or text on one line of at most ExactFindingLimit bytes.
+func ValidExactFinding(text string) bool { return PlainText(text, ExactFindingLimit) }
+
+// FitExactFinding is text made the exact finding of a finding: on one line,
+// and, when longer than ExactFindingLimit bytes, its first exactFindingKept
+// bytes, cut on a character boundary, then " sha256:" and the SHA-256 of the
+// whole text, so that two texts that differ only after the cut still differ.
+// Every core module that reports exact findings builds them with it.
+func FitExactFinding(text string) string {
+	text = primitives.OnOneLine(text)
+	if len(text) <= ExactFindingLimit {
+		return text
+	}
+	sum := sha256.Sum256([]byte(text))
+	kept := exactFindingKept
+	for !utf8.RuneStart(text[kept]) {
+		kept--
+	}
+	return text[:kept] + " sha256:" + hex.EncodeToString(sum[:])
 }
 
 // FindingIDLimit is the most bytes that the ID of a finding has: the length

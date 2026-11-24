@@ -2,12 +2,15 @@ package checksandalerts_test
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"math"
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"mmwatchdog/internal/checksandalerts"
 )
@@ -85,6 +88,16 @@ func TestModuleJSONRequestAndMeasurements(t *testing.T) {
 	if err := checksandalerts.DecodeJSON(out.Bytes(), &result); err != nil || result.Message != "queue\n\n" || result.Measurements["pending"] != 780 || result.Measurements["age"] != 1.5 || len(result.Findings) != 2 || result.Findings[1].ID != "api.example.com" {
 		t.Fatal(result, err)
 	}
+	// An exact finding names the finding that it belongs to, before or after
+	// that finding's --finding.
+	out.Reset()
+	args = []string{"result", "--status", "failed", "--message", "2 certificates expire soon", "--exact-finding", "api.example.com", "api.example.com expires 2026-12-06", "--finding", "www.example.com", "expires in 3 days", "--finding", "api.example.com", "expires in 12 days", "--exact-finding", "www.example.com", "www.example.com expires 2026-11-27"}
+	if err := checksandalerts.ModuleJSONHelper(args, strings.NewReader(""), &out); err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"protocol":1,"status":"failed","message":"2 certificates expire soon","findings":[{"id":"www.example.com","message":"expires in 3 days","exact_finding":"www.example.com expires 2026-11-27"},{"id":"api.example.com","message":"expires in 12 days","exact_finding":"api.example.com expires 2026-12-06"}]}` + "\n"; out.String() != want {
+		t.Fatalf("got  %swant %s", out.String(), want)
+	}
 	for _, b := range []string{`{"protocol":1,"status":"ok","message":"fine","measurements":{"x":{"value":1,"unit":"count"}}}`, `{"protocol":1,"status":"ok","message":"fine","measurements":{"x":"1"}}`} {
 		if err := checksandalerts.DecodeJSON([]byte(b), &result); err == nil {
 			t.Fatal("a measurement that is no plain number accepted:", b)
@@ -100,6 +113,12 @@ func TestValidateResult(t *testing.T) {
 		return checksandalerts.ModuleResult{Protocol: 1, Status: "failed", Message: "2 certificates expire within 14 days", Measurements: map[string]float64{"days_left": 3}, Findings: []checksandalerts.Finding{{ID: "www.example.com", Message: "expires in 3 days"}, {ID: "api.example.com", Message: "expires in 12 days"}}}
 	}
 	if e := checksandalerts.ValidateResult(valid()); e != nil {
+		t.Fatal(e)
+	}
+	// An exact finding is optional, and it may be as long as an ID.
+	withExactFinding := valid()
+	withExactFinding.Findings[0].ExactFinding = strings.Repeat("e", checksandalerts.ExactFindingLimit)
+	if e := checksandalerts.ValidateResult(withExactFinding); e != nil {
 		t.Fatal(e)
 	}
 	many := func(n int) []checksandalerts.Finding {
@@ -124,6 +143,12 @@ func TestValidateResult(t *testing.T) {
 		" each finding needs an id of its own: text on one line of at most 255 bytes": func(r *checksandalerts.ModuleResult) { r.Findings[0].ID = "" },
 		"  each finding needs an id of its own: text on one line of at most 255 bytes": func(r *checksandalerts.ModuleResult) {
 			r.Findings[0].ID = strings.Repeat("u", checksandalerts.FindingIDLimit+1)
+		},
+		`the exact_finding of the finding "www.example.com" must be text on one line of at most 255 bytes`: func(r *checksandalerts.ModuleResult) {
+			r.Findings[0].ExactFinding = "expires\n2026-11-27"
+		},
+		` the exact_finding of the finding "www.example.com" must be text on one line of at most 255 bytes`: func(r *checksandalerts.ModuleResult) {
+			r.Findings[0].ExactFinding = strings.Repeat("e", 256)
 		},
 	} {
 		r := valid()
@@ -164,6 +189,13 @@ func TestModuleJSONErrors(t *testing.T) {
 		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "www.example.com", "expires soon", "--finding", "www.example.com", "expires soon"}, "", 1},
 		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "", "expires soon"}, "", 1},
 		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "www.example.com", ""}, "", 1},
+		// An exact finding belongs to one finding, once, and is one line of
+		// at most 255 bytes.
+		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "www.example.com", "expires soon", "--exact-finding", "www.example.com"}, "", 4},
+		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "www.example.com", "expires soon", "--exact-finding", "api.example.com", "expires 2026-12-01"}, "", 1},
+		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "www.example.com", "expires soon", "--exact-finding", "www.example.com", "a", "--exact-finding", "www.example.com", "b"}, "", 1},
+		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "www.example.com", "expires soon", "--exact-finding", "www.example.com", "two\nlines"}, "", 1},
+		{[]string{"result", "--status", "failed", "--message", "x", "--finding", "www.example.com", "expires soon", "--exact-finding", "www.example.com", strings.Repeat("x", 256)}, "", 1},
 	} {
 		t.Run(strings.Join(tc.args, " ")+tc.input, func(t *testing.T) {
 			var out bytes.Buffer
@@ -258,5 +290,42 @@ func TestModuleJSONForDestinationModules(t *testing.T) {
 				t.Fatalf("code %d: %v, output %q", tc.code, err, out.String())
 			}
 		})
+	}
+}
+
+// A core module's exact finding is one line. A longer text keeps its first
+// 180 bytes, cut on a character boundary, and ends with the SHA-256 of the
+// whole text, so texts that differ only at their end stay different.
+func TestFitExactFinding(t *testing.T) {
+	t.Parallel()
+	short := "Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none"
+	if got := checksandalerts.FitExactFinding(short); got != short {
+		t.Fatalf("a short exact finding changed: %q", got)
+	}
+	if got := checksandalerts.FitExactFinding("backup.service\nexit-code"); got != "backup.service exit-code" {
+		t.Fatalf("an exact finding on two lines: %q", got)
+	}
+	exactly := strings.Repeat("a", 255)
+	if got := checksandalerts.FitExactFinding(exactly); got != exactly {
+		t.Fatal("an exact finding of 255 bytes was shortened")
+	}
+	for _, long := range []string{
+		strings.Repeat("a", 256),
+		// "é" takes two bytes and covers bytes 180 and 181.
+		strings.Repeat("a", 179) + strings.Repeat("é", 60),
+	} {
+		sum := sha256.Sum256([]byte(long))
+		kept := long[:180]
+		if !utf8.ValidString(kept) {
+			kept = long[:179]
+		}
+		want := kept + " sha256:" + hex.EncodeToString(sum[:])
+		got := checksandalerts.FitExactFinding(long)
+		if got != want || len(got) > checksandalerts.ExactFindingLimit || !checksandalerts.ValidExactFinding(got) {
+			t.Fatalf("got  %q\nwant %q", got, want)
+		}
+	}
+	if checksandalerts.FitExactFinding(strings.Repeat("a", 300)+"1") == checksandalerts.FitExactFinding(strings.Repeat("a", 300)+"2") {
+		t.Fatal("two exact findings that differ after the cut are the same")
 	}
 }
