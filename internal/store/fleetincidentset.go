@@ -973,6 +973,14 @@ type reconciled struct {
 	closings           []keyClosing
 }
 
+// setAsideDirectSend is the settled direct send of an incident that a
+// set-aside entry covers, for its key's closed_without_recovery: the
+// incident's alert as the node sent it, and the entry's reason.
+type setAsideDirectSend struct {
+	sent   checksandalerts.Event
+	reason string
+}
+
 // reconcile applies the reports to one set, the set of the destination
 // name, which keeps incidents (keeps) or holds only the incidents of
 // findings with an exact finding. setAside are the set-aside reasons of
@@ -983,6 +991,9 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 	changed := map[string]string{}
 	type closedRow struct{ key, reporter, id, severity string }
 	closedGrouped := []closedRow{}
+	// The keys of settled direct sends of set-aside incidents, whose closing
+	// is decided once every report is applied.
+	setAsideSends := map[string][]setAsideDirectSend{}
 	for _, reporter := range checksandalerts.Names(changes) {
 		r := changes[reporter]
 		carried := r.SentWithoutTheHub[name]
@@ -1139,7 +1150,7 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 					state = FleetIncidentOpen
 				}
 				return add(id, c, c.AlertSeveritiesSentForIncident, state, true)
-			}, setAside[reporter+"\x00"+id], changed, &out, from, now); e != nil {
+			}, setAside[reporter+"\x00"+id], awaitingReports, changed, setAsideSends, from, now); e != nil {
 				return out, e
 			}
 		}
@@ -1154,6 +1165,33 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 		if e := set.markPending(tx, x.key, x.reporter, x.id, pendingRecovered, x.severity, from, now); e != nil {
 			return out, e
 		}
+	}
+	// A set-aside direct send closes its key for the destination only when
+	// nothing of the key is open there once every report is applied: another
+	// node of the same batch may hold it open.
+	for _, key := range checksandalerts.Names(setAsideSends) {
+		open, e := set.hasOpen(tx, key, "")
+		if e != nil {
+			return out, e
+		}
+		if open {
+			continue
+		}
+		sends := setAsideSends[key]
+		nodes, reasons, sent := []string{}, []string{}, []string{}
+		for _, d := range sends {
+			if !slices.Contains(nodes, d.sent.Node) {
+				nodes = append(nodes, d.sent.Node)
+			}
+			if !slices.Contains(reasons, d.reason) {
+				reasons = append(reasons, d.reason)
+			}
+			sent = append(sent, d.sent.AlertSeveritiesSentForIncident...)
+		}
+		slices.Sort(nodes)
+		about := sends[0].sent
+		about.AlertSeveritiesSentForIncident = lowestFirst(sent)
+		out.setAside = append(out.setAside, setAsideClosingAlert(about, nodes, key, strings.Join(reasons, "; "), from, now))
 	}
 	// Until every node has reported since the hub started, another node
 	// may still hold a key open without the hub knowing.
@@ -1189,13 +1227,16 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 // send is never the last word: an incident that is not set aside joins the
 // set, added by add when the set lacks it, and an open one is marked as
 // joined for the key's next update, so the agent sees the node. When a
-// set-aside entry covers the incident (reason) and nothing else of the
-// key is open for the destination, the destination gets
-// closed_without_recovery. The record is acknowledged afterwards
+// set-aside entry covers the incident (reason), the send is added to
+// setAsideSends by its key: the destination gets closed_without_recovery
+// when nothing else of the key is open for it once every report is
+// applied. While awaitingReports, another node may hold the key open
+// without the hub knowing, so such a send is not settled yet, and the node
+// keeps carrying it. The record is acknowledged afterwards
 // (IncidentsKnownToTheHub).
-func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), reason string, changed map[string]string, out *reconciled, from QueuedBy, now time.Time) error {
+func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), reason string, awaitingReports bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
 	var settled bool
-	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=?)", set.Destination, reporter, id).Scan(&settled); e != nil || settled || r.Forgotten {
+	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=?)", set.Destination, reporter, id).Scan(&settled); e != nil || settled || r.Forgotten || reason != "" && awaitingReports {
 		return e
 	}
 	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
@@ -1205,10 +1246,7 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 	switch {
 	case e != nil:
 	case reason != "":
-		var open bool
-		if open, e = set.hasOpen(tx, key, ""); e == nil && !open {
-			out.setAside = append(out.setAside, setAsideClosingAlert(c, []string{c.Node}, key, reason, from, now))
-		}
+		setAsideSends[key] = append(setAsideSends[key], setAsideDirectSend{c, reason})
 	default:
 		var state int
 		e = tx.QueryRow("SELECT state FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...).Scan(&state)

@@ -91,6 +91,54 @@ func TestTheHubSettlesADirectSendAndTheNodeJoinsTheNextUpdate(t *testing.T) {
 	expectKinds(t, h.take("chat"), "recovered warn")
 }
 
+// carriedTo is report with its incident also carried as sent without the
+// hub to destination, under the MMHotline alert source source.
+func carriedTo(report store.ReportedIncidents, destination, source string) store.ReportedIncidents {
+	report.SentWithoutTheHub = map[string]map[string]checksandalerts.Event{destination: {}}
+	for id, incident := range report.Incidents {
+		incident.MMHotlineAlertSource = source
+		report.SentWithoutTheHub[destination][id] = incident
+	}
+	return report
+}
+
+// The direct send of a set-aside incident closes its key only when no
+// other node holds the key open: decided after every report of the batch
+// is applied, and not before every node has reported since the hub
+// started. Until then the node keeps carrying the record.
+func TestASetAsideDirectSendClosesNothingThatAnotherNodeHoldsOpen(t *testing.T) {
+	t.Parallel()
+	destinations := map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()}
+	set := tenOFive.Add(10 * time.Minute)
+	setAside := carriedTo(shows("app-1", "warn", versionA, 0, tenOFive, set), "hotline", nodeAlertSource)
+	open := carriedTo(shows("app-2", "warn", versionB, 0, tenOFive, set), "hotline", nodeAlertSource)
+	record := store.IncidentSentWithoutTheHub{Destination: "hotline", Incident: "incident-app-1", CheckGroup: "packages", Check: "flaws", Finding: flaw, Type: "failed", AlertSeveritiesSentForIncident: []string{"warn"}, ExactFinding: versionA, AlertSource: nodeAlertSource}
+	t.Run("in one batch", func(t *testing.T) {
+		t.Parallel()
+		h := newGroupingHub(t, destinations)
+		h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+		h.report(set, map[string]store.ReportedIncidents{"app-1": setAside, "app-2": open})
+		expectKinds(t, h.take("hotline"))
+	})
+	t.Run("while the hub awaits reports", func(t *testing.T) {
+		t.Parallel()
+		h := newGroupingHub(t, destinations)
+		h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+		if e := h.s.ReconcileIncidentSets(map[string]store.ReportedIncidents{"app-1": setAside}, destinations, true, set); e != nil {
+			t.Fatal(e)
+		}
+		expectKinds(t, h.take("hotline"))
+		if known, e := h.s.IncidentsKnownToTheHub("app-1", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 0 {
+			t.Fatal("the record is acknowledged before the hub could decide", known, e)
+		}
+		h.report(set.Add(time.Minute), map[string]store.ReportedIncidents{"app-2": open, "app-1": setAside})
+		expectKinds(t, h.take("hotline"))
+		if known, e := h.s.IncidentsKnownToTheHub("app-1", []store.IncidentSentWithoutTheHub{record}); e != nil || len(known) != 1 {
+			t.Fatal("the record is not acknowledged", known, e)
+		}
+	})
+}
+
 // A set-aside incident never blocks its node's direct-send records: the
 // hub settles the record, and the destination, which got the direct send,
 // gets closed_without_recovery when nothing else of the key is open for
