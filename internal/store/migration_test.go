@@ -275,3 +275,81 @@ func resolutionsByFinding(t *testing.T, got []checksandalerts.Event) map[string]
 	}
 	return out
 }
+
+// MMWatchdog 0.2.0 makes apt_security_updates report its waiting updates
+// as the one finding package security. A check of it that a 0.1.3 node
+// kept in state.db, in format 20, with its one incident for the whole
+// check, is a new check after the migration: its announced incident
+// closes once, with a message that says why, and the waiting updates that
+// the upgraded check then observes, twice, open the finding as one
+// incident of its own. A healthy check changes without an alert.
+func TestACheckWhoseModuleNowReportsFindingsRetiresItsIncidentOnce(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 24, 6, 0, 0, 0, time.UTC)
+	timing := checksandalerts.Timing{CheckEvery: "1h", TimeLimitPerRun: "1m", AlertAfterFailingFor: "0s", RecoveredAfterHealthyFor: "0s"}
+	check := checksandalerts.Check{Inputs: &checksandalerts.AptSecurityUpdates{FailWhen: "a_security_update_waits_to_be_installed"}, AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"}}
+	const key = "software/no_security_update_waits"
+	defs := map[string]config.Definition{key: {CheckGroup: "software", Name: "no_security_update_waits", Check: check, Timing: timing, Severity: check.AlertSeveritySettings}}
+	const waiting = "2 security updates wait to be installed: curl, openssl"
+	for _, failing := range []bool{true, false} {
+		// The check's row as MMWatchdog 0.1.3 wrote it: one incident for
+		// the whole check, with no incident for each finding.
+		row := map[string]any{"check_group": "software", "check": "no_security_update_waits", "fingerprint": defs[key].Identity(),
+			"source": map[string]any{}, "timing": map[string]any{"check_every": "1h", "time_limit_per_run": "1m", "alert_after_failing_for": "0s", "recovered_after_healthy_for": "0s"},
+			"alert_severity_settings": map[string]any{"alert_severity": "warn"}, "cannot_check_incident": map[string]any{}}
+		announced := ""
+		if failing {
+			announced = "i-apt-013"
+			row["failing_since"] = now
+			row["last_observation"] = map[string]any{"protocol": 1, "status": "failed", "message": waiting, "at": now}
+			row["failure_incident"] = map[string]any{"incident_id": announced, "opened": now, "alert_severity": "warn", "announced_incident_id": announced, "alert_severities_sent_for_announced_incident": []string{"warn"}}
+		} else {
+			row["healthy_since"] = now
+			row["last_observation"] = map[string]any{"protocol": 1, "status": "ok", "message": "no security update waits", "at": now}
+			row["failure_incident"] = map[string]any{}
+		}
+		data, e := json.Marshal(row)
+		if e != nil {
+			t.Fatal(e)
+		}
+		s := openMigrated(t, format20Database(t, "INSERT INTO checks(key,data) VALUES(?,?)", key, data))
+		snap, e := s.Load()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if st := snap.Checks[key]; st == nil || st.OneIncidentForEachFinding || st.FailureIncident.Announced != announced {
+			t.Fatalf("the loaded 0.1.3 state: %+v", st)
+		}
+		events := snap.Reconcile(&config.Config{}, defs, now.Add(time.Minute))
+		events = append(events, snap.Reconcile(&config.Config{}, defs, now.Add(2*time.Minute))...)
+		st := snap.Checks[key]
+		if !st.OneIncidentForEachFinding || st.FailureIncident.Incident != "" || st.FailureIncident.Announced != "" {
+			t.Fatalf("the check after the upgrade: %+v", st)
+		}
+		// The upgraded check observes the waiting updates twice.
+		status, findings := "ok", []checksandalerts.Finding(nil)
+		if failing {
+			status, findings = "failed", []checksandalerts.Finding{{ID: checksandalerts.PackageSecurity, Message: waiting, ExactFinding: "debian 13: security updates wait"}}
+		}
+		for run := range 2 {
+			events = append(events, st.Observe(checksandalerts.Observation{Protocol: 1, Status: status, Message: waiting, At: now.Add(time.Duration(run+1) * time.Hour), Findings: findings}, timing, false)...)
+		}
+		retired, opened := 0, 0
+		for _, e := range events {
+			switch {
+			case e.CheckGroup != "software":
+				// The fixture's own check, app/http, which these
+				// definitions leave out.
+			case e.Type == "closed_without_recovery" && e.Incident == announced && e.Notify && strings.HasPrefix(e.Message, "the check's module now reports each finding as an incident of its own"):
+				retired++
+			case e.Type == "failed" && e.Finding == checksandalerts.PackageSecurity && e.Notify && e.Incident != announced:
+				opened++
+			default:
+				t.Fatalf("an alert other than the retirement and the opening: %+v", e)
+			}
+		}
+		if want := map[bool]int{true: 1, false: 0}[failing]; retired != want || opened != want {
+			t.Fatalf("failing %t: %d retirements of the 0.1.3 incident and %d openings of %s, want %d of each", failing, retired, opened, checksandalerts.PackageSecurity, want)
+		}
+	}
+}
