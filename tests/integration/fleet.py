@@ -1383,7 +1383,13 @@ def suite(mark=print):
             put_aside = wait(lambda: flaw_at_capture('closed_without_recovery'), 'the announced finding closes as set aside', timeout=30)
             assert len(put_aside) == 1 and put_aside[0]['node'] == name and put_aside[0]['exact_finding'] == exact_finding['1.0-3'], put_aside
             assert put_aside[0]['message'] == 'Set aside after investigation: ' + set_aside_reason and put_aside[0]['alert_severity'] == 'warn', put_aside
-            listing = json.loads(mmwatchdog('fleet set-aside-findings --json', 0).stdout)['set_aside_findings']
+            # The listing counts nodes from their status reports, and the
+            # peer's report of the finding can follow its alert by up to
+            # report_every.
+            def listing_that_covers_the_peer():
+                listing = json.loads(mmwatchdog('fleet set-aside-findings --json', 0).stdout)['set_aside_findings']
+                return listing if any(entry['covered_node_count'] for entry in listing) else None
+            listing = wait(listing_that_covers_the_peer, 'the set-aside listing covers the peer once its report arrives', timeout=30)
             assert len(listing) == 1 and {field: listing[0][field] for field in set_aside_entry} == set_aside_entry, listing
             assert listing[0]['covered_node_count'] == 1 and listing[0]['covered_nodes'] == [name], listing
             assert listing[0]['matches_no_node_now'] is False and listing[0]['nodes_that_cannot_check_now'] == 0, listing
