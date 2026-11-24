@@ -643,7 +643,11 @@ node; only delivery changes ([who sends an alert](alerts.md#who-sends-an-alert))
   the hub fails, the node checks how long each unaccepted alert has waited.
   Once `send_alert_without_hub_after_waiting_for` has passed since the alert
   happened, the node sends the alert directly to each destination.
-  The wait is 30 seconds by default.
+  The wait is 30 seconds by default. A report that reaches the hub ends
+  what the failed attempts left: the next alert gets its own attempt at
+  once, and the hub route's wait and failed attempts in a row start over.
+  An attempt that failed before the node joined, or while the hub was
+  down, says nothing about the hub once it accepts the node's reports.
 
   While an earlier alert for a check remains queued at the destinations,
   later alerts for the check join the destination queues. While the hub is

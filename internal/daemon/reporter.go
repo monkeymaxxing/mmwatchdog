@@ -110,7 +110,24 @@ func (d *Daemon) report(ctx context.Context) error {
 		return sendError
 	}
 	d.link.LastReport, d.link.LastError, d.link.ErrorAt = now, "", time.Time{}
+	d.hubAnswered()
 	return nil
+}
+
+// hubAnswered ends what a joined node's failed alert attempts to the hub
+// left, once a report reached the hub: the hub is reachable, and this
+// node holds a credential that it accepts. The next alert gets its own
+// attempt at once, not after the wait of the failures, nor by the direct
+// way while that wait lasts: an attempt made before the node joined, or
+// while the hub was down, says nothing about the hub now. The caller holds
+// d.mu.
+func (d *Daemon) hubAnswered() {
+	if d.latestHubAttemptError == nil {
+		return
+	}
+	d.latestHubAttemptError = nil
+	delete(d.nextAttempts, config.HubDestination)
+	d.storage.Report("notification bookkeeping "+config.HubDestination, d.store.ForgetFailedAttempts(config.HubDestination))
 }
 
 // reportToHubAtOnce sends a report at once and waits until the hub has

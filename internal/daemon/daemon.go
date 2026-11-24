@@ -95,9 +95,10 @@ type Daemon struct {
 	// before it has one.
 	fleetSettings *fleet.FleetSettings
 	// latestHubAttemptError is the error of a joined node's latest attempt
-	// to deliver an alert to the hub, or nil when that attempt succeeded or
-	// none was made. While it is set, older alerts fall back without an
-	// attempt each, and the fallback's log line names it.
+	// to deliver an alert to the hub, or nil when that attempt succeeded,
+	// a report reached the hub since (hubAnswered), or none was made. While
+	// it is set, older alerts fall back without an attempt each, and the
+	// fallback's log line names it.
 	latestHubAttemptError error
 	// alert groups is the hub's alert grouping memory.
 	alertGroups fleet.AlertGroupingState
@@ -534,13 +535,21 @@ func (d *Daemon) route() store.AlertRoute { return d.routeFor(d.config) }
 
 // clearChanged clears the delivery bookkeeping errors of destinations the next
 // route no longer lists as they were; the commit already cancelled their
-// queues. A request already in flight finishes. The caller holds d.mu.
+// queues. Such a destination is another receiver, so its failed attempts in
+// a row and its wait before the next attempt start over too. A request
+// already in flight finishes. The caller holds d.mu.
 func (d *Daemon) clearChanged(old, next store.AlertRoute) {
-	known := next.Known()
-	for name, w := range old.Known() {
-		if current, exists := known[name]; !exists || !checksandalerts.SameDestination(w, current) {
+	was, known := old.Known(), next.Known()
+	changed := []string{}
+	for _, name := range checksandalerts.Names(was) {
+		if current, exists := known[name]; !exists || !checksandalerts.SameDestination(was[name], current) {
 			d.storage.Report("notification bookkeeping "+name, nil)
+			delete(d.nextAttempts, name)
+			changed = append(changed, name)
 		}
+	}
+	if len(changed) > 0 {
+		d.storage.Report("notification bookkeeping", d.store.ForgetFailedAttempts(changed...))
 	}
 }
 

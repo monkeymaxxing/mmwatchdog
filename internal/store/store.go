@@ -1022,6 +1022,24 @@ func destinationAnswered(tx *sql.Tx, destination string) error {
 	return e
 }
 
+// ForgetFailedAttempts resets the failed attempts in a row of each named
+// destination: a reload replaced the destination with another receiver,
+// or, for the hub, a report reached it. The next failure then waits one
+// second, not the doubled delay of failures that another receiver had.
+func (s *Store) ForgetFailedAttempts(destinations ...string) error {
+	tx, e := s.DB.Begin()
+	if e != nil {
+		return e
+	}
+	defer tx.Rollback()
+	for _, name := range destinations {
+		if e = destinationAnswered(tx, name); e != nil {
+			return e
+		}
+	}
+	return tx.Commit()
+}
+
 // accepted removes a delivery that its destination accepted from the
 // outbox, if the outbox still holds it: retention can remove it while the
 // attempt is under way, and SQLite can then reuse its sequence number. A
