@@ -1968,6 +1968,239 @@ func TestKnownExploitedVulnerabilitiesInInstalledPackagesCheck(t *testing.T) {
 	}
 }
 
+// osvRecordWithEcosystemSpecific adds ecosystem_specific to the affected
+// entries of a record from osvRecord, in the order of the entries. A nil
+// leaves its entry without the key.
+func osvRecordWithEcosystemSpecific(record string, specifics ...any) string {
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(record), &decoded); err != nil {
+		panic(err)
+	}
+	for i, specific := range specifics {
+		if specific != nil {
+			decoded["affected"].([]any)[i].(map[string]any)["ecosystem_specific"] = specific
+		}
+	}
+	body, _ := json.Marshal(decoded)
+	return string(body)
+}
+
+// osvRecordWithVersionsOnly turns the entries of a record from osvRecord at
+// the given positions into entries that list their affected versions one by
+// one and have no range of type ECOSYSTEM, as OSV.dev allows.
+func osvRecordWithVersionsOnly(record string, versions []string, positions ...int) string {
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(record), &decoded); err != nil {
+		panic(err)
+	}
+	for _, position := range positions {
+		entry := decoded["affected"].([]any)[position].(map[string]any)
+		delete(entry, "ranges")
+		entry["versions"] = versions
+	}
+	body, _ := json.Marshal(decoded)
+	return string(body)
+}
+
+// Debian rates some flaws "unimportant" for a package, in the
+// ecosystem_specific urgency of the record's entry. The check leaves such an
+// entry out, and only that entry: another entry of the same flaw still
+// alerts, and a healthy result says what was left out. Every other urgency,
+// a missing urgency, and an Ubuntu entry alert as before.
+func TestKnownExploitedVulnerabilitiesLeaveOutDebianUnimportantEntries(t *testing.T) {
+	asThisAccount(t)
+	nodeFiles(t, map[string]string{"etc/os-release": "ID=debian\nVERSION_ID=\"13\"\nVERSION=\"13 (trixie)\"\n", "proc/sys/kernel/osrelease": "6.12.113-amd64\n",
+		"proc/version": "Linux version 6.12.113-amd64 (debian-kernel@lists.debian.org) (x86_64-linux-gnu-gcc-14 (Debian 14.2.0-19) 14.2.0, GNU ld (GNU Binutils for Debian) 2.44) #1 SMP PREEMPT_DYNAMIC Debian 6.12.113-1 (2026-10-15)\n"})
+	packages, _, _ := clientProgram(t, "dpkg-query", "LC_ALL")
+	if err := os.WriteFile(packages, []byte("installed\topenssh-server\topenssh\t1:10.0p1-7+deb13u4\t1:10.0p1-7+deb13u4\t\n"+
+		"installed\tsudo\tsudo\t1.9.16p2-2\t1.9.16p2-2\t\n"+
+		"installed\tlinux-image-6.12.113-amd64\tlinux-signed-amd64\t6.12.113+1\t6.12.113-1\tlinux (= 6.12.113-1)\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fakeProgram(t, "apt-cache", "true")
+	check := checksandalerts.Check{Inputs: &checksandalerts.KnownExploitedVulnerabilitiesInInstalledPackages{FailWhen: "an_installed_package_is_affected"}}
+	standIn := newOSVStandIn(t)
+	// serve answers with one flaw, listed under the given source packages,
+	// and runs the check.
+	serve := func(cve string, sources []string, record string) checksandalerts.Observation {
+		t.Helper()
+		standIn.set(func() {
+			standIn.cisaBody = cisaList(cve)
+			standIn.flaws = map[string]map[string][]string{"Debian:13": {"openssh": {"DEBIAN-CVE-2026-9999"}}}
+			for _, source := range sources {
+				standIn.flaws["Debian:13"][source] = append(standIn.flaws["Debian:13"][source], "DEBIAN-"+cve)
+			}
+			standIn.records = map[string]string{"DEBIAN-" + cve: record}
+		})
+		return withinTimeLimit(t, 5*time.Second, check)
+	}
+	const healthy = "no installed package has a flaw on CISA's list of known exploited vulnerabilities of 2026-10-26: MMWatchdog searched OSV.dev for 3 source packages of Debian:13"
+	const cve = "CVE-2026-123158"
+	unimportant := map[string]any{"urgency": "unimportant"}
+
+	// An entry rated unimportant is left out, and the healthy message says so.
+	only := osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", osvNoFixYet}), unimportant)
+	o := serve(cve, []string{"openssh"}, only)
+	if o.Status != "ok" || len(o.Findings) != 0 || o.Message != healthy+"; MMWatchdog left out 1 flaw that affects an installed package but that Debian rates unimportant: "+cve+" openssh" {
+		t.Fatalf("%+v", o)
+	}
+	// Several are counted and named, sorted by source package and CVE.
+	standIn.set(func() {
+		standIn.cisaBody = cisaList(cve, "CVE-2026-123159")
+		standIn.flaws["Debian:13"]["sudo"] = []string{"DEBIAN-CVE-2026-123159"}
+		standIn.records["DEBIAN-CVE-2026-123159"] = osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-CVE-2026-123159", osvEntry{"sudo", "Debian:13", osvFixedIn("1.9.16p2-3")}), unimportant)
+	})
+	if o := withinTimeLimit(t, 5*time.Second, check); o.Status != "ok" || o.Message != healthy+"; MMWatchdog left out 2 flaws that affect installed packages but that Debian rates unimportant: "+cve+" openssh, CVE-2026-123159 sudo" {
+		t.Fatalf("%+v", o)
+	}
+
+	// An entry rated unimportant that does not affect the installed version
+	// is not a flaw to leave out, and is not named.
+	fixedAlready := osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", osvFixedIn("1:10.0p1-1")}), unimportant)
+	if o := serve(cve, []string{"openssh"}, fixedAlready); o.Status != "ok" || o.Message != healthy {
+		t.Fatalf("%+v", o)
+	}
+	// A sibling entry that says the installed version is not affected judges
+	// the flaw, so nothing is left out.
+	siblingFixed := osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", osvNoFixYet}, osvEntry{"openssh", "Debian:13", osvFixedIn("1:10.0p1-1")}), unimportant)
+	if o := serve(cve, []string{"openssh"}, siblingFixed); o.Status != "ok" || o.Message != healthy {
+		t.Fatalf("%+v", o)
+	}
+	// Another release's entry is not the node's.
+	otherRelease := osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:12", osvNoFixYet}, osvEntry{"openssh", "Debian:13", osvNoFixYet}), unimportant)
+	wantOpenssh := checksandalerts.Finding{ID: cve + " openssh", Message: cve + " in openssh 1:10.0p1-7+deb13u4: no fix yet (CISA: Test flaw " + cve + "; https://security-tracker.debian.org/tracker/" + cve + ")",
+		ExactFinding: "Debian:13 " + cve + " openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-" + cve + " modified 2026-10-26T07:05:12Z"}
+	if o := serve(cve, []string{"openssh"}, otherRelease); o.Status != "failed" || !reflect.DeepEqual(o.Findings, []checksandalerts.Finding{wantOpenssh}) {
+		t.Fatalf("%+v", o)
+	}
+
+	// Every other urgency, a missing urgency, and a value that is not text
+	// alert, and the message of a failed run does not change.
+	for _, test := range []struct {
+		name     string
+		specific any
+	}{
+		{"no ecosystem_specific", nil},
+		{"empty ecosystem_specific", map[string]any{}},
+		{"no urgency", map[string]any{"another_key": "unimportant"}},
+		{"urgency low", map[string]any{"urgency": "low"}},
+		{"urgency medium", map[string]any{"urgency": "medium"}},
+		{"urgency high", map[string]any{"urgency": "high"}},
+		{"urgency not yet assigned", map[string]any{"urgency": "not yet assigned"}},
+		{"urgency end-of-life", map[string]any{"urgency": "end-of-life"}},
+		{"urgency empty", map[string]any{"urgency": ""}},
+		{"urgency is a number", map[string]any{"urgency": 1}},
+		{"urgency is a list", map[string]any{"urgency": []string{"unimportant"}}},
+	} {
+		record := osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", osvNoFixYet}), test.specific)
+		if o := serve(cve, []string{"openssh"}, record); o.Status != "failed" || o.Message != "1 known exploited flaw affects installed packages: "+cve+" openssh" || !reflect.DeepEqual(o.Findings, []checksandalerts.Finding{wantOpenssh}) {
+			t.Fatalf("%s: %+v", test.name, o)
+		}
+	}
+
+	// A flaw with an entry rated unimportant and a sibling entry that is not
+	// still alerts, in either order. The first two entries are the
+	// package's own: one range rated unimportant, one with a fix that waits.
+	wantFixWaits := wantOpenssh
+	wantFixWaits.Message = cve + " in openssh 1:10.0p1-7+deb13u4: fixed version 1:11.0 waits to be installed (CISA: Test flaw " + cve + "; https://security-tracker.debian.org/tracker/" + cve + ")"
+	wantFixWaits.ExactFinding = "Debian:13 " + cve + " openssh 1:10.0p1-7+deb13u4; fixed version waits: 1:11.0; DEBIAN-" + cve + " modified 2026-10-26T07:05:12Z"
+	for _, test := range []struct {
+		name    string
+		entries []osvEntry
+		specs   []any
+	}{
+		{"unimportant first", []osvEntry{{"openssh", "Debian:13", osvNoFixYet}, {"openssh", "Debian:13", osvFixedIn("1:11.0")}}, []any{unimportant}},
+		{"unimportant last", []osvEntry{{"openssh", "Debian:13", osvFixedIn("1:11.0")}, {"openssh", "Debian:13", osvNoFixYet}}, []any{nil, unimportant}},
+		{"unimportant first, sibling of urgency low", []osvEntry{{"openssh", "Debian:13", osvNoFixYet}, {"openssh", "Debian:13", osvFixedIn("1:11.0")}}, []any{unimportant, map[string]any{"urgency": "low"}}},
+	} {
+		record := osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, test.entries...), test.specs...)
+		if o := serve(cve, []string{"openssh"}, record); o.Status != "failed" || !reflect.DeepEqual(o.Findings, []checksandalerts.Finding{wantFixWaits}) {
+			t.Fatalf("%s: %+v", test.name, o)
+		}
+	}
+	// One advisory rates the flaw unimportant for openssh and not for sudo:
+	// only sudo alerts, and its finding is its own.
+	both := osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", osvNoFixYet}, osvEntry{"sudo", "Debian:13", osvFixedIn("1.9.16p2-3")}), unimportant, map[string]any{"urgency": "low"})
+	o = serve(cve, []string{"openssh", "sudo"}, both)
+	if o.Status != "failed" || o.Message != "1 known exploited flaw affects installed packages: "+cve+" sudo" || len(o.Findings) != 1 || o.Findings[0].ID != cve+" sudo" ||
+		o.Findings[0].ExactFinding != "Debian:13 "+cve+" sudo 1.9.16p2-2; fixed version waits: 1.9.16p2-3; DEBIAN-"+cve+" modified 2026-10-26T07:05:12Z" {
+		t.Fatalf("%+v", o)
+	}
+	// The same, with the entries the other way round.
+	both = osvRecordWithEcosystemSpecific(osvRecord("DEBIAN-"+cve, osvEntry{"sudo", "Debian:13", osvFixedIn("1.9.16p2-3")}, osvEntry{"openssh", "Debian:13", osvNoFixYet}), map[string]any{"urgency": "low"}, unimportant)
+	if again := serve(cve, []string{"openssh", "sudo"}, both); !reflect.DeepEqual(again.Findings, o.Findings) || again.Message != o.Message {
+		t.Fatalf("%+v", again)
+	}
+
+	// An entry rated unimportant may list its affected versions one by one,
+	// without a range of type ECOSYSTEM. It never makes the run unknown. The
+	// installed version of openssh is in the list, or it is not, or the list
+	// is empty.
+	installedOpenssh := []string{"1:10.0p1-7+deb13u4"}
+	versionsOnly := osvRecordWithEcosystemSpecific(osvRecordWithVersionsOnly(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", nil}), installedOpenssh, 0), unimportant)
+	if o := serve(cve, []string{"openssh"}, versionsOnly); o.Status != "ok" || o.Message != healthy+"; MMWatchdog left out 1 flaw that affects an installed package but that Debian rates unimportant: "+cve+" openssh" {
+		t.Fatalf("versions only, installed: %+v", o)
+	}
+	for name, versions := range map[string][]string{"another version": {"1:9.0p1-1"}, "no versions": nil} {
+		record := osvRecordWithEcosystemSpecific(osvRecordWithVersionsOnly(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", nil}), versions, 0), unimportant)
+		if o := serve(cve, []string{"openssh"}, record); o.Status != "ok" || o.Message != healthy {
+			t.Fatalf("versions only, %s: %+v", name, o)
+		}
+	}
+	// Beside a sibling entry that affects the installed version, in either
+	// order, the flaw still alerts.
+	for _, test := range []struct {
+		name    string
+		entries []osvEntry
+		spec    []any
+		only    []int
+	}{
+		{"versions-only unimportant first", []osvEntry{{"openssh", "Debian:13", nil}, {"openssh", "Debian:13", osvNoFixYet}}, []any{unimportant}, []int{0}},
+		{"versions-only unimportant last", []osvEntry{{"openssh", "Debian:13", osvNoFixYet}, {"openssh", "Debian:13", nil}}, []any{nil, unimportant}, []int{1}},
+	} {
+		record := osvRecordWithEcosystemSpecific(osvRecordWithVersionsOnly(osvRecord("DEBIAN-"+cve, test.entries...), installedOpenssh, test.only...), test.spec...)
+		if o := serve(cve, []string{"openssh"}, record); o.Status != "failed" || !reflect.DeepEqual(o.Findings, []checksandalerts.Finding{wantOpenssh}) {
+			t.Fatalf("%s: %+v", test.name, o)
+		}
+	}
+	// Beside an entry of another package, the other package still alerts.
+	record := osvRecordWithEcosystemSpecific(osvRecordWithVersionsOnly(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", nil}, osvEntry{"sudo", "Debian:13", osvFixedIn("1.9.16p2-3")}), installedOpenssh, 0), unimportant)
+	if o := serve(cve, []string{"openssh", "sudo"}, record); o.Status != "failed" || len(o.Findings) != 1 || o.Findings[0].ID != cve+" sudo" {
+		t.Fatalf("versions only, other package: %+v", o)
+	}
+	// An entry that is not rated unimportant and has no such range still makes
+	// the run unknown: the check cannot read it.
+	record = osvRecordWithVersionsOnly(osvRecord("DEBIAN-"+cve, osvEntry{"openssh", "Debian:13", nil}), installedOpenssh, 0)
+	if o := serve(cve, []string{"openssh"}, record); o.Status != "unknown" || !strings.Contains(o.Message, "has no range of type ECOSYSTEM") {
+		t.Fatalf("versions only, not unimportant: %+v", o)
+	}
+}
+
+// Ubuntu's records carry no urgency of Debian's. An Ubuntu entry whose
+// ecosystem_specific says "unimportant" alerts as before.
+func TestKnownExploitedVulnerabilitiesDoNotLeaveOutUbuntuEntries(t *testing.T) {
+	asThisAccount(t)
+	nodeFiles(t, map[string]string{"etc/os-release": "ID=ubuntu\nVERSION_ID=\"25.10\"\nVERSION=\"25.10 (Questing Quokka)\"\n", "proc/sys/kernel/osrelease": "6.17.0-5-generic\n",
+		"proc/version": "Linux version 6.17.0-5-generic (buildd@lcy02-amd64-081) #5-Ubuntu SMP PREEMPT_DYNAMIC Sat Oct 11 09:28:41 UTC 2025\n"})
+	packages, _, _ := clientProgram(t, "dpkg-query", "LC_ALL")
+	if err := os.WriteFile(packages, []byte("installed\tsudo\tsudo\t1.9.15p5-3ubuntu5\t1.9.15p5-3ubuntu5\t\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	fakeProgram(t, "apt-cache", "true")
+	standIn := newOSVStandIn(t)
+	standIn.set(func() {
+		standIn.cisaBody = cisaList("CVE-2025-32463")
+		standIn.flaws = map[string]map[string][]string{"Ubuntu:25.10": {"sudo": {"UBUNTU-CVE-2025-32463"}}}
+		standIn.records = map[string]string{"UBUNTU-CVE-2025-32463": osvRecordWithEcosystemSpecific(osvRecord("UBUNTU-CVE-2025-32463", osvEntry{"sudo", "Ubuntu:25.10", osvNoFixYet}), map[string]any{"urgency": "unimportant", "priority": "negligible"})}
+	})
+	o := withinTimeLimit(t, 5*time.Second, checksandalerts.Check{Inputs: &checksandalerts.KnownExploitedVulnerabilitiesInInstalledPackages{FailWhen: "an_installed_package_is_affected"}})
+	want := checksandalerts.Finding{ID: "CVE-2025-32463 sudo", Message: "CVE-2025-32463 in sudo 1.9.15p5-3ubuntu5: no fix yet (CISA: Test flaw CVE-2025-32463; https://ubuntu.com/security/CVE-2025-32463)",
+		ExactFinding: "Ubuntu:25.10 CVE-2025-32463 sudo 1.9.15p5-3ubuntu5; fixed version: none; UBUNTU-CVE-2025-32463 modified 2026-10-26T07:05:12Z"}
+	if o.Status != "failed" || !reflect.DeepEqual(o.Findings, []checksandalerts.Finding{want}) {
+		t.Fatalf("%+v", o)
+	}
+}
+
 // On an Ubuntu LTS release, the check asks OSV.dev about the release's
 // ecosystem and its Ubuntu Pro ecosystem, where Ubuntu files some flaws
 // only. An installed fix of either one is healthy, and a fix of the

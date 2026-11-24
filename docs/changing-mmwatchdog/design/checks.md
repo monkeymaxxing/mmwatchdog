@@ -2007,6 +2007,16 @@ Node checks preserve uncertainty rather than report partial data as healthy:
   A package that another apt repository installed is left out, because
   the package's versions are not the distribution's.
 
+  The check leaves out one kind of entry: a Debian entry whose
+  `ecosystem_specific` urgency is `unimportant`, Debian's rating for a flaw
+  that its security team does not treat as a security problem for that
+  package. Only that entry is left out. An entry of the same flaw for
+  another range or another package decides for itself, so the flaw still
+  alerts when one of those entries affects the installed version. Every
+  other urgency, a missing urgency, and every Ubuntu entry count. When
+  such an entry leaves out a flaw that affects an installed package, the
+  healthy message names the flaw, so the rating is never silent.
+
   If CISA or OSV.dev cannot supply the required data, the check is unknown,
   never healthy. The check is also unknown if OSV.dev returns no flaw for
   any source package in the node's release. OSV.dev also returns no flaws

@@ -6,15 +6,17 @@ results.
 
 ## Current build
 
-The release checks for 0.2.0 (2026-11-24), with Go 1.27.4 and the MMX code
-released with MMWatchdog. Most checks ran on 9ac34d3. The later commits
-before the release change no behavior: a672f8b makes ten places clear to
-NilAway, two of them by restructuring a loop, which a new test pins on the
-old and the new code; 3ee299c makes the fleet suite wait for a status
-report; and the last commit changes only text, such as the version that
-the README and the guides name. The checks that name a commit ran again
-on it; 3ee299c changes only a test of the suites, so the Go checks of
-a672f8b hold for it:
+The checks for 0.3.0 (2026-11-24), with Go 1.27.4. Only
+`known_exploited_vulnerabilities_in_installed_packages` changed since 0.2.0
+earlier the same day:
+
+| Run or check | Result |
+| --- | --- |
+| Go tests (`go test -count=1 ./...`) on a Mac | All passed, including unit fixtures for Debian `unimportant`, versions-only entries, mixed advisories, absent urgency, and Ubuntu |
+| `node` suite on Debian 13 and Ubuntu 26.04, AMD64, Incus on the test servers | All passed (0 failures; Debian 13 in 129.4s, Ubuntu 26.04 in 182.8s) |
+
+Earlier full-matrix 0.2.0 checks (2026-11-24) that cover the unchanged parts of
+MMWatchdog:
 
 | Run or check | Result |
 | --- | --- |
