@@ -7,6 +7,7 @@ import (
 
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/store"
+	"mmwatchdog/internal/testhelpers"
 )
 
 // The hub keeps one reminder schedule per destination and key, following
@@ -141,5 +142,29 @@ func TestAJoinedNodesReminderOfASetAsideFindingIsDropped(t *testing.T) {
 		h.arrive(at, reminder)
 		h.tick(at)
 		expectKinds(t, h.take("chat"))
+	}
+}
+
+// The hub's reminder of a key names only the members grouped by exact
+// finding. At one destination whose service keeps incidents, app-1 has an
+// exact finding and app-2, at sos, has none: app-2 reminds of its own
+// incident, and the hub's reminder names app-1 alone at warn, so app-2's
+// sos never wakes anyone twice.
+func TestTheHubsReminderNamesOnlyGroupedMembers(t *testing.T) {
+	t.Parallel()
+	pushover := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "1h", AlertSeverities: testhelpers.AllSeverities}
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"pushover": pushover})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive.Add(time.Minute), h.alert("app-2", "failed", "sos", "", 0, tenOFive.Add(time.Minute)))
+	expectKinds(t, h.take("pushover"), "failed warn", "failed sos")
+	at := tenOFive.Add(time.Hour + time.Minute)
+	own := h.alert("app-2", "reminder", "sos", "", 0, at)
+	own.Destination = "pushover"
+	h.arrive(at, own)
+	h.tick(at)
+	got := h.take("pushover")
+	expectKinds(t, got, "reminder sos", "reminder warn")
+	if got[0].Node != "app-2" || got[1].Node != "app-1" || got[1].NodeCount != 0 {
+		t.Fatalf("the reminders are of %s and of %s %v", got[0].Node, got[1].Node, got[1].Nodes)
 	}
 }

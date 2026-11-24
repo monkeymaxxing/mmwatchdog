@@ -746,8 +746,9 @@ func (s *Store) SendDueUpdatesAndReminders(destinations map[string]checksandaler
 }
 
 // remind queues the hub's one reminder for the destination name and the
-// key, while at least one member is eligible: open in the set, eligible
-// on its node (reminder_eligible: neither in maintenance nor in quiet time),
+// key, while at least one member is eligible: open in the set, grouped by
+// exact finding (a member without an exact finding keeps its node's own
+// reminders, which intake lets through: hubRemindsOf), eligible on its node (reminder_eligible: neither in maintenance nor in quiet time),
 // and still routed to the destination at its current severity, which the
 // membership row has as long as every raise went to the destination. The
 // next reminder is due remind_every later; without an eligible member, the
@@ -760,7 +761,7 @@ func (set IncidentSet) remind(tx *sql.Tx, name string, dest checksandalerts.Dest
 	}
 	rows, e := tx.Query(`SELECT s.node, s.alert_severity, s.check_group, s.check_name, s.finding, n.opened FROM fleet_incident_set s
  JOIN fleet_node_incidents n ON n.reporter=s.reporter AND n.incident_id=s.incident_id
- WHERE s.destination=? AND s.alert_source=? AND s.incident_key=? AND s.state=? AND n.reminder_eligible=1 AND n.set_aside_entry='' AND n.alert_severity=s.alert_severity ORDER BY s.node`, set.with(key, FleetIncidentOpen)...)
+ WHERE s.destination=? AND s.alert_source=? AND s.incident_key=? AND s.state=? AND s.grouped_by_exact_finding=1 AND n.reminder_eligible=1 AND n.set_aside_entry='' AND n.alert_severity=s.alert_severity ORDER BY s.node`, set.with(key, FleetIncidentOpen)...)
 	if e != nil {
 		return e
 	}

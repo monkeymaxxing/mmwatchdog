@@ -877,8 +877,12 @@ For one destination and one key:
    opens again goes through the same rules.
 7. **Reminders, one schedule per destination and key.** The hub sends a
    reminder of the key by the destination's `remind_every`, while at least
-   one node incident in the set is eligible: not in maintenance or quiet
-   time, and still routed to the destination at its current severity.
+   one node incident in the set is eligible: grouped by exact finding, not
+   in maintenance or quiet time, and still routed to the destination at
+   its current severity. The reminder names only those incidents and takes
+   the highest severity among them; a node incident of the key without an
+   exact finding keeps its node's own reminders, so no node is reminded of
+   twice.
    Each node incident in a node status report carries this eligibility as
    `reminder_eligible`. A node of 0.2.0 makes no reminders of such a key
    while its latest report reached the hub, and makes its own only while
