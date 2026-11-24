@@ -86,3 +86,39 @@ func TestSosGoesFirstAndKeepsTheOrderWithinItsKey(t *testing.T) {
 		t.Fatalf("delivered in the order %q, want %q", delivered, want)
 	}
 }
+
+// An sos never supersedes the alert that announces an exact finding of its
+// key, waiting to be retried: that alert alone names the exact finding and
+// its node, which the destination would otherwise never hear of, while the
+// key counts the exact finding as announced. It goes after the sos.
+func TestSosKeepsTheAlertThatAnnouncesAnExactFinding(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn", "sos")})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	heads, e := h.s.Pending()
+	if e != nil || len(heads) != 1 {
+		t.Fatal(heads, e)
+	}
+	if _, e = h.s.Delivered(heads[0], &checksandalerts.RetryLater{After: time.Minute}); e != nil {
+		t.Fatal(e)
+	}
+	h.arrive(tenOFive.Add(time.Minute), h.alert("app-2", "failed", "sos", versionB, 0, tenOFive.Add(time.Minute)))
+	got := []checksandalerts.Event{}
+	for {
+		heads, e := h.s.Pending()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(heads) == 0 {
+			break
+		}
+		got = append(got, heads[0].Event)
+		if _, e = h.s.Delivered(heads[0], nil); e != nil {
+			t.Fatal(e)
+		}
+	}
+	expectKinds(t, got, "failed sos", "failed warn")
+	if got[1].Node != "app-1" || got[1].ExactFinding != versionA {
+		t.Fatalf("%+v", got[1])
+	}
+}
