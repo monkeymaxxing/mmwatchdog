@@ -872,7 +872,13 @@ records of the node's direct sends as 0.1.x wrote them, when it queued a
 send, and gives the direct sends that still wait in the queue no record
 on acceptance: such a send behaves as in 0.1.x, and the hub can settle it
 before the destination has it. Direct sends queued after the upgrade are
-recorded once the destination accepts them.
+recorded once the destination accepts them. Such a late 0.1.x send can
+reach MMHotline after the hub's closing alert and leave an incident open
+there, which takes a later failure of its key as related, without a new
+escalation. So before a joined node is upgraded while its direct alerts
+wait in its queue (`delivery.queued_notifications` of
+`mmwatchdog status --json`), the release notes of 0.2.0 say to let them
+drain and to check that MMHotline closed the affected incidents.
 For the three security-update
 checks, whose result changed from one incident to one incident per
 [finding](checks.md#findings), the migration counts the check as changed:
