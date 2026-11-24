@@ -281,9 +281,14 @@ type ValidationWarnings struct {
 	// a hub, each mmhotline destination with
 	// alert_source_for_nodes_sending_without_the_hub while joined nodes
 	// report a release older than 0.2.0, which refuses such fleet settings.
-	OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub []string                            `json:"older_joined_nodes_with_alert_source_for_nodes_sending_without_the_hub"`
-	ChecksWithoutAlertDestination                               []CheckWithoutAlertDestination      `json:"checks_without_alert_destination"`
-	ChecksWithUnknownAlertDestinations                          []CheckWithUnknownAlertDestinations `json:"checks_with_unknown_alert_destinations"`
+	OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub []string `json:"older_joined_nodes_with_alert_source_for_nodes_sending_without_the_hub"`
+	// MMHotlineIncidentsOpenUnderARemovedAlertSource names, on a hub or a
+	// standalone node, each mmhotline destination and alert source that it
+	// no longer has, under which MMHotline keeps incidents open that
+	// MMWatchdog cannot resolve.
+	MMHotlineIncidentsOpenUnderARemovedAlertSource []string                            `json:"mmhotline_incidents_open_under_a_removed_alert_source"`
+	ChecksWithoutAlertDestination                  []CheckWithoutAlertDestination      `json:"checks_without_alert_destination"`
+	ChecksWithUnknownAlertDestinations             []CheckWithUnknownAlertDestinations `json:"checks_with_unknown_alert_destinations"`
 
 	AlertTitlesThatWillBeShortened              []checksandalerts.AlertTitleThatWillBeShortened            `json:"alert_titles_that_will_be_shortened"`
 	SystemdUnitsMissingFromSystemdUnitsToIgnore []checksandalerts.SystemdUnitMissingFromUnitsToIgnore      `json:"systemd_units_missing_from_systemd_units_to_ignore"`
@@ -301,6 +306,7 @@ func (c *Config) ValidationWarnings(node string, checkNodeFiles bool) Validation
 		DestinationRunSettingsThatJoinedNodesIgnore:                 c.destinationRunSettingsThatJoinedNodesIgnore(),
 		MMHotlineWithoutAnotherDestination:                          c.mmhotlineWithoutAnotherDestinationWarnings(),
 		OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub: []string{},
+		MMHotlineIncidentsOpenUnderARemovedAlertSource:              []string{},
 		AlertTitlesThatWillBeShortened:                              c.AlertTitlesThatWillBeShortened(node),
 		SystemdUnitsMissingFromSystemdUnitsToIgnore:                 c.SystemdUnitsMissingFromUnitsToIgnore(),
 		FilesystemsMissingFromFilesystemsToIgnore:                   c.FilesystemsMissingFromFilesystemsToIgnore(),

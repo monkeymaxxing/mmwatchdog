@@ -540,6 +540,13 @@ destinations:
   events` shows `delivery_cancelled`. MMWatchdog never sends them under
   the destination's own alert source, where a resolution could close
   another incident of the key.
+- An incident that MMHotline keeps open under the old ID cannot be
+  resolved by MMWatchdog any more. `mmwatchdog validate` and
+  `mmwatchdog reload` warn while such incidents are open and name their
+  keys. When the key closes, `sudo mmwatchdog events` shows a
+  `delivery_gap` for the resolution that could not go out, and status
+  counts it. Close those incidents in MMHotline, or keep the block until
+  they resolve.
 - A joined node needs MMWatchdog 0.2.0 or later: an older node refuses
   fleet settings with the block and keeps its earlier copy.
   `mmwatchdog validate` and `mmwatchdog reload` on the hub warn while a

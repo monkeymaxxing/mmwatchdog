@@ -156,3 +156,16 @@ func TestAHubWarnsOfOlderJoinedNodesWhileTheNodeAlertSourceIsSet(t *testing.T) {
 		t.Fatal("warned on a standalone node", warnings)
 	}
 }
+
+// A destination that no longer has an alert source under which MMHotline
+// keeps incidents open is warned about, with the keys, so that a person
+// closes them in MMHotline.
+func TestAWarningNamesTheKeysOpenUnderARemovedAlertSource(t *testing.T) {
+	t.Parallel()
+	settings := &config.Config{FleetHubRole: &config.FleetHubRole{}, Alerts: config.Alerts{Destinations: map[string]checksandalerts.Destination{
+		"on_call": {Inputs: &checksandalerts.MMHotlineDestination{URL: "http://10.20.0.1:8484", AlertSourceID: "hub"}}}}}
+	warnings := settings.MMHotlineIncidentsOpenUnderARemovedAlertSource(map[string]map[string][]string{"on_call": {"nodes": {"app/http failed"}}, "gone": {"nodes": {"app/dns failed"}}})
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "destinations.on_call.mmhotline: MMHotline keeps incidents open under the alert source nodes") || !strings.HasSuffix(warnings[0], ": app/http failed") {
+		t.Fatal(warnings)
+	}
+}

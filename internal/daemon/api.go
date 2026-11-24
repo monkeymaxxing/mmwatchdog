@@ -729,6 +729,9 @@ func ValidationWarnings(c *config.Config, node string, checkNodeFiles bool) conf
 	if checkNodeFiles && c.FleetHubRole != nil {
 		warnings.OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub = c.OlderJoinedNodesWithNodeAlertSource(fleet.JoinedNodeVersions(c.StateDir), func(version string) bool { return fleet.ReleaseOlderThan(version, 0, 2) })
 	}
+	if checkNodeFiles && c.JoinFleetHub == nil {
+		warnings.MMHotlineIncidentsOpenUnderARemovedAlertSource = c.MMHotlineIncidentsOpenUnderARemovedAlertSource(store.MMHotlineKeysUnderRemovedAlertSources(c.StateDir, c.Alerts.Destinations))
+	}
 	if checkNodeFiles && c.JoinFleetHub != nil {
 		if settings := fleet.ReadFleetSettings(filepath.Join(c.StateDir, fleet.FleetSettingsFile), c.Modules); settings != nil {
 			c.RoutingWarnings(settings.Destinations, &warnings)

@@ -735,6 +735,9 @@ func validationWarningsText(node string, warnings config.ValidationWarnings) str
 	for _, warning := range warnings.OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub {
 		text += warning + "\n"
 	}
+	for _, warning := range warnings.MMHotlineIncidentsOpenUnderARemovedAlertSource {
+		text += warning + "\n"
+	}
 	for _, check := range warnings.ChecksWithoutAlertDestination {
 		text += fmt.Sprintf("%s/%s: no destination receives alerts with alert_severity %s; add the severity to a destination's alert_severities, or change the check's send_alerts_only_to_destinations.\n", check.CheckGroup, check.Check, check.AlertSeverity)
 	}

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"net"
 	"net/url"
 	"strings"
@@ -85,6 +86,31 @@ func (c *Config) OlderJoinedNodesWithNodeAlertSource(versions map[string]string,
 			continue
 		}
 		warnings = append(warnings, c.ErrorAt("destinations."+name+".mmhotline."+checksandalerts.MMHotlineNodeAlertSourceBlock, "joined nodes older than MMWatchdog 0.2.0 refuse fleet settings with this block and keep their earlier copy of the fleet settings, so they send alerts without the hub to the destinations of that copy. Upgrade these joined nodes to 0.2.0 or later: "+strings.Join(older, ", ")).Error())
+	}
+	return warnings
+}
+
+// MMHotlineIncidentsOpenUnderARemovedAlertSource is a validation warning
+// for each mmhotline destination and each alert source that it no longer
+// has, such as a removed or replaced
+// alert_source_for_nodes_sending_without_the_hub, under which MMHotline
+// keeps incidents of keys open (open: keys by alert source, by
+// destination, from state.db). MMWatchdog cannot send their resolutions
+// there, so a person closes them in MMHotline.
+func (c *Config) MMHotlineIncidentsOpenUnderARemovedAlertSource(open map[string]map[string][]string) []string {
+	warnings := []string{}
+	for _, name := range checksandalerts.Names(open) {
+		if _, configured := c.Alerts.Destinations[name]; !configured {
+			continue
+		}
+		for _, source := range checksandalerts.Names(open[name]) {
+			keys := open[name][source]
+			listed := strings.Join(keys[:min(len(keys), 20)], "; ")
+			if more := len(keys) - 20; more > 0 {
+				listed += fmt.Sprintf("; and %d more", more)
+			}
+			warnings = append(warnings, c.ErrorAt("destinations."+name+".mmhotline", "MMHotline keeps incidents open under the alert source "+source+", which this destination no longer has, and MMWatchdog cannot send their resolutions there. Close them in MMHotline, or keep the alert source until they resolve: "+listed).Error())
+		}
 	}
 	return warnings
 }

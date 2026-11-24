@@ -494,3 +494,33 @@ func TestTheResolutionGoesUnderEachAlertSourceThatTheKeyReached(t *testing.T) {
 		}
 	})
 }
+
+// Removing the alert source for nodes sending without the hub while
+// MMHotline keeps a key's incident open under it: mmwatchdog validate
+// names the key, and the resolution that cannot go out there is a visible
+// delivery gap that says to close the incident in MMHotline.
+func TestARemovedNodeAlertSourceWithAnOpenIncidentIsVisible(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()})
+	at := tenOFive.Add(10 * time.Minute)
+	h.report(at, map[string]store.ReportedIncidents{"app-1": carriedTo(shows("app-1", "sos", versionA, 0, tenOFive, at), "hotline", nodeAlertSource)})
+	h.take("hotline")
+	h.destinations = map[string]checksandalerts.Destination{"hotline": hotline()}
+	open := store.MMHotlineKeysUnderRemovedAlertSources(h.dir, h.destinations)
+	if keys := open["hotline"][nodeAlertSource]; !slices.Equal(keys, []string{readableFlaw}) {
+		t.Fatalf("the keys open under the removed source %+v", open)
+	}
+	h.report(at.Add(time.Hour), map[string]store.ReportedIncidents{"app-1": {Sent: at.Add(time.Hour)}})
+	h.take("hotline")
+	stats, e := h.s.DeliveryStats()
+	if e != nil || stats.Gaps != 1 {
+		t.Fatal("no delivery gap for the resolution that cannot go out", stats, e)
+	}
+	events, e := h.s.Events(10)
+	if e != nil || len(events) == 0 || events[0].Type != "delivery_gap" || !strings.Contains(events[0].Message, nodeAlertSource) || !strings.Contains(events[0].Message, "close its incident in MMHotline") {
+		t.Fatal(events, e)
+	}
+	if open := store.MMHotlineKeysUnderRemovedAlertSources(h.dir, h.destinations); len(open) != 0 {
+		t.Fatal("a resolved key is still named", open)
+	}
+}

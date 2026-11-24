@@ -3,6 +3,9 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -170,6 +173,9 @@ func (set IncidentSet) queueMMHotlineAlerts(tx *sql.Tx, at int64, name string, d
 			queued = append(queued, a)
 		}
 	} else {
+		if e = set.reportRemovedAlertSources(tx, name, dest, key); e != nil {
+			return e
+		}
 		if len(sent) == 0 {
 			sent = []string{set.AlertSource}
 		}
@@ -227,6 +233,97 @@ func (set IncidentSet) mmhotlineSourcesSent(tx *sql.Tx, dest checksandalerts.Des
 		}
 	}
 	return sent, nil
+}
+
+// removedAlertSources lists the alert sources in written, a key's
+// mmhotline_alert_sources_sent, that the mmhotline destination dest no
+// longer has, such as an alert source for nodes sending without the hub
+// that a reload removed or replaced.
+func removedAlertSources(written string, dest checksandalerts.Destination) []string {
+	removed := []string{}
+	p := dest.MMHotline()
+	for _, source := range checksandalerts.NonEmpty(strings.Split(written, ",")) {
+		if p != nil && source != p.AlertSourceID && source != p.NodeAlertSourceID() {
+			removed = append(removed, source)
+		}
+	}
+	return removed
+}
+
+// reportRemovedAlertSources makes the key's resolution that cannot go out a
+// visible delivery problem: for each alert source that got alerts of the
+// key since its last resolution and that the destination name no longer
+// has, MMHotline keeps an incident open that MMWatchdog cannot resolve. A
+// person closes it in MMHotline; mmwatchdog validate warned of it at the
+// reload (MMHotlineKeysUnderRemovedAlertSources).
+func (set IncidentSet) reportRemovedAlertSources(tx *sql.Tx, name string, dest checksandalerts.Destination, key string) error {
+	var written string
+	e := tx.QueryRow("SELECT mmhotline_alert_sources_sent FROM fleet_incident_keys WHERE "+inSet+" AND incident_key=?", set.with(key)...).Scan(&written)
+	if e == sql.ErrNoRows {
+		return nil
+	}
+	if e != nil {
+		return e
+	}
+	removed := removedAlertSources(written, dest)
+	if len(removed) == 0 {
+		return nil
+	}
+	now := time.Now().UTC()
+	for _, source := range removed {
+		event := checksandalerts.Event{ID: incidents.ID(), Type: "delivery_gap", At: now,
+			Message: fmt.Sprintf("%s: the resolution of %q was not sent under the MMHotline alert source %s, which the destination no longer has; close its incident in MMHotline", name, key, source)}
+		b, _ := json.Marshal(event)
+		if _, e = tx.Exec("INSERT INTO events(at,data) VALUES(?,?)", now.UnixNano(), b); e != nil {
+			return e
+		}
+	}
+	return addDeliveryGaps(tx, int64(len(removed)), now)
+}
+
+// MMHotlineKeysUnderRemovedAlertSources reads, from the hub's or a
+// standalone node's state.db in stateDir, the keys of each mmhotline
+// destination of destinations whose incident in MMHotline is open under an
+// alert source that the destination no longer has, by destination and
+// then by that alert source. MMWatchdog cannot send their resolution there.
+// It only reads, so mmwatchdog validate can ask while the daemon runs, and
+// it returns nothing when state.db cannot be read: the keys only feed a
+// validation warning.
+func MMHotlineKeysUnderRemovedAlertSources(stateDir string, destinations map[string]checksandalerts.Destination) map[string]map[string][]string {
+	out := map[string]map[string][]string{}
+	path := filepath.Join(stateDir, "state.db")
+	if _, e := os.Stat(path); e != nil {
+		return out
+	}
+	db, e := OpenReadOnlyDatabase(path)
+	if e != nil {
+		return out
+	}
+	defer db.Close()
+	for _, name := range checksandalerts.Names(destinations) {
+		p := destinations[name].MMHotline()
+		if p == nil {
+			continue
+		}
+		rows, e := db.Query("SELECT incident_key, mmhotline_alert_sources_sent FROM fleet_incident_keys WHERE destination=? AND alert_source=? AND mmhotline_alert_sources_sent!='' ORDER BY incident_key", name, p.AlertSourceID)
+		if e != nil {
+			return out
+		}
+		for rows.Next() {
+			var key, written string
+			if rows.Scan(&key, &written) != nil {
+				continue
+			}
+			for _, source := range removedAlertSources(written, destinations[name]) {
+				if out[name] == nil {
+					out[name] = map[string][]string{}
+				}
+				out[name][source] = append(out[name][source], key)
+			}
+		}
+		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+	}
+	return out
 }
 
 // recordMMHotlineSource records that the key got an alert under the alert
