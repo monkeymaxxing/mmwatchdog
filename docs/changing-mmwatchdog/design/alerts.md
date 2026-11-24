@@ -1099,7 +1099,9 @@ is asynchronous and never blocks check execution, recovery, or another
 destination.
 
 - **Retries.** A failed attempt is retried after one second, then with the
-  delay doubling up to 256 seconds. Each retry keeps the event ID of the
+  delay doubling up to 256 seconds. The delay counts the destination's
+  failed attempts in a row, whichever alerts they tried, and starts over
+  when the destination accepts or refuses an alert. Each retry keeps the event ID of the
   alert whose delivery failed, so receivers can deduplicate. Delivery is at
   least once, not exactly once.
 - **Order.** Each destination receives events in order, one delivery at a
@@ -1113,30 +1115,27 @@ destination.
   event, and the gap count appears in status with the time of the first and
   of the newest drop. MMWatchdog never drops a delivery silently.
 - **An `sos` goes first.** One rule orders each destination's queue:
-  - The deliveries of each fleet incident key wait in a line, oldest
-    first. The deliveries without a key, such as a
-    [notice](#send-a-notice), wait in one line of their own, so a notice
-    keeps its place among them.
-  - A line's next delivery is its oldest. An `sos` may pass deliveries of
-    its own line only when the line is stuck, which means its oldest
-    delivery has had a failed attempt and waits to be retried. Then the
-    `sos` passes every delivery of the line except a closing alert, so a
-    `warn` stuck behind a refusal or HTTP `429` never holds the `sos`
-    back. A line that is not stuck keeps its order, so a healthy
-    destination gets an incident's opening before its raise. An `sos`
-    never passes a closing alert, so closing and opening alerts of one
-    key keep their order.
-  - Of the lines' next deliveries, the destination gets an `sos` first,
-    else one that does not wait to be retried, else the oldest. So a
-    delivery that keeps failing holds back no other key: another key's
-    opening goes ahead of it, and that key's `sos` right after.
+  - The queue is first in, first out. A healthy destination gets every
+    alert in the order it was queued, so an incident's opening reaches it
+    before its raise.
+  - The one exception: while the oldest delivery has had a failed attempt
+    and waits to be retried, the next attempt goes to the oldest `sos`
+    that has not had a failed attempt yet and that no closing alert of its
+    own key precedes in the queue. If there is none, the next attempt goes
+    to the oldest delivery again. So a `warn` stuck behind a refusal or
+    HTTP `429` never holds an `sos` back, and an `sos` that keeps failing
+    holds back no `sos` of another key, which gets the next attempt.
+  - An `sos` never passes a closing alert of its own key, so closing and
+    opening alerts of one key keep their order.
   - Nothing is removed: each delivery that waits goes after the `sos`,
     because it may be the only alert that names a node or an exact
     finding.
+  - The cost: while a destination is failing, an `sos` can reach it before
+    the `warn` of its own incident.
   - While the destination fails or limits the rate (HTTP `429` with
-    `Retry-After`), the wait before the next attempt stays the same for
-    the whole destination, and the `sos` goes first once the next attempt
-    is allowed, so many keys cannot start a storm of retries.
+    `Retry-After`), the wait before the next attempt is the same for the
+    whole destination, and the `sos` goes first once the next attempt is
+    allowed, so many keys cannot start a storm of retries.
 - **Reminders never crowd out alerts.**
   The outbox holds at most one undelivered reminder for each incident and
   destination ([reminders](#reminders)).

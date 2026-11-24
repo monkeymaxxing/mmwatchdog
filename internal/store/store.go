@@ -63,8 +63,8 @@ const stateTables = `
  CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, queued_at INTEGER NOT NULL, destination TEXT NOT NULL, event BLOB NOT NULL, target BLOB NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
   urgent INTEGER NOT NULL DEFAULT 0, incident_key TEXT NOT NULL DEFAULT '', closes INTEGER NOT NULL DEFAULT 0, announced_key TEXT NOT NULL DEFAULT '', sent_without_the_hub TEXT NOT NULL DEFAULT '');
  CREATE INDEX IF NOT EXISTS outbox_dest ON outbox(destination,seq);
- CREATE INDEX IF NOT EXISTS outbox_urgent ON outbox(destination,urgent,seq);
- CREATE INDEX IF NOT EXISTS outbox_key ON outbox(destination,incident_key,seq);
+ CREATE INDEX IF NOT EXISTS outbox_urgent ON outbox(destination,urgent,attempts,seq);
+ CREATE INDEX IF NOT EXISTS outbox_key ON outbox(destination,incident_key,closes,seq);
  CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS destination_health (destination TEXT PRIMARY KEY, data BLOB NOT NULL);
  CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY CHECK(id=1), history_id TEXT NOT NULL);
@@ -559,7 +559,7 @@ func (s *Store) Save(snap incidents.Snapshot, events []checksandalerts.Event, ro
 			if e = replaceQueuedReminder(tx, config.HubDestination, event); e != nil {
 				return e
 			}
-			if _, e = tx.Exec("INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(?,?,?,?,'{}')", event.At.UnixNano(), time.Now().UnixNano(), config.HubDestination, b); e != nil {
+			if e = insertOutbox(tx, event.At.UnixNano(), config.HubDestination, event, []byte("{}"), ""); e != nil {
 				return e
 			}
 		default:
@@ -922,21 +922,18 @@ func scanEvents(rows *sql.Rows, maxBytes int) ([]checksandalerts.Event, error) {
 	return es, rows.Err()
 }
 
-// Pending returns the next undelivered alert of each destination, its
-// head: one head per destination preserves ordering while allowing
-// destinations to proceed independently. It follows the queue rule
-// (queueorder.go): heads holds the head of each key's line, and of the
-// line of deliveries without a key; of these the destination gets an sos
-// head first, else one that does not wait to be retried, else the oldest.
-// Whether a head is due for an attempt the notifications worker decides on
-// the monotonic clock (Daemon.attemptDue), for the destination as a whole;
-// Next is for display and for the first wait after a start.
+// Pending returns the next undelivered alert of each destination, by the
+// queue rule (queueorder.go): the oldest, or, while the oldest waits for a
+// retry, the oldest sos alert not attempted yet that no closing alert of
+// its key precedes. One delivery per destination lets destinations proceed
+// independently. Whether it is due for an attempt the notifications worker
+// decides on the monotonic clock (Daemon.attemptDue), for the destination
+// as a whole; Next is for display and for the first wait after a start.
 func (s *Store) Pending() ([]Delivery, error) {
-	rows, e := s.DB.Query(`WITH heads AS (SELECT r.seq, r.destination, r.urgent, r.attempts FROM outbox r WHERE NOT EXISTS (SELECT 1 FROM outbox c
-  WHERE c.destination=r.destination AND c.incident_key=r.incident_key AND c.seq<r.seq AND (r.urgent=0 OR c.closes=1 OR (c.attempts=0 AND
-   (SELECT o.attempts FROM outbox o WHERE o.destination=r.destination AND o.incident_key=r.incident_key ORDER BY o.seq LIMIT 1)=0))))
- SELECT seq,destination,event,target,attempts,next,error,sent_without_the_hub FROM outbox WHERE seq IN (
-  SELECT COALESCE(MIN(CASE WHEN urgent=1 THEN seq END), MIN(CASE WHEN attempts=0 THEN seq END), MIN(seq)) FROM heads GROUP BY destination) ORDER BY seq`)
+	rows, e := s.DB.Query(`SELECT seq,destination,event,target,attempts,next,error,sent_without_the_hub FROM outbox WHERE seq IN (
+ SELECT CASE WHEN h.attempts=0 THEN h.seq ELSE COALESCE((SELECT MIN(r.seq) FROM outbox r WHERE r.destination=h.destination AND r.urgent=1 AND r.attempts=0
+   AND NOT EXISTS (SELECT 1 FROM outbox c WHERE c.destination=r.destination AND c.incident_key=r.incident_key AND c.closes=1 AND c.seq<r.seq)), h.seq) END
+ FROM outbox h WHERE h.seq IN (SELECT MIN(seq) FROM outbox GROUP BY destination)) ORDER BY seq`)
 	if e != nil {
 		return nil, e
 	}
@@ -966,12 +963,15 @@ func (s *Store) Pending() ([]Delivery, error) {
 }
 
 // Delivered acknowledges a delivery, or records its failed attempt and
-// returns the delay of the next one: the time a receiver asked for, or 1
-// second doubling to 256. The notifications worker waits that delay on the
-// monotonic clock; the outbox keeps the time of the next attempt for
-// status and for the first wait after a start. A permanent refusal drops
-// the delivery with a visible delivery gap. The delay is 0 when the alert
-// leaves the head of its queue.
+// returns the delay of the next attempt to the destination: the time a
+// receiver asked for, or 1 second doubling to 256 with the destination's
+// failed attempts in a row. The count is the destination's, not the
+// alert's, and only an accepted or refused delivery resets it, so a new
+// head of the queue (Pending) never shortens the wait of a failing
+// destination. The notifications worker waits that delay on the monotonic
+// clock; the outbox keeps the time of the next attempt for status and for
+// the first wait after a start. A permanent refusal drops the delivery
+// with a visible delivery gap.
 func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 	// Retention can remove an in-flight delivery and SQLite can reuse its sequence.
 	// Only acknowledge or reschedule the event that was actually sent.
@@ -982,7 +982,16 @@ func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 	if errors.As(err, &refused) {
 		return 0, s.refused(d, refused)
 	}
-	delay := DelayAfterFailedAttempts(d.Attempts + 1)
+	tx, e := s.DB.Begin()
+	if e != nil {
+		return 0, e
+	}
+	defer tx.Rollback()
+	var failures int
+	if e = tx.QueryRow("INSERT INTO counters(name,value) VALUES(?,1) ON CONFLICT(name) DO UPDATE SET value=value+1 RETURNING value", failedAttemptsInARow+d.Destination).Scan(&failures); e != nil {
+		return 0, e
+	}
+	delay := DelayAfterFailedAttempts(failures)
 	var later *checksandalerts.RetryLater
 	if errors.As(err, &later) {
 		delay = later.After
@@ -991,8 +1000,22 @@ func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 	if len(msg) > 2048 {
 		msg = msg[:2048]
 	}
-	_, e := s.DB.Exec("UPDATE outbox SET attempts=attempts+1,next=?,error=? WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", time.Now().Add(delay).UnixNano(), msg, d.Seq, d.Destination, d.Event.ID)
-	return delay, e
+	if _, e = tx.Exec("UPDATE outbox SET attempts=attempts+1,next=?,error=? WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", time.Now().Add(delay).UnixNano(), msg, d.Seq, d.Destination, d.Event.ID); e != nil {
+		return 0, e
+	}
+	return delay, tx.Commit()
+}
+
+// failedAttemptsInARow, followed by a destination's name, names the
+// counter of the destination's delivery attempts that failed since its
+// last accepted or refused one (Delivered).
+const failedAttemptsInARow = "failed_attempts_in_a_row:"
+
+// destinationAnswered resets the destination's failed attempts in a row,
+// in transaction tx: the destination accepted or refused an alert.
+func destinationAnswered(tx *sql.Tx, destination string) error {
+	_, e := tx.Exec("DELETE FROM counters WHERE name=?", failedAttemptsInARow+destination)
+	return e
 }
 
 // accepted removes a delivery that its destination accepted from the
@@ -1009,6 +1032,9 @@ func (s *Store) accepted(d Delivery) error {
 	}
 	defer tx.Rollback()
 	if _, e = tx.Exec("DELETE FROM outbox WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID); e != nil {
+		return e
+	}
+	if e = destinationAnswered(tx, d.Destination); e != nil {
 		return e
 	}
 	if e = recordAcceptance(tx, d); e != nil {
@@ -1047,6 +1073,9 @@ func (s *Store) refused(d Delivery, refused *checksandalerts.MMHotlineRefusal) e
 		return e
 	}
 	defer tx.Rollback()
+	if e = destinationAnswered(tx, d.Destination); e != nil {
+		return e
+	}
 	if e = forgetUndeliveredAnnouncements(tx, "seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID); e != nil {
 		return e
 	}
@@ -1055,7 +1084,7 @@ func (s *Store) refused(d Delivery, refused *checksandalerts.MMHotlineRefusal) e
 		return e
 	}
 	if n, _ := r.RowsAffected(); n == 0 {
-		return nil
+		return tx.Commit()
 	}
 	now := time.Now().UTC()
 	event := checksandalerts.Event{ID: incidents.ID(), Node: s.Node, CheckGroup: d.Event.CheckGroup, Check: d.Event.Check, Type: "delivery_gap", At: now,

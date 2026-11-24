@@ -10,20 +10,17 @@ import (
 )
 
 // The order of each destination's queue in the outbox, one rule
-// (Store.Pending). The queue holds a line of deliveries for each fleet
-// incident key, and one line of the deliveries without a key, such as
-// notices, which so keep their place among themselves. A line's head is
-// its oldest delivery, except that an sos alert may pass deliveries of its
-// own line when the line is stuck, its oldest delivery having had a failed
-// attempt and waiting to be retried: then it passes every delivery of the
-// line but a closing alert, so a warn that keeps failing never holds the
-// sos back. A line that is not stuck keeps its order, so an incident's
-// opening reaches a healthy destination before its raise, and a resolution
-// and what follows it keep their order. Of the heads of its
-// lines, the destination gets an sos head first, else a head that does not
-// wait to be retried, else the oldest: an alert that keeps failing holds
-// back no other key, and so no other key's sos. Nothing is removed. The
-// wait before the next attempt stays destination-wide. The rule is in the
+// (Store.Pending). The queue is first in, first out, with one exception:
+// while its oldest delivery has had a failed attempt and waits for a
+// retry, the next attempt goes to the oldest sos alert that has not had a
+// failed attempt yet and that no closing alert of its own key precedes in
+// the queue; if there is none, to the oldest delivery again. So an alert
+// that keeps failing holds no sos back, an sos that keeps failing holds
+// back no sos of another key, and an sos never passes the closing alert of
+// its own key. Nothing is removed. The cost: while a destination is
+// failing, an sos can reach it before the warn of its own incident. The
+// wait before the next attempt is the destination's (Store.Delivered), so
+// a change of the delivery tried never shortens it. The rule is in the
 // design of alert delivery, "An sos goes first".
 
 // outboxOrderOf says where a queued delivery stands: urgent for an sos
