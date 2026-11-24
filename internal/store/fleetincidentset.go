@@ -890,6 +890,27 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 	if e != nil {
 		return e
 	}
+	// The alert sources that the reports' new direct sends went under are
+	// known before anything of the batch goes out: an opening that a
+	// coverage change queues goes where a node opened the key's incident
+	// (queueMMHotlineAlerts), not to a second incident that pages again.
+	for _, name := range checksandalerts.Names(destinations) {
+		set, _ := IncidentSetOf(name, destinations[name])
+		for _, reporter := range checksandalerts.Names(changes) {
+			if changes[reporter].Forgotten {
+				continue
+			}
+			for id, c := range changes[reporter].SentWithoutTheHub[name] {
+				settled, e := set.directSendSettled(tx, reporter, id, c)
+				if e == nil && !settled {
+					e = set.recordMMHotlineSource(tx, destinations[name], checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), s.Node), c.MMHotlineAlertSource)
+				}
+				if e != nil {
+					return e
+				}
+			}
+		}
+	}
 	// A node whose exact finding moved onto or off a set-aside entry
 	// settles as a change of the file does.
 	if e = applyCoverageChanges(tx, at, coverage, destinations, from, now); e != nil {
@@ -1317,15 +1338,14 @@ func directSendVersion(severities []string, alertSource string, exactFindingSequ
 // (IncidentsKnownToTheHub).
 func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason string, awaitingReports bool, waiting map[string]bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
 	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
-	version := directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence)
-	var settled bool
-	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=? AND settled_version=?)", set.Destination, reporter, id, version).Scan(&settled); e != nil || settled || r.Forgotten || reason != "" && (awaitingReports || waiting[key]) {
+	settled, e := set.directSendSettled(tx, reporter, id, c)
+	if e != nil || settled || r.Forgotten || reason != "" && (awaitingReports || waiting[key]) {
 		return e
 	}
 	grouped := checksandalerts.HasExactFinding(c)
 	// The key's further alerts and its resolution go under the alert
 	// source that the node sent under (queueMMHotlineAlerts).
-	e := set.recordMMHotlineSource(tx, dest, key, c.MMHotlineAlertSource)
+	e = set.recordMMHotlineSource(tx, dest, key, c.MMHotlineAlertSource)
 	switch {
 	case e != nil:
 	case reason != "":
@@ -1364,8 +1384,19 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 	if e != nil {
 		return e
 	}
-	_, e = tx.Exec("INSERT INTO fleet_direct_sends_settled(destination,reporter,incident_id,settled,settled_version) VALUES(?,?,?,?,?) ON CONFLICT(destination,reporter,incident_id) DO UPDATE SET settled=excluded.settled, settled_version=excluded.settled_version", set.Destination, reporter, id, now.UnixNano(), version)
+	_, e = tx.Exec("INSERT INTO fleet_direct_sends_settled(destination,reporter,incident_id,settled,settled_version) VALUES(?,?,?,?,?) ON CONFLICT(destination,reporter,incident_id) DO UPDATE SET settled=excluded.settled, settled_version=excluded.settled_version",
+		set.Destination, reporter, id, now.UnixNano(), directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence))
 	return e
+}
+
+// directSendSettled reports whether the hub has settled the version of the
+// reporter's record of a direct send (c) of the incident id to the set's
+// destination.
+func (set IncidentSet) directSendSettled(tx *sql.Tx, reporter, id string, c checksandalerts.Event) (bool, error) {
+	var settled bool
+	e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=? AND settled_version=?)",
+		set.Destination, reporter, id, directSendVersion(c.AlertSeveritiesSentForIncident, c.MMHotlineAlertSource, c.ExactFindingSequence)).Scan(&settled)
+	return settled, e
 }
 
 // SentWithoutTheHub lists the incidents that this node sent without the

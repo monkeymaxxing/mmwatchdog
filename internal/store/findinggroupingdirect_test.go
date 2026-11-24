@@ -520,3 +520,25 @@ func TestASetAsideDirectSendWaitsForAFailureInTheIntake(t *testing.T) {
 		t.Fatal("the settled record is not acknowledged", known, e)
 	}
 }
+
+// A warning set aside on the hub rose to sos during a hub outage, and
+// MMHotline accepted the node's direct sos under the node alert source.
+// The report that brings both moves the incident off the set-aside entry,
+// and the opening that this queues goes under the node alert source too,
+// so MMHotline opens no second incident that pages someone again.
+func TestAnOpeningAfterASetAsideGoesWhereTheNodeOpenedTheIncident(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+	h.arrive(tenOFive.Add(2 * time.Minute))
+	expectKinds(t, h.take("hotline"))
+	back := tenOFive.Add(time.Hour)
+	report := carriedTo(shows("app-1", "sos", versionA, 0, tenOFive, back), "hotline", nodeAlertSource)
+	h.report(back, map[string]store.ReportedIncidents{"app-1": report})
+	for _, a := range h.take("hotline") {
+		if sourceOf(a) != nodeAlertSource {
+			t.Fatalf("%s goes under %s, not where the node opened the incident", a.Type, sourceOf(a))
+		}
+	}
+}
