@@ -42,6 +42,29 @@ PUSHOVER_USER_OR_GROUP_KEY_FILE = official_extra_destination_module_scenarios.PU
 ONE_INCIDENT_PER_CHECK_GROUP = 'one_incident_per_check'
 ONE_INCIDENT_PER_CHECK_FILE = '/etc/mmwatchdog/check_groups/one_incident_per_check.yml'
 ONE_INCIDENT_PER_CHECK_FAILS_WHILE_THIS_FILE_IS_THERE = '/var/tmp/mmwatchdog-fixture/one-incident-per-check-{check}-fails'
+# The scenarios of grouping by exact finding and of setting a finding aside.
+# A module of the project's own, on the hub and on the peer, reports the
+# finding FLAW with the exact finding that EXACT_FINDING_FILE on its guest
+# holds, and no finding while the file is not there, so the suite decides
+# when each node reports which exact finding.
+EXACT_FINDING_MODULE = 'fleet_suite_exact_finding'
+EXACT_FINDING_FILE = '/var/tmp/mmwatchdog-fleet-suite-exact-finding'
+EXACT_FINDING_CHECK_GROUP_FILE = '/etc/mmwatchdog/check_groups/exact_finding.yml'
+EXACT_FINDING_CHECK = 'exact_finding/flaw'
+FLAW = 'CVE-2026-0001 fleetlib'
+EXACT_FINDING_MODULE_EXECUTABLE = '''#!/bin/bash
+"$MMWATCHDOG_MODULE_HELPER" module-json request >/dev/null || exit 1
+exact_finding=$(cat ''' + EXACT_FINDING_FILE + ''' 2>/dev/null)
+if [[ -z $exact_finding ]]; then
+  exec "$MMWATCHDOG_MODULE_HELPER" module-json result --status ok --message 'fleetlib has no known flaw'
+fi
+exec "$MMWATCHDOG_MODULE_HELPER" module-json result --status failed --message 'fleetlib has a known flaw' \\
+  --finding ''' + shlex.quote(FLAW) + ''' 'fleetlib has the flaw CVE-2026-0001' --exact-finding ''' + shlex.quote(FLAW) + ''' "$exact_finding"
+'''
+SET_ASIDE_FINDINGS_FILE = '/etc/mmwatchdog/set_aside_findings.yml'
+# The fields of an alert that MMHotline's alert intake knows. It refuses a
+# request with any other field.
+MMHOTLINE_ALERT_FIELDS = {'sender_alert_id', 'sender_incident_key', 'severity', 'title', 'message', 'happened_at'}
 # Product minimums: silence still requires three missed reports (3 seconds),
 # the hub-outage alerter two (2 seconds), and direct delivery waits another second.
 TIMINGS = {'report_every': '1s', 'alert_after_hub_unreachable_for': '2s', 'send_alert_without_hub_after_waiting_for': '1s'}
@@ -1244,6 +1267,169 @@ def suite(mark=print):
         assert not sos_only(lambda e: e.get('incident_id') == unreachable[0]['incident_id']), 'the hub silence alert reached an unnamed destination'
         assert all(e.get('send_alerts_only_to_destinations') == ['capture'] for e in hub_outage), hub_outage
         mark('the hub\'s own raise_to_sos_after_this_node_is_silent_for reaches the hub-outage alerter node with the fleet settings and raises the hub-outage alerter\'s alert about the hub to sos after that time; the warning, raise and recovery reach only capture, the hub\'s named silence destination')
+        # One alert per exact finding across the fleet, and setting a
+        # finding aside. The check of the flaw names capture, which keeps no
+        # incidents, and the MMHotline destination, and no other. The hub's
+        # shared tick for nodes that an announced exact finding newly
+        # affects comes each minute, within the suite's waits. The peer
+        # waits 30 seconds for the hub before it sends an alert itself, so
+        # a slow answer of the hub cannot send the peer's alerts to the
+        # destinations directly.
+        flaw_key = fleet_key(EXACT_FINDING_CHECK + ': ' + FLAW + ' failed')
+        exact_finding = {version: 'Debian:13 ' + FLAW + ' ' + version + '; fixed version: none' for version in ('1.0-1', '1.0-2', '1.0-3', '1.0-4')}
+        set_aside_reason = 'no service on these nodes loads fleetlib'
+        set_aside_entry = {'check': EXACT_FINDING_CHECK, 'finding': FLAW, 'exact_finding': exact_finding['1.0-3'], 'reason': set_aside_reason,
+                           'investigation_note': 'triage_agent_notes/2026-11-24_fleetlib_on_the_fleet_suite_peer.md', 'set_aside_by': 'the fleet suite', 'set_aside_on': '2026-11-24'}
+        update_title = EXACT_FINDING_CHECK + ': ' + FLAW + ': 1 node added'
+
+        def report_exact_finding(text, guest=vm.NAME):
+            """Make the module on the guest report FLAW with the exact finding
+            text, or no finding for None. The new file takes the old one's
+            place in one step, so no run reads it half written."""
+            if text is None:
+                vm.console('rm -f ' + EXACT_FINDING_FILE, guest=guest)
+                return
+            vm.write(EXACT_FINDING_FILE + '.new', text, guest=guest)
+            vm.console('mv ' + EXACT_FINDING_FILE + '.new ' + EXACT_FINDING_FILE, guest=guest)
+
+        def flaw_at_capture(kind=None):
+            """The alerts of the flaw's key that reached capture, in order."""
+            return delivered(lambda e: e.get('fleet_incident_key') == flaw_key and (kind is None or e['type'] == kind))
+
+        def flaw_at_mmhotline():
+            """The alerts of the flaw's key that reached MMHotline, in order."""
+            return [a for a in mmhotline_received('alert-intake') if a.get('sender_incident_key') == flaw_key]
+
+        def first_line(mmhotline_alert):
+            return mmhotline_alert['message'].split('\n')[0]
+
+        def flaw_state(status):
+            return status['checks'][EXACT_FINDING_CHECK]['state']
+
+        try:
+            for guest in (vm.NAME, peer_guest):
+                vm.write_module(EXACT_FINDING_MODULE, {'module_description.yml': vm.module_description(EXACT_FINDING_MODULE, one_incident_for_each_finding=True),
+                                                       'module_executable': EXACT_FINDING_MODULE_EXECUTABLE}, guest=guest)
+                vm.write(EXACT_FINDING_CHECK_GROUP_FILE, json.dumps({'check_groups': {'exact_finding': {
+                    'check_every': '1s', 'time_limit_per_run': '1s', 'alert_after_failing_for': '0s', 'recovered_after_healthy_for': '0s',
+                    'checks': {'flaw': {EXACT_FINDING_MODULE: {}, 'alert_severity': 'warn', 'send_alerts_only_to_destinations': ['capture', 'mmhotline_on_call']}}}}}), guest=guest)
+            config['fleet_hub_role']['send_newly_affected_nodes_every'] = '1m'
+            wait_for_the_hub_before_sending_directly('30s')
+            peer('reload', 0)
+            wait(lambda: flaw_state(json.loads(mmwatchdog('status --json').stdout)) == 'ok' and flaw_state(peer_status()) == 'ok', 'the check of the flaw is healthy on both nodes')
+            # The hub reports the flaw first: its alert goes out at once.
+            report_exact_finding(exact_finding['1.0-1'])
+            opened = wait(lambda: flaw_at_capture('failed'), 'the hub\'s failure reaches capture at once')
+            opened_seen = time.monotonic()
+            assert len(opened) == 1 and opened[0]['node'] == hub_name and opened[0]['exact_finding'] == exact_finding['1.0-1'] and opened[0]['alert_severity'] == 'warn', opened
+            # The peer reports the same exact finding more than a minute
+            # later, past the minute of fleet alert grouping. The pause makes
+            # that gap; the suite waits for nothing during it.
+            time.sleep(max(0, opened_seen + 61 - time.monotonic()))
+            report_exact_finding(exact_finding['1.0-1'], guest=peer_guest)
+            joined = wait(lambda: flaw_at_capture('finding_nodes_changed'), 'the shared tick sends one update that adds the peer', timeout=90)
+            assert len(joined) == 1 and joined[0]['message'] == update_title and joined[0]['alert_severity'] == 'warn', joined
+            assert joined[0]['nodes'] == [name] and joined[0]['node_count'] == 1 and not joined[0].get('recovered_nodes'), joined
+            assert joined[0]['nodes_by_exact_finding'] == [{'exact_finding': exact_finding['1.0-1'], 'nodes': [name], 'node_count': 1}], joined
+            # The hub took the peer's failure before the update that names
+            # the peer, so a failure alert of the peer's own would be here by now.
+            assert len(flaw_at_capture('failed')) == 1, flaw_at_capture('failed')
+            # An exact finding not announced before goes out at once, as the
+            # peer's exact_finding_changed itself.
+            report_exact_finding(exact_finding['1.0-2'], guest=peer_guest)
+            changed = wait(lambda: flaw_at_capture('exact_finding_changed'), 'the peer\'s new exact finding goes out at once', timeout=30)
+            assert len(changed) == 1 and changed[0]['node'] == name and changed[0]['exact_finding'] == exact_finding['1.0-2'] and changed[0]['alert_severity'] == 'warn', changed
+            # Both nodes recover: one closing alert covers both.
+            report_exact_finding(None)
+            report_exact_finding(None, guest=peer_guest)
+            both_nodes = sorted([hub_name, name])
+            closed = wait(lambda: flaw_at_capture('recovered'), 'one closing alert of the key covers both nodes', timeout=30)
+            assert len(closed) == 1 and closed[0]['nodes'] == both_nodes and closed[0]['node_count'] == 2 and closed[0]['alert_severity'] == 'warn', closed
+            assert closed[0]['message'] == EXACT_FINDING_CHECK + ': ' + FLAW + ' is ok on every node again (was failing on ' + ', '.join(both_nodes) + ')', closed
+            # The closing alert comes after every other alert of the key. An
+            # update that names only nodes that are ok again goes out when the
+            # shared tick falls between the two recoveries; it is info.
+            recovered_only = [e for e in flaw_at_capture('finding_nodes_changed') if not e.get('node_count')]
+            assert all(e['alert_severity'] == 'info' and e.get('recovered_nodes') for e in recovered_only), recovered_only
+            sequence = [e['type'] for e in flaw_at_capture() if e not in recovered_only]
+            assert sequence == ['failed', 'finding_nodes_changed', 'exact_finding_changed', 'recovered'], flaw_at_capture()
+            mark('one exact finding on two nodes more than a minute apart sends one failure alert; the later node goes out in one finding_nodes_changed update on the shared tick of send_newly_affected_nodes_every, '
+                 'a new exact finding goes out at once as exact_finding_changed, and one closing alert names both nodes')
+            # The same flow at MMHotline: only fields that MMHotline knows,
+            # each request with its own sender_alert_id and the fleet key, and
+            # the problem in the same words on the first line of every
+            # warning, with no node name.
+            wait(lambda: [a for a in flaw_at_mmhotline() if a['severity'].startswith('resolved-')], 'MMHotline gets the resolution of the key', timeout=30)
+            at_mmhotline = flaw_at_mmhotline()
+            assert all(set(a) <= MMHOTLINE_ALERT_FIELDS for a in at_mmhotline), at_mmhotline
+            assert len({a['sender_alert_id'] for a in at_mmhotline}) == len(at_mmhotline), at_mmhotline
+            recovered_only = [a for a in at_mmhotline if a['severity'] == 'info']
+            assert all(first_line(a) == EXACT_FINDING_CHECK + ': ' + FLAW + ': 1 node ok again' for a in recovered_only), recovered_only
+            raised = [a for a in at_mmhotline if a['severity'] != 'info']
+            assert [a['severity'] for a in raised] == ['warn', 'warn', 'warn', 'resolved-warn'], at_mmhotline
+            assert [first_line(a) for a in raised[:3]] == [exact_finding['1.0-1'], update_title, exact_finding['1.0-2']], raised
+            assert not [a for a in raised[:3] if hub_name in first_line(a) or name in first_line(a)], raised
+            assert 'on 1 node: ' + name in raised[1]['message'], raised[1]
+            mark('MMHotline gets the same flow as signed alerts with only the fields that it knows and sender_incident_key equal to the fleet key: the first alert, the update, '
+                 'and the new exact finding as warnings whose first line names the problem without a node name, and resolved-warn when both nodes recover')
+            # Set a finding aside. The key opens again with the peer's
+            # failure, which goes out at once.
+            at_mmhotline_before = len(flaw_at_mmhotline())
+            report_exact_finding(exact_finding['1.0-3'], guest=peer_guest)
+            announced = wait(lambda: [e for e in flaw_at_capture('failed') if e['exact_finding'] == exact_finding['1.0-3']], 'the peer\'s failure opens the key again at once', timeout=30)
+            assert len(announced) == 1 and announced[0]['node'] == name, announced
+            vm.write(SET_ASIDE_FINDINGS_FILE, json.dumps({'set_aside_findings': [set_aside_entry]}))
+            mmwatchdog('reload', 0)
+            put_aside = wait(lambda: flaw_at_capture('closed_without_recovery'), 'the announced finding closes as set aside', timeout=30)
+            assert len(put_aside) == 1 and put_aside[0]['node'] == name and put_aside[0]['exact_finding'] == exact_finding['1.0-3'], put_aside
+            assert put_aside[0]['message'] == 'Set aside after investigation: ' + set_aside_reason and put_aside[0]['alert_severity'] == 'warn', put_aside
+            listing = json.loads(mmwatchdog('fleet set-aside-findings --json', 0).stdout)['set_aside_findings']
+            assert len(listing) == 1 and {field: listing[0][field] for field in set_aside_entry} == set_aside_entry, listing
+            assert listing[0]['covered_node_count'] == 1 and listing[0]['covered_nodes'] == [name], listing
+            assert listing[0]['matches_no_node_now'] is False and listing[0]['nodes_that_cannot_check_now'] == 0, listing
+            # The fleet view lists the finding apart, out of the peer's
+            # attention; the peer itself, which does not know the verdict,
+            # still shows the finding as failing.
+            in_fleet = wait(lambda: (n := node(name))['set_aside_findings'] and n, 'the fleet view lists the peer\'s set-aside finding')
+            assert in_fleet['set_aside_findings'] == [{'check': EXACT_FINDING_CHECK, 'finding': FLAW, 'exact_finding': exact_finding['1.0-3'], 'reason': set_aside_reason}], in_fleet['set_aside_findings']
+            assert not [a for a in in_fleet['report']['summary']['attention'] if a.get('finding') == FLAW], in_fleet['report']['summary']
+            assert fleet()['set_aside_finding_count'] == 1 and fleet()['nodes_with_set_aside_findings'] == 1, fleet()
+            assert flaw_state(peer_status()) == 'failed', peer_status()['checks'][EXACT_FINDING_CHECK]
+            mark('a set-aside entry for the exact finding of an announced finding sends one closed_without_recovery, "Set aside after investigation: REASON"; '
+                 'mmwatchdog fleet set-aside-findings lists the entry with the node that it covers, and the fleet view counts the finding apart from the node\'s attention')
+            # The peer's exact finding moves off the entry: one opening alert
+            # names the new exact finding and the earlier verdict.
+            report_exact_finding(exact_finding['1.0-4'], guest=peer_guest)
+            reopened = wait(lambda: [e for e in flaw_at_capture('failed') if e['exact_finding'] == exact_finding['1.0-4']], 'the changed exact finding opens the key again', timeout=30)
+            assert len(reopened) == 1 and reopened[0]['node'] == name and reopened[0]['alert_severity'] == 'warn', reopened
+            assert reopened[0]['message'] == exact_finding['1.0-4'] + '; an earlier exact finding was set aside: ' + set_aside_reason, reopened
+            # An empty list is valid and sets nothing aside.
+            vm.write(SET_ASIDE_FINDINGS_FILE, json.dumps({'set_aside_findings': []}))
+            mmwatchdog('reload', 0)
+            assert json.loads(mmwatchdog('fleet set-aside-findings --json', 0).stdout)['set_aside_findings'] == []
+            report_exact_finding(None, guest=peer_guest)
+            wait(lambda: [e for e in flaw_at_capture('recovered') if e['node'] == name], 'the peer\'s recovery closes the key', timeout=30)
+            # Neither the set aside nor the move off the entry sent an
+            # exact_finding_changed of its own.
+            assert len(flaw_at_capture('exact_finding_changed')) == 1, flaw_at_capture('exact_finding_changed')
+            wait(lambda: len([a for a in flaw_at_mmhotline()[at_mmhotline_before:] if a['severity'].startswith('resolved-')]) == 2, 'MMHotline gets the resolution of the key', timeout=30)
+            at_mmhotline = flaw_at_mmhotline()[at_mmhotline_before:]
+            assert [(a['severity'], first_line(a)) for a in at_mmhotline[:3]] == [
+                ('warn', exact_finding['1.0-3']), ('resolved-warn', 'Set aside after investigation: ' + set_aside_reason), ('warn', exact_finding['1.0-4'])], at_mmhotline
+            mark('an exact finding that moves off a set-aside entry sends one opening alert, "EXACT_FINDING; an earlier exact finding was set aside: REASON", and MMHotline gets the set aside as resolved-warn and the new exact finding as a warning; '
+                 'set_aside_findings: [] is valid and sets nothing aside')
+            vm.console('rm -f ' + SET_ASIDE_FINDINGS_FILE)
+            config['fleet_hub_role'].pop('send_newly_affected_nodes_every')
+            wait_for_the_hub_before_sending_directly(TIMINGS['send_alert_without_hub_after_waiting_for'])
+        finally:
+            vm.console('rm -f ' + SET_ASIDE_FINDINGS_FILE)
+            for guest in (vm.NAME, peer_guest):
+                vm.console('rm -rf ' + ' '.join([EXACT_FINDING_CHECK_GROUP_FILE, EXACT_FINDING_FILE, EXACT_FINDING_FILE + '.new', vm.EXTERNAL_MODULES + '/' + EXACT_FINDING_MODULE]), guest=guest)
+            config['fleet_hub_role'].pop('send_newly_affected_nodes_every', None)
+            config['fleet_hub_role']['send_alert_without_hub_after_waiting_for'] = TIMINGS['send_alert_without_hub_after_waiting_for']
+            vm.write('/etc/mmwatchdog/mmwatchdog_node_settings.yml', json.dumps(config))
+            mmwatchdog('reload', 0)
+            peer('reload', 0)
     finally:
         vm.console('systemctl stop mmwatchdog-mmhotline 2>/dev/null; rm -f ' + MMHOTLINE_FILES + '; systemctl daemon-reload; true')
         email_scenarios.stop_mail_servers((vm.NAME, peer_guest))
