@@ -61,6 +61,16 @@ json` must print JSON, which is what the check reads.
   installed package under `esm-apps` or `esm-infra` with a status other than
   `upgrade_available`. The failed message names the source packages. Each
   finding names the needed service, binary packages, and fixed versions.
+- **Each finding names its exact finding:** the release, the source
+  package, its installed version, and each service with the fixed versions
+  that it delivers, such as `ubuntu 24.04 python-wheel 0.42.0-1; esm-apps
+  fixed version: 0.42.0-2ubuntu0.1~esm1`. The release is `ID` and
+  `VERSION_ID` of `/etc/os-release`, and the installed version is the lowest
+  installed version of the source package. Two nodes with the same exact
+  finding miss the same fix, so a fleet hub sends one alert for all of
+  them. A new installed version or a new fixed version is a new exact
+  finding: the incident stays open, and MMWatchdog sends
+  `exact_finding_changed`.
 - **The check is healthy** with `this node misses no security fix that only
   Ubuntu Pro delivers` when no matching entry exists. Entries with
   `upgrade_available` belong to `apt_security_updates`, because apt can
@@ -132,10 +142,12 @@ run for a source package resolves that source package's incident.
 4. For an unattached node, MMWatchdog requires a nonempty file matching
    `/var/lib/ubuntu-advantage/apt-esm/var/lib/apt/lists/*_Packages`.
 5. MMWatchdog runs `dpkg-query --show` with the format
-   `${db:Status-Status}\t${Package}\t${source:Package}\n`, under the account,
-   directory, and environment used for `pro`. Installed binary packages are
-   grouped by source package. A binary absent from the inventory keeps its
-   own name as the source package name.
+   `${db:Status-Status}\t${Package}\t${source:Package}\t${source:Version}\n`,
+   under the account, directory, and environment used for `pro`. Installed
+   binary packages are grouped by source package, and the lowest source
+   version is the source package's installed version. A binary absent from
+   the inventory keeps its own name as the source package name, and its
+   exact finding says `installed version unknown`.
 6. Each source with an ESM Apps or ESM Infra fix whose status is not
    `upgrade_available` becomes one finding. Source names and binary names
    are sorted. The check's summary names at most 20 sources and counts the
@@ -161,7 +173,7 @@ run for a source package resolves that source package's incident.
 [Limits on each distribution](../limits-on-each-distribution.md) says what MMWatchdog cannot do on each distribution, or did not test there, and why.
 
 - **Go tests:** `TestUbuntuProSecurityFixesCheck` covers source grouping,
-  fixed versions, ESM Apps and ESM Infra, ignored installable and standard
+  fixed versions, the exact findings, ESM Apps and ESM Infra, ignored installable and standard
   fixes, command arguments and accounts, Debian, missing ESM lists,
   attachment state, unusable JSON, command failures, and apt's stamp rule.
 - **The node suite** (`node_scenarios.py`) has a scenario for
@@ -179,10 +191,12 @@ run for a source package resolves that source package's incident.
 
 ## Why it works this way
 
-- **A separate module keeps separate incident rules.** `apt_security_updates`
-  keeps one incident for all installable updates. The Pro check needs one
-  incident per source package, so adding another `fail_when` to the apt
-  module would mix the incident rules.
+- **A separate module keeps separate rules.** `apt_security_updates`
+  reports the fixes that apt can install now, and this check the fixes that
+  only Ubuntu Pro delivers, which a team may decide to live with. Both
+  report one incident per source package; another `fail_when` of the apt
+  module would mix a team's choice about Ubuntu Pro into the updates that it
+  must install.
 - **The check is opt-in because most people are not Pro subscribers.** A
   team that decided against Ubuntu Pro might not want an open incident for
   every fix that only Ubuntu Pro delivers, so each team chooses. No example

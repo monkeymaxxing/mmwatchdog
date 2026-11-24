@@ -1,8 +1,9 @@
 # `zypper_security_patches`
 
 `zypper_security_patches` fails while a security patch waits to be installed
-on a SUSE node, such as openSUSE Leap, and its message names the patches. The
-check asks the node's own package manager, `zypper`. The check downloads
+on a SUSE node, such as openSUSE Leap, and its message names the patches. Each
+security patch that waits is one finding, with its own incident, its own
+alert, and its own recovery. The check asks the node's own package manager, `zypper`. The check downloads
 nothing and reads only what zypper already knows. Set `fail_when` to
 `a_security_patch_waits_to_be_installed` to state when the check fails.
 
@@ -82,6 +83,18 @@ succeeds for that repository, also when the repository has not changed.
   (needs a reboot)`. Each patch has its name, its severity, and its summary.
   A patch that needs a reboot says so; it is an ordinary waiting patch. The
   message names 20 patches at most and counts the rest, such as `, and 4 more`.
+- **Each patch is one finding,** with the patch's name as the finding's ID,
+  and so one incident, one alert, and one recovery of its own. The finding's
+  message is the patch with its severity and summary, such as `the security
+  patch openSUSE-Leap-16.1-12 (important): Security update for libXtst
+  waits to be installed`. When the patch is installed, the finding recovers
+  with `the security patch openSUSE-Leap-16.1-12 no longer waits to be
+  installed`.
+- **Each finding names its exact finding:** the release, the patch, its
+  severity, and whether it needs a reboot, such as `opensuse-leap 16.1
+  openSUSE-Leap-16.1-30 critical; reboot needed`. The release is `ID` and
+  `VERSION_ID` of `/etc/os-release`. Two nodes with the same exact finding
+  wait for the same patch, so a fleet hub sends one alert for all of them.
 - **The check is healthy** with `no security patch waits to be installed`.
 - **MMWatchdog cannot check, and the check is unknown,** when any condition
   below applies. The message explains why. An unknown result is never healthy:
@@ -124,9 +137,9 @@ check_groups:
 
 Once an hour, MMWatchdog on the node asks zypper which security patches wait.
 `alert_after_failing_for: 0s` sends the `warn` alert after the first run that
-finds a waiting security patch. The alert message names the patches. After
-the patches are installed, the next run is healthy, and
-`recovered_after_healthy_for: 0s` sends the recovery at once.
+finds a waiting security patch: one alert for each patch. After a patch is
+installed, the next run no longer reports it, and
+`recovered_after_healthy_for: 0s` sends that finding's recovery at once.
 
 ### A node that installs its patches by itself
 
@@ -176,7 +189,8 @@ the check unknown.
    not 0, or any message of type `error` makes the check unknown. Otherwise,
    each `update` of kind `patch` with status `needed` and category `security`
    is a waiting patch. A patch with `restart="true"` says `(needs a reboot)`.
-   A patch counts once, however many repositories list it.
+   A patch counts once, however many repositories list it, and each patch
+   is one finding.
 
 ## Errors and what they mean
 
@@ -200,7 +214,8 @@ the check unknown.
 
 - **Go tests** in `suse_checks_test.go`: `TestZypperSecurityPatchesCheck`
   covers zypper's XML with no patch, one patch, and several patches (some
-  that need a reboot), exit code 106 with its error message, other exit codes,
+  that need a reboot; one finding for each patch, with its message and exact
+  finding), exit code 106 with its error message, other exit codes,
   fresh, missing, and old `repomd.xml` files among several repositories (one of
   them disabled, two of a service), the account and the arguments, and the
   unknown messages of Debian and of Debian's check on SUSE.
@@ -212,8 +227,8 @@ the check unknown.
   [target distributions](../../docs/changing-mmwatchdog/testing.md#every-target-distribution). The
   suite writes the two systemd units of [Set up](#set-up) from this page, and
   starts the service. The suite compares the enabled repositories with the
-  directories of zypper's cache, and the check's answer with the security
-  patches that zypper lists as root. It then picks a package at run time and
+  directories of zypper's cache, and the check's answer and findings with the
+  security patches that zypper lists as root. It then picks a package at run time and
   installs an older version that a security patch covers, so that the patch
   waits and the check fails and names the patch. It also tests metadata that
   is nine days old, and removes the old package again.
@@ -234,6 +249,13 @@ the check unknown.
 - **The check names patches, not packages.** zypper's XML for `list-patches`
   names no packages. A patch's name, severity, and summary are what an
   administrator gives to `zypper patch` or `zypper info -t patch`.
+- **One finding for each patch.** SUSE ships each security fix as a patch,
+  which is the same problem on every node that waits for it. So the fleet hub
+  can send one alert for a patch across the fleet, and each patch recovers by
+  itself when it is installed. A check of MMWatchdog 0.1.x had one incident
+  for all patches; at the upgrade to 0.2.0, that incident closes once with
+  the message that the check's module now reports each finding as an
+  incident of its own, and the waiting patches open as new incidents.
 - **Exit code 106 is unknown.** zypper skipped a repository, so its answer may
   lack the patches of that repository, and "no patch waits" would be a guess.
 - **A patch that needs a reboot is an ordinary waiting patch.** It waits to be
