@@ -121,3 +121,25 @@ func TestADirectSendStartsTheHubsReminders(t *testing.T) {
 		t.Fatal(got[0].Node)
 	}
 }
+
+// A joined node's own reminder of a finding that a set-aside entry covers
+// on the hub never reaches a destination: the node knows no verdict, and
+// reminds of the incident while its reports fail.
+func TestAJoinedNodesReminderOfASetAsideFindingIsDropped(t *testing.T) {
+	t.Parallel()
+	chat := chatTaking("https://chat.example.com", "warn")
+	chat.RemindEvery = "1h"
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chat})
+	h.arrive(tenOFive, h.alert("app-2", "failed", "warn", versionA, 0, tenOFive))
+	expectKinds(t, h.take("chat"), "failed warn")
+	h.setAside(tenOFive.Add(time.Minute), entryFor(versionA, reasonNoPAM))
+	expectKinds(t, h.take("chat"), "closed_without_recovery warn")
+	for interval := 1; interval <= 2; interval++ {
+		at := tenOFive.Add(time.Duration(interval) * time.Hour)
+		reminder := h.alert("app-2", "reminder", "warn", versionA, 0, at)
+		reminder.Destination = "chat"
+		h.arrive(at, reminder)
+		h.tick(at)
+		expectKinds(t, h.take("chat"))
+	}
+}
