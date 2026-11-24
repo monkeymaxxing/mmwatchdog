@@ -352,6 +352,28 @@ func TestAServiceThatKeepsIncidentsGetsTheHubsOwnKey(t *testing.T) {
 	}
 }
 
+// A node sent warn and sos of an incident to MMHotline without the hub;
+// before its report arrives, a reload narrows the destination to warn.
+// The report adds the incident at the severity that the destination takes
+// now, and settling the direct send still counts the sos that MMHotline
+// got: the closing is resolved-sos, which closes the SOS there.
+func TestADirectSendCountsItsSeveritiesWhenTheReportAddsTheIncident(t *testing.T) {
+	t.Parallel()
+	warnOnly := hotline()
+	warnOnly.AlertSeverities = []string{"warn"}
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": warnOnly})
+	at := tenOFive.Add(10 * time.Minute)
+	report := reportOf("app-1", "sos", "source-1", tenOFive, at)
+	shown := report.Incidents["incident-app-1"]
+	shown.AlertSeveritiesSentForIncident = []string{"warn", "sos"}
+	report.Incidents["incident-app-1"] = shown
+	report.SentWithoutTheHub["hotline"]["incident-app-1"] = shown
+	h.report(at, map[string]store.ReportedIncidents{"app-1": report})
+	expectKinds(t, h.take("hotline"))
+	h.report(at.Add(time.Hour), map[string]store.ReportedIncidents{"app-1": {Sent: at.Add(time.Hour)}})
+	expectKinds(t, h.take("hotline"), "recovered resolved-sos")
+}
+
 // A reminder of an incident that the hub's set does not hold, such as one
 // that a node sent without the hub before its report arrives, goes under
 // the key that the hub derives from the incident, never under the key

@@ -1156,13 +1156,8 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 			if shown {
 				reported = append(slices.Clone(reported), severitiesSentTo(name, destinations, shownIncident)...)
 			}
-			if x.state != fleetIncidentResolved && len(reported) > 0 {
-				if higher := config.HigherSeverity(x.severity, config.HighestSeverity(reported)); higher != x.severity {
-					if _, e = tx.Exec("UPDATE fleet_incident_set SET alert_severity=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{higher}, set.with(reporter, id)...)...); e != nil {
-						return out, e
-					}
-				}
-				if e = set.recordSent(tx, x.key, reported...); e != nil {
+			if x.state != fleetIncidentResolved {
+				if e = set.countSeverities(tx, reporter, id, x.key, x.severity, reported); e != nil {
 					return out, e
 				}
 			}
@@ -1356,6 +1351,23 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 	return out, nil
 }
 
+// countSeverities makes the severities that the reporter's incident id of
+// the key went to the set's destination with, also those that the hub
+// never delivered, such as a raise that the node sent without the hub,
+// count for the key's closing alert: the incident's row rises from
+// severity to the highest of them, and the key records them.
+func (set IncidentSet) countSeverities(tx *sql.Tx, reporter, id, key, severity string, sent []string) error {
+	if len(sent) == 0 {
+		return nil
+	}
+	if higher := config.HigherSeverity(severity, config.HighestSeverity(sent)); higher != severity {
+		if _, e := tx.Exec("UPDATE fleet_incident_set SET alert_severity=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{higher}, set.with(reporter, id)...)...); e != nil {
+			return e
+		}
+	}
+	return set.recordSent(tx, key, sent...)
+}
+
 // directSendVersion names one version of a node's record of a direct
 // send (c, as a report carries it): the severities that the node sent of
 // the incident, the MMHotline alert source it sent under, the sequence of
@@ -1416,7 +1428,14 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 	case !keeps && !grouped:
 	default:
 		var state int
-		e = tx.QueryRow("SELECT state FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...).Scan(&state)
+		var severity string
+		e = tx.QueryRow("SELECT state, alert_severity FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...).Scan(&state, &severity)
+		// The set holds the incident, such as one that the same report
+		// added at the severities that the destination takes now: what
+		// the node sent counts too.
+		if e == nil && state != fleetIncidentResolved {
+			e = set.countSeverities(tx, reporter, id, key, severity, c.AlertSeveritiesSentForIncident)
+		}
 		// The key's closing alert went out before the hub learned of this
 		// send, which may have reached the destination after it, or under
 		// another alert source: the send needs a closing alert of its own.
