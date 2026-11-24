@@ -1822,8 +1822,10 @@ set_aside_findings:
 - **The hub applies the file everywhere it handles alerts:** alert intake,
   report reconciliation, reminders, and updates. A covered node incident
   stays in the hub's records with the entry that covers it, and never
-  joins a destination's set. The exact finding with the highest sequence
-  number decides whether an entry covers the node incident.
+  joins a destination's set. No reminder of a covered incident goes out,
+  whether a joined node, an older node, or the hub's own check made it.
+  The exact finding with the highest sequence number decides whether an
+  entry covers the node incident.
 - **The hub settles the file at every start and every reload,** against
   the open node incidents:
   - An incident that is newly covered leaves each destination's set. A

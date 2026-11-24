@@ -94,3 +94,60 @@ func TestSetAsideFindingCommandsRunOnTheHub(t *testing.T) {
 		}
 	}
 }
+
+// The hub never reminds of its own finding that a set-aside entry covers:
+// its own scheduler makes the reminders, as for any check of a node, and
+// they stop where the hub forwards them, through two remind_every
+// intervals.
+func TestTheHubNeverRemindsOfItsOwnSetAsideFinding(t *testing.T) {
+	t.Parallel()
+	chat := checksandalerts.Destination{RemindEvery: "1h", AlertSeverities: []string{"warn"}, Inputs: &checksandalerts.Webhook{URL: "https://chat.example.com"}, TimeLimitPerDeliveryAttempt: "1s"}
+	hub := newHubDaemonOnClock(t, map[string]checksandalerts.Destination{"chat": chat}, nil, time.Now)
+	opened := time.Now().UTC().Add(-3 * time.Hour)
+	hub.mu.Lock()
+	st := hub.snapshot.Checks["app/shell"]
+	st.OneIncidentForEachFinding = true
+	o := checksandalerts.Observation{Protocol: 1, Status: "failed", Message: "1 flaw", At: opened, Findings: []checksandalerts.Finding{{ID: setAsideFlaw, Message: "openssh has CVE-2026-123158", ExactFinding: setAsideExact}}}
+	e := hub.record(st.Observe(o, checksandalerts.Timing{}, false))
+	hub.mu.Unlock()
+	if e != nil {
+		t.Fatal(e)
+	}
+	groupAt(t, hub, opened)
+	if got := typesOf(queuedFor(t, hub, "chat")); !reflect.DeepEqual(got, []string{"failed"}) {
+		t.Fatal(got)
+	}
+	// As a start or a reload settles the file. A reload would also retire
+	// the findings of this shell check, whose module reports none.
+	hub.mu.Lock()
+	hub.config.SetAsideFindings = config.SetAsideFindings{{Check: "app/shell", Finding: setAsideFlaw, ExactFinding: setAsideExact, Reason: "Needs musl without PAM",
+		InvestigationNote: "triage_agent_notes/openssh.md", SetAsideBy: "triage agent", SetAsideOn: "2026-11-23"}}
+	hub.settleSetAsideFindings(hub.config, opened)
+	hub.mu.Unlock()
+	if hub.setAsideUnsettled {
+		t.Fatal("the entry was not settled")
+	}
+	if got := typesOf(queuedFor(t, hub, "chat")); !reflect.DeepEqual(got, []string{"failed", "closed_without_recovery"}) {
+		t.Fatal(got)
+	}
+	for interval := 1; interval <= 2; interval++ {
+		at := opened.Add(time.Duration(interval) * time.Hour)
+		hub.mu.Lock()
+		reminders := hub.remind(at)
+		e = hub.record(reminders)
+		hub.mu.Unlock()
+		if e != nil {
+			t.Fatal(e)
+		}
+		if len(reminders) != 1 {
+			t.Fatalf("interval %d: the hub's scheduler made %d reminders, want 1", interval, len(reminders))
+		}
+		groupAt(t, hub, at)
+		if e = hub.store.SendDueUpdatesAndReminders(hub.config.Alerts.Destinations, at); e != nil {
+			t.Fatal(e)
+		}
+		if got := typesOf(queuedFor(t, hub, "chat")); !reflect.DeepEqual(got, []string{"failed", "closed_without_recovery"}) {
+			t.Fatalf("interval %d: %v", interval, got)
+		}
+	}
+}

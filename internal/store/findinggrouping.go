@@ -82,6 +82,9 @@ func opensOrChanges(eventType string) bool {
 // covered goes out as it is: sos is never set aside.
 func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members []checksandalerts.Event, from QueuedBy) ([]checksandalerts.Event, bool, []coverageChange, error) {
 	hub := from.hub()
+	if message.Type == "reminder" {
+		return remindableMembers(tx, members)
+	}
 	opening, closing := opensOrChanges(message.Type), checksandalerts.Closes(message.Type)
 	if !opening && !closing {
 		return members, false, nil, nil
@@ -156,6 +159,25 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 		kept, grouped = append(kept, m), grouped && checksandalerts.HasExactFinding(m)
 	}
 	return kept, grouped && len(kept) > 0, coverage, nil
+}
+
+// remindableMembers are the members of a reminder that the hub forwards:
+// those whose node incident no set-aside entry covers. A covered incident's
+// alerts never went out, or went out before the entry closed them, so no
+// reminder of it goes out either, whoever made it: a joined node, a 0.1.x
+// node, or the hub's own scheduler.
+func remindableMembers(tx *sql.Tx, members []checksandalerts.Event) ([]checksandalerts.Event, bool, []coverageChange, error) {
+	kept := []checksandalerts.Event{}
+	for _, m := range members {
+		var setAside bool
+		if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_node_incidents WHERE reporter=? AND incident_id=? AND set_aside_entry!='')", m.Node, m.Incident).Scan(&setAside); e != nil {
+			return nil, false, nil, e
+		}
+		if !setAside {
+			kept = append(kept, m)
+		}
+	}
+	return kept, false, nil, nil
 }
 
 // keyAnnouncement is what has been announced to one destination for one
