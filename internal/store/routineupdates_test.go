@@ -2,6 +2,10 @@ package store_test
 
 import (
 	"fmt"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -84,14 +88,67 @@ func (n *simulatedNode) report(sent time.Time) store.ReportedIncidents {
 }
 
 // routineHub is a hub with an MMHotline destination and a chat, which
-// counts what each destination gets by the alert's type and severity.
+// counts what each destination gets by the alert's type and severity, and
+// keeps each alert with the simulated minute that queued it.
 type routineHub struct {
 	*groupingHub
 	counts map[string]map[string]int
+	sent   map[string][]sentAlert
+}
+
+// sentAlert is an alert that a destination got, and the simulated minute
+// that queued it.
+type sentAlert struct {
+	at    time.Time
+	alert checksandalerts.Event
 }
 
 func newRoutineHub(t *testing.T) *routineHub {
-	return &routineHub{groupingHub: newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline(), "chat": chatTaking("https://chat.example.com", "warn", "sos")}), counts: map[string]map[string]int{"hotline": {}, "chat": {}}}
+	return &routineHub{groupingHub: newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline(), "chat": chatTaking("https://chat.example.com", "warn", "sos")}),
+		counts: map[string]map[string]int{"hotline": {}, "chat": {}}, sent: map[string][]sentAlert{}}
+}
+
+// sentUpdate is what a finding_nodes_changed update says, read from the
+// text that the destination got, which is the same for a chat and for
+// MMHotline: the nodes it adds and those ok again, with their counts.
+type sentUpdate struct {
+	at                         time.Time
+	severity                   string
+	added, recovered           int
+	addedNames, recoveredNames []string
+}
+
+// updates are the finding_nodes_changed updates that the destination got.
+func (h *routineHub) updates(destination string) []sentUpdate {
+	out := []sentUpdate{}
+	for _, s := range h.sent[destination] {
+		if s.alert.Type != checksandalerts.FindingNodesChanged {
+			continue
+		}
+		u := sentUpdate{at: s.at, severity: kinds([]checksandalerts.Event{s.alert})[0][len(checksandalerts.FindingNodesChanged)+1:]}
+		text := s.alert.Body
+		if s.alert.MMHotlineAlert != nil {
+			text = s.alert.MMHotlineAlert.Message
+		}
+		for i, line := range strings.Split(text, "\n") {
+			_, names, _ := strings.Cut(line, ": ")
+			switch {
+			case i == 0:
+				if m := regexp.MustCompile(`(\d+) nodes? added`).FindStringSubmatch(line); m != nil {
+					u.added, _ = strconv.Atoi(m[1])
+				}
+				if m := regexp.MustCompile(`(\d+) nodes? ok again`).FindStringSubmatch(line); m != nil {
+					u.recovered, _ = strconv.Atoi(m[1])
+				}
+			case strings.HasPrefix(line, "  on "):
+				u.addedNames = append(u.addedNames, strings.Split(names, ", ")...)
+			case strings.HasPrefix(line, "ok again on "):
+				u.recoveredNames = append(u.recoveredNames, strings.Split(names, ", ")...)
+			}
+		}
+		out = append(out, u)
+	}
+	return out
 }
 
 // minute passes the alerts and reports of one simulated minute through the
@@ -104,8 +161,9 @@ func (h *routineHub) minute(at time.Time, alerts []checksandalerts.Event, report
 	}
 	h.tick(at)
 	for name, counts := range h.counts {
-		for _, kind := range kinds(h.take(name)) {
-			counts[kind]++
+		for _, a := range h.take(name) {
+			counts[kinds([]checksandalerts.Event{a})[0]]++
+			h.sent[name] = append(h.sent[name], sentAlert{at, a})
 		}
 	}
 }
@@ -216,6 +274,18 @@ func TestAThousandNodesWithWaitingUpdatesSendOneAlertAndTheTicksUpdates(t *testi
 		updates := counts[checksandalerts.FindingNodesChanged+" warn"] + counts[checksandalerts.FindingNodesChanged+" info"]
 		if counts["failed warn"] != 1 || updates < 1 || updates > 2 || counts["failed warn"]+updates != sum(counts) {
 			t.Errorf("%s got %v, want 1 first alert and 1 or 2 updates", name, counts)
+		}
+	}
+	// app-0000 recovers at 01:00 and fails again at 02:00, in a new
+	// incident: the 06:00 update names it affected, never ok again.
+	for name := range h.counts {
+		at6 := slices.IndexFunc(h.updates(name), func(u sentUpdate) bool { return u.at.Equal(simulatedDay.Add(6 * time.Hour)) })
+		if at6 < 0 {
+			t.Errorf("%s got no update at 06:00", name)
+			continue
+		}
+		if u := h.updates(name)[at6]; !slices.Contains(u.addedNames, "app-0000") || slices.Contains(u.recoveredNames, "app-0000") {
+			t.Errorf("%s: the 06:00 update names app-0000 added %v, ok again %v; want added only", name, slices.Contains(u.addedNames, "app-0000"), slices.Contains(u.recoveredNames, "app-0000"))
 		}
 	}
 	if fleetIncidents != 1 || nodeIncidents != nodes {
