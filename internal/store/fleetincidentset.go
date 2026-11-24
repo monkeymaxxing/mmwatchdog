@@ -1309,6 +1309,14 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 	default:
 		var state int
 		e = tx.QueryRow("SELECT state FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...).Scan(&state)
+		// The key's closing alert went out before the hub learned of this
+		// send, which may have reached the destination after it, or under
+		// another alert source: the send needs a closing alert of its own.
+		if e == nil && state == fleetIncidentResolved {
+			if _, e = tx.Exec("DELETE FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(reporter, id)...); e == nil {
+				e = sql.ErrNoRows
+			}
+		}
 		if e == sql.ErrNoRows {
 			state = fleetIncidentClosed
 			if _, e = add(); e == nil {

@@ -1,6 +1,7 @@
 package store_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -228,4 +229,104 @@ func TestADirectSendOfASetAsideIncidentIsSettled(t *testing.T) {
 	h.report(tenOFive.Add(11*time.Minute), map[string]store.ReportedIncidents{"app-2": report})
 	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
 	expectKinds(t, h.take("chat"))
+}
+
+// carrying is a report of reporter, sent at sent, that shows no incident
+// and carries the node's records of direct sends, as the node's report
+// carries them (fleet.announcedIncidents).
+func carrying(t *testing.T, node *store.Store, reporter string, sent time.Time) store.ReportedIncidents {
+	t.Helper()
+	records, e := node.SentWithoutTheHub()
+	if e != nil {
+		t.Fatal(e)
+	}
+	r := store.ReportedIncidents{Sent: sent, SentWithoutTheHub: map[string]map[string]checksandalerts.Event{}}
+	for _, d := range records {
+		if r.SentWithoutTheHub[d.Destination] == nil {
+			r.SentWithoutTheHub[d.Destination] = map[string]checksandalerts.Event{}
+		}
+		r.SentWithoutTheHub[d.Destination][d.Incident] = checksandalerts.Event{Node: reporter, CheckGroup: d.CheckGroup, Check: d.Check, Finding: d.Finding, Type: d.Type, Incident: d.Incident,
+			AlertSeverity: config.HighestSeverity(d.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: d.AlertSeveritiesSentForIncident, ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence, MMHotlineAlertSource: d.AlertSource}
+	}
+	return r
+}
+
+// A direct sos that MMHotline asks the node to retry, and that lands only
+// after the node recovered and the hub resolved the key, opens an incident
+// under the node source. The node records the send only once MMHotline
+// accepted it, so no report settles it before it lands, and the hub,
+// learning of it from the next report, resolves it there although it had
+// resolved the key already. The same holds when no report came between
+// the recovery and the landing. A later genuine sos is a new alert, not
+// part of a stale incident.
+func TestARetriedDirectSosThatLandsAfterTheResolutionIsResolved(t *testing.T) {
+	t.Parallel()
+	for _, reportInBetween := range []bool{true, false} {
+		t.Run(fmt.Sprintf("a report in between: %v", reportInBetween), func(t *testing.T) {
+			t.Parallel()
+			destinations := map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()}
+			h := newGroupingHub(t, destinations)
+			h.arrive(tenOFive, h.alert("app-1", "failed", "warn", versionA, 0, tenOFive))
+			expectKinds(t, h.take("hotline"), "failed warn")
+			// The hub is unreachable: the node raises to sos and sends it
+			// directly; MMHotline asks it to retry.
+			node := newJoinedNode(t)
+			raised := h.alert("app-1", checksandalerts.FailureIncidentEvents.Raised, "sos", versionA, 0, tenOFive.Add(time.Hour))
+			fallBack(t, node.s, raised, destinations)
+			heads, e := node.s.Pending()
+			if e != nil || len(heads) != 1 {
+				t.Fatal(heads, e)
+			}
+			if _, e = node.s.Delivered(heads[0], &checksandalerts.RetryLater{After: time.Minute}); e != nil {
+				t.Fatal(e)
+			}
+			if records, e := node.s.SentWithoutTheHub(); e != nil || len(records) != 0 {
+				t.Fatal("a send that waits to be retried is recorded", records, e)
+			}
+			// The node recovers and reaches the hub again: the hub resolves
+			// what it knows.
+			back := tenOFive.Add(2 * time.Hour)
+			h.arrive(back, h.alert("app-1", "recovered", "warn", versionA, 0, back))
+			got := h.take("hotline")
+			expectKinds(t, got, "recovered resolved-warn")
+			if sourceOf(got[0]) != "source-1" {
+				t.Fatal("the hub resolved under", sourceOf(got[0]))
+			}
+			if reportInBetween {
+				h.report(back.Add(time.Second), map[string]store.ReportedIncidents{"app-1": carrying(t, node.s, "app-1", back.Add(time.Second))})
+				expectKinds(t, h.take("hotline"))
+			}
+			// The retry lands in MMHotline, under the node source, and the
+			// next report carries it.
+			expectKinds(t, accept(t, node.s), checksandalerts.FailureIncidentEvents.Raised+" sos")
+			later := back.Add(time.Minute)
+			report := carrying(t, node.s, "app-1", later)
+			if len(report.SentWithoutTheHub["hotline"]) != 1 {
+				t.Fatalf("the accepted send is not carried: %+v", report)
+			}
+			h.report(later, map[string]store.ReportedIncidents{"app-1": report})
+			got = h.take("hotline")
+			expectKinds(t, got, "recovered resolved-sos")
+			if sourceOf(got[0]) != nodeAlertSource {
+				t.Fatal("the resolution of the direct sos goes under", sourceOf(got[0]))
+			}
+			records, e := node.s.SentWithoutTheHub()
+			if e != nil {
+				t.Fatal(e)
+			}
+			known, e := h.s.IncidentsKnownToTheHub("app-1", records)
+			if e != nil || len(known) != 1 {
+				t.Fatal("the settled record is not acknowledged", known, e)
+			}
+			// A later genuine sos opens anew.
+			again := h.alert("app-1", "failed", "sos", versionA, 0, later.Add(time.Hour))
+			again.Incident = "incident-app-1-again"
+			h.arrive(later.Add(time.Hour), again)
+			got = h.take("hotline")
+			expectKinds(t, got, "failed sos")
+			if sourceOf(got[0]) != "source-1" {
+				t.Fatal("the new sos goes under", sourceOf(got[0]))
+			}
+		})
+	}
 }
