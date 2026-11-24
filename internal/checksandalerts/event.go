@@ -34,7 +34,14 @@ type Event struct {
 	// Each finding is its own incident, so the finding is part of what the
 	// event is about: see AboutCheck.
 	Finding string `json:"finding,omitempty"`
-	Type    string `json:"type"`
+	// ExactFinding is, on an alert about a finding whose module names the
+	// problem precisely, that exact finding as the node's latest run
+	// reported it (Finding.ExactFinding), and ExactFindingSequence counts
+	// its changes during the incident, so that the hub ignores an older one
+	// that arrives after a newer one. See HasExactFinding.
+	ExactFinding         string `json:"exact_finding,omitempty"`
+	ExactFindingSequence int64  `json:"exact_finding_sequence,omitempty"`
+	Type                 string `json:"type"`
 	// AlertSeverity is info, warn, or sos: an incident's current severity,
 	// on a recovery or retirement the highest it reached, for a rebooted
 	// notice the node's alert_severity_when_this_node_has_rebooted, for a
@@ -101,6 +108,27 @@ func AboutCheck(checkGroup, check, systemdUnit string) string {
 }
 
 func (e Event) AboutCheck() string { return AboutCheck(e.CheckGroup, e.Check, e.Finding) }
+
+// ExactFindingChanged is the alert that a finding's open, announced incident
+// now has another exact finding than its last alert carried: the problem
+// changed, such as the installed version of a flawed package, and the
+// incident stays open. It belongs to the incident, and goes where a raise
+// of the incident goes.
+const ExactFindingChanged = "exact_finding_changed"
+
+// ExactFindingChangedMessage is the message of an ExactFindingChanged alert.
+func ExactFindingChangedMessage(before, now string) string {
+	if before == "" {
+		return "the exact finding is now: " + now
+	}
+	return "the exact finding changed to: " + now + "; it was: " + before
+}
+
+// HasExactFinding reports an alert about a finding that names its exact
+// finding: the one test for whether a hub groups the alerts of a fleet
+// incident key by exact finding. Every other alert keeps the one-minute
+// fleet alert grouping.
+func HasExactFinding(e Event) bool { return e.Finding != "" && e.ExactFinding != "" }
 
 type TrackEvents struct{ Failed, Recovered, Raised, Stale string }
 
