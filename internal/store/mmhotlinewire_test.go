@@ -287,6 +287,39 @@ func TestAJoinedNodeSendsWithoutTheHubUnderTheNodeAlertSource(t *testing.T) {
 	}
 }
 
+// A changed exact finding that a joined node sends from memory, while
+// state.db cannot be written, goes to MMHotline as the outbox sends it:
+// the same alert, at its incident's severity and with its key.
+func TestAChangedExactFindingFromMemoryGoesToMMHotlineAsFromTheOutbox(t *testing.T) {
+	t.Parallel()
+	n := newJoinedNode(t)
+	destinations := map[string]checksandalerts.Destination{"hotline": hotline()}
+	changed := checksandalerts.Event{ID: "changed", Incident: "incident-app-2", CheckGroup: "packages", Check: "flaws", Finding: flaw, Type: checksandalerts.ExactFindingChanged, AlertSeverity: "warn",
+		ExactFinding: versionB, ExactFindingSequence: 1, At: tenOFive, Notify: true}
+	route := store.AlertRoute{Destinations: destinations, Joined: true}
+	changed = n.s.PreparedEvent(changed, route)
+	from := store.QueuedBy{Role: store.FallbackSender, Node: n.s.Node, FleetIdentity: n.s.FleetIdentity}
+	fromMemory := n.s.DeliveriesFromMemory(changed, destinations, from)
+	tx, e := n.s.DB.Begin()
+	if e != nil {
+		t.Fatal(e)
+	}
+	defer tx.Rollback()
+	if e = store.QueueDirect(tx, tenOFive.UnixNano(), changed, []checksandalerts.Event{changed}, destinations, from); e != nil {
+		t.Fatal(e)
+	}
+	if e = tx.Commit(); e != nil {
+		t.Fatal(e)
+	}
+	fromOutbox := accept(t, n.s)
+	if len(fromMemory) != 1 || len(fromOutbox) != 1 {
+		t.Fatalf("from memory %+v, from the outbox %+v", fromMemory, fromOutbox)
+	}
+	if a, want := *fromMemory[0].Event.MMHotlineAlert, *fromOutbox[0].MMHotlineAlert; a != want || a.Severity != "warn" || a.SenderIncidentKey == "" {
+		t.Fatalf("from memory %+v, want %+v", a, want)
+	}
+}
+
 // The hub sends a grouped key's opening under the key that it derives from
 // its own identity and the alert's check and finding, the key of the set
 // and of the resolution, whatever key the node's alert carried.
