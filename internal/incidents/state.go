@@ -844,13 +844,25 @@ func (s *CheckState) advance(t *Track, kinds checksandalerts.TrackEvents, o chec
 // so MMWatchdog makes no reminder that no destination gets. The caller holds
 // reminders while maintenance covers the check.
 func (s *CheckState) Reminders(destinations map[string]checksandalerts.Destination, now time.Time) []checksandalerts.Event {
+	return s.reminders(destinations, now, false)
+}
+
+// RemindersOfIncidentsWithoutExactFinding are the Reminders, without those
+// of a finding whose incident has an exact finding: a joined node leaves
+// them to its fleet hub while its reports reach the hub, because the hub
+// reminds once for each fleet incident key, for every node of the key.
+func (s *CheckState) RemindersOfIncidentsWithoutExactFinding(destinations map[string]checksandalerts.Destination, now time.Time) []checksandalerts.Event {
+	return s.reminders(destinations, now, true)
+}
+
+func (s *CheckState) reminders(destinations map[string]checksandalerts.Destination, now time.Time, leaveOutExactFindings bool) []checksandalerts.Event {
 	events := []checksandalerts.Event{}
 	for _, track := range []struct {
 		t     *Track
 		kinds checksandalerts.TrackEvents
 	}{{&s.CannotCheckIncident, checksandalerts.CannotCheckIncidentEvents}, {&s.FailureIncident, checksandalerts.FailureIncidentEvents}} {
 		t := track.t
-		if !t.reminding() {
+		if !t.reminding() || leaveOutExactFindings && s.Finding != "" && t.CurrentExactFinding != "" {
 			continue
 		}
 		opened := t.Opened.UTC().Format("15:04 UTC")
@@ -880,7 +892,7 @@ func (s *CheckState) Reminders(destinations map[string]checksandalerts.Destinati
 	// Each failed unit of an every_systemd_unit check is reminded of by
 	// itself.
 	for _, unit := range s.FindingStates() {
-		events = append(events, unit.Reminders(destinations, now)...)
+		events = append(events, unit.reminders(destinations, now, leaveOutExactFindings)...)
 	}
 	if len(events) > 0 {
 		s.Touch()

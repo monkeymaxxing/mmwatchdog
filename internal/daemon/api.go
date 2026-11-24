@@ -292,6 +292,11 @@ func (d *Daemon) status(group string, now time.Time, extra []string) (map[string
 			status.AlertDestinationsTheHubDoesNotHave = config.UnknownDestinationNames(st.SendAlertsOnlyToDestinations, d.config.Alerts.Destinations)
 			status.RaiseToSosWhenEveryNodeOfTheseNodeGroupsIsSilent = d.members[st.Check].RaiseToSosWhenEveryNodeOfTheseNodeGroupsIsSilent
 		}
+		// A node status report carries it, so the hub reminds of a fleet
+		// incident key only while one of its incidents is due a reminder.
+		if rc := d.checks[key]; rc != nil {
+			status.MarkReminderEligible(d.remindersHeldBack(key, rc, now))
+		}
 		checks[key] = status
 	}
 	problems := d.storage.Problems()

@@ -192,8 +192,15 @@ func (d *Daemon) raiseOpenIncidents(now time.Time) []checksandalerts.Event {
 // The destinations, their remind_every, and who gets an alert are the
 // route's, on a joined node its copy of the fleet settings. Maintenance
 // holds a check's reminders, as it holds its alerts, and so does the
-// failing of a check that the check names as its cause (quietWhile). The
-// caller holds d.mu.
+// failing of a check that the check names as its cause (quietWhile).
+//
+// A joined node whose reports reach its hub makes no reminder of a finding
+// whose incident has an exact finding: the hub reminds once for each fleet
+// incident key, for all its nodes. The node reminds of such an incident
+// itself only while its latest report failed, when it delivers without the
+// hub. Before the first report of a start, the node counts the hub as
+// reached: the first report follows within report_every. The caller holds
+// d.mu.
 func (d *Daemon) remind(now time.Time) []checksandalerts.Event {
 	destinations := d.route().Destinations
 	keys := []string{}
@@ -203,22 +210,31 @@ func (d *Daemon) remind(now time.Time) []checksandalerts.Event {
 		}
 	}
 	sort.Strings(keys)
+	hubReminds := d.hub == nil && d.link != nil && d.link.LastError == ""
 	events := []checksandalerts.Event{}
 	for _, key := range keys {
 		rc := d.checks[key]
-		if rc == nil {
+		if rc == nil || d.remindersHeldBack(key, rc, now) {
 			continue
 		}
-		suppressed := d.suppressed(rc.def.CheckGroup) || d.quietWhile(key) != ""
-		if rc.def.CheckGroup == checksandalerts.NodeReportsCheckGroup {
-			suppressed = d.fleetSuppressed(rc, now)
-		}
-		if suppressed {
+		if hubReminds {
+			events = append(events, d.snapshot.Checks[key].RemindersOfIncidentsWithoutExactFinding(destinations, now)...)
 			continue
 		}
 		events = append(events, d.snapshot.Checks[key].Reminders(destinations, now)...)
 	}
 	return events
+}
+
+// remindersHeldBack reports that maintenance or quiet time holds the
+// reminders of the check with key back, as it holds its alerts: the one
+// rule for the reminder step and for reminder_eligible in status and in
+// node status reports. The caller holds d.mu.
+func (d *Daemon) remindersHeldBack(key string, rc *checkRuntime, now time.Time) bool {
+	if rc.def.CheckGroup == checksandalerts.NodeReportsCheckGroup {
+		return d.fleetSuppressed(rc, now)
+	}
+	return d.suppressed(rc.def.CheckGroup) || d.quietWhile(key) != ""
 }
 
 // overdueMessage explains a missed deadline by the last success and the
