@@ -272,9 +272,14 @@ type ValidationWarnings struct {
 	// MMHotlineWithoutAnotherDestination names each mmhotline destination
 	// of a node that has no other destination to pass an alert on to when
 	// MMHotline permanently refuses it.
-	MMHotlineWithoutAnotherDestination []string                            `json:"mmhotline_without_another_destination"`
-	ChecksWithoutAlertDestination      []CheckWithoutAlertDestination      `json:"checks_without_alert_destination"`
-	ChecksWithUnknownAlertDestinations []CheckWithUnknownAlertDestinations `json:"checks_with_unknown_alert_destinations"`
+	MMHotlineWithoutAnotherDestination []string `json:"mmhotline_without_another_destination"`
+	// OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub names, on
+	// a hub, each mmhotline destination with
+	// alert_source_for_nodes_sending_without_the_hub while joined nodes
+	// report a release older than 0.2.0, which refuses such fleet settings.
+	OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub []string                            `json:"older_joined_nodes_with_alert_source_for_nodes_sending_without_the_hub"`
+	ChecksWithoutAlertDestination                               []CheckWithoutAlertDestination      `json:"checks_without_alert_destination"`
+	ChecksWithUnknownAlertDestinations                          []CheckWithUnknownAlertDestinations `json:"checks_with_unknown_alert_destinations"`
 
 	AlertTitlesThatWillBeShortened              []checksandalerts.AlertTitleThatWillBeShortened            `json:"alert_titles_that_will_be_shortened"`
 	SystemdUnitsMissingFromSystemdUnitsToIgnore []checksandalerts.SystemdUnitMissingFromUnitsToIgnore      `json:"systemd_units_missing_from_systemd_units_to_ignore"`
@@ -288,15 +293,16 @@ type ValidationWarnings struct {
 // reserved for node-only warnings.
 func (c *Config) ValidationWarnings(node string, checkNodeFiles bool) ValidationWarnings {
 	warnings := ValidationWarnings{
-		MMHotlineLoopbackWarnings:                   c.mmhotlineLoopbackWarnings(),
-		DestinationRunSettingsThatJoinedNodesIgnore: c.destinationRunSettingsThatJoinedNodesIgnore(),
-		MMHotlineWithoutAnotherDestination:          c.mmhotlineWithoutAnotherDestinationWarnings(),
-		AlertTitlesThatWillBeShortened:              c.AlertTitlesThatWillBeShortened(node),
-		SystemdUnitsMissingFromSystemdUnitsToIgnore: c.SystemdUnitsMissingFromUnitsToIgnore(),
-		FilesystemsMissingFromFilesystemsToIgnore:   c.FilesystemsMissingFromFilesystemsToIgnore(),
-		ChecksThatNameACheckWithALowerAlertSeverity: c.ChecksThatNameACheckWithALowerAlertSeverity(),
-		ChecksWithoutAlertDestination:               []CheckWithoutAlertDestination{},
-		ChecksWithUnknownAlertDestinations:          []CheckWithUnknownAlertDestinations{},
+		MMHotlineLoopbackWarnings:                                   c.mmhotlineLoopbackWarnings(),
+		DestinationRunSettingsThatJoinedNodesIgnore:                 c.destinationRunSettingsThatJoinedNodesIgnore(),
+		MMHotlineWithoutAnotherDestination:                          c.mmhotlineWithoutAnotherDestinationWarnings(),
+		OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub: []string{},
+		AlertTitlesThatWillBeShortened:                              c.AlertTitlesThatWillBeShortened(node),
+		SystemdUnitsMissingFromSystemdUnitsToIgnore:                 c.SystemdUnitsMissingFromUnitsToIgnore(),
+		FilesystemsMissingFromFilesystemsToIgnore:                   c.FilesystemsMissingFromFilesystemsToIgnore(),
+		ChecksThatNameACheckWithALowerAlertSeverity:                 c.ChecksThatNameACheckWithALowerAlertSeverity(),
+		ChecksWithoutAlertDestination:                               []CheckWithoutAlertDestination{},
+		ChecksWithUnknownAlertDestinations:                          []CheckWithUnknownAlertDestinations{},
 	}
 	if c.JoinFleetHub == nil {
 		c.RoutingWarnings(c.Alerts.Destinations, &warnings)

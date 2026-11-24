@@ -49,6 +49,7 @@ func migrateStateDatabase(path string) error {
 		`ALTER TABLE fleet_incident_keys ADD COLUMN announced_exact_findings TEXT NOT NULL DEFAULT '[]'`,
 		`ALTER TABLE fleet_incident_keys ADD COLUMN next_update_due INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE fleet_incident_keys ADD COLUMN next_reminder_due INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE fleet_incident_keys ADD COLUMN mmhotline_alert_sources_sent TEXT NOT NULL DEFAULT ''`,
 		// What the destinations got for a key that is open stays announced,
 		// at the highest severity sent since the key's last closing alert. No
 		// exact finding was announced before this format.

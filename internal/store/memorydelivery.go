@@ -64,6 +64,9 @@ func (s *Store) DeliveriesFromMemory(message checksandalerts.Event, destinations
 		default:
 			alert = MMHotlineNotice(message, from)
 		}
+		if dest.MMHotline() != nil && from.Role == FallbackSender {
+			alert.MMHotlineAlertSource = dest.MMHotline().NodeAlertSourceID()
+		}
 		deliveries = append(deliveries, Delivery{Event: alert, Destination: name, Target: dest})
 	}
 	return deliveries

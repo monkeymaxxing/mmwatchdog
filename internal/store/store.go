@@ -76,7 +76,7 @@ const stateTables = `
  CREATE TABLE IF NOT EXISTS incidents_sent_without_the_hub (destination TEXT NOT NULL, incident_id TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, kind TEXT NOT NULL, alert_severities_sent_for_incident TEXT NOT NULL, at INTEGER NOT NULL,
   exact_finding TEXT NOT NULL DEFAULT '', exact_finding_sequence INTEGER NOT NULL DEFAULT 0, alert_source TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,incident_id));
  CREATE TABLE IF NOT EXISTS fleet_incident_keys (destination TEXT NOT NULL, alert_source TEXT NOT NULL, incident_key TEXT NOT NULL, alert_severities_sent TEXT NOT NULL, last_closing_alert_at INTEGER NOT NULL,
-  announced_alert_severity TEXT NOT NULL DEFAULT '', announced_exact_findings TEXT NOT NULL DEFAULT '[]', next_update_due INTEGER NOT NULL DEFAULT 0, next_reminder_due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(destination,alert_source,incident_key));
+  announced_alert_severity TEXT NOT NULL DEFAULT '', announced_exact_findings TEXT NOT NULL DEFAULT '[]', next_update_due INTEGER NOT NULL DEFAULT 0, next_reminder_due INTEGER NOT NULL DEFAULT 0, mmhotline_alert_sources_sent TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,alert_source,incident_key));
  CREATE INDEX IF NOT EXISTS fleet_incident_keys_update ON fleet_incident_keys(next_update_due);
  CREATE INDEX IF NOT EXISTS fleet_incident_keys_reminder ON fleet_incident_keys(next_reminder_due);
  CREATE TABLE IF NOT EXISTS fleet_node_incidents (reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, node TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL,
@@ -616,7 +616,7 @@ func QueueDirect(tx *sql.Tx, at int64, message checksandalerts.Event, members []
 func queueFallbackForExactFinding(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, message checksandalerts.Event, members []checksandalerts.Event, now time.Time) error {
 	switch {
 	case opensOrChanges(message.Type) && checksandalerts.HasExactFinding(message):
-		if e := recordSentWithoutTheHub(tx, name, members, now); e != nil {
+		if e := recordSentWithoutTheHub(tx, name, members, "", now); e != nil {
 			return e
 		}
 	case checksandalerts.Closes(message.Type):

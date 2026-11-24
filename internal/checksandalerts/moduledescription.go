@@ -88,7 +88,7 @@ type ModuleExample struct {
 // inputs, whose values the module's own code checks.
 var (
 	ModuleInputTypes     = []string{"string", "integer", "number", "boolean", "duration", "list_of_strings"}
-	CoreModuleInputTypes = []string{"list_of_integers", "mapping_of_strings"}
+	CoreModuleInputTypes = []string{"list_of_integers", "mapping_of_strings", "mapping"}
 )
 
 // ModuleNamePattern accepts the name of a module and of an input: lower-case

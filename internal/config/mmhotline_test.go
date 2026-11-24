@@ -1,10 +1,14 @@
 package config_test
 
 import (
-	"mmwatchdog/internal/checksandalerts"
-	"mmwatchdog/internal/config"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"mmwatchdog/internal/checksandalerts"
+	"mmwatchdog/internal/config"
+	"mmwatchdog/internal/testhelpers"
 )
 
 func TestMMHotlineLoopbackWarningOnlyOnAHub(t *testing.T) {
@@ -67,5 +71,88 @@ func TestHubWarnsThatJoinedNodesIgnoreDestinationRunSettings(t *testing.T) {
 	warnings := settings.ValidationWarnings("hub", false).DestinationRunSettingsThatJoinedNodesIgnore
 	if len(warnings) != 1 || !strings.Contains(warnings[0], "destinations.pager: joined nodes run this destination's module as the account mmwatchdog, from /") {
 		t.Fatal(warnings)
+	}
+}
+
+// The alert source for nodes sending without the hub is validated like the
+// destination's own: its address (the destination's when it states none),
+// its ID, which must differ from the destination's, and its absolute
+// signing secret file, which follows the credential permission rule. A
+// key that the block does not take is refused.
+func TestTheAlertSourceForNodesSendingWithoutTheHubIsValidated(t *testing.T) {
+	t.Parallel()
+	const block = "destinations.on_call.mmhotline.alert_source_for_nodes_sending_without_the_hub."
+	secret := testhelpers.WriteSigningSecret(t)
+	for written, problem := range map[string]string{
+		"{mmhotline_alert_source_id: nodes, mmhotline_signing_secret_file: SECRET}":                                         "",
+		"{mmhotline_url: 'http://10.20.0.2:8484', mmhotline_alert_source_id: nodes, mmhotline_signing_secret_file: SECRET}": "",
+		"{mmhotline_url: 'ftp://10.20.0.2', mmhotline_alert_source_id: nodes, mmhotline_signing_secret_file: SECRET}":       block + "mmhotline_url: expected MMHotline's address",
+		"{mmhotline_alert_source_id: 'two words', mmhotline_signing_secret_file: SECRET}":                                   block + "mmhotline_alert_source_id: expected the alert_source_id",
+		"{mmhotline_alert_source_id: nodes, mmhotline_signing_secret_file: secrets/nodes}":                                  block + "mmhotline_signing_secret_file: must be absolute",
+		"{mmhotline_alert_source_id: fleet, mmhotline_signing_secret_file: SECRET}":                                         block + "mmhotline_alert_source_id: must differ from the destination's own mmhotline_alert_source_id",
+		"{mmhotline_alert_source_id: nodes, mmhotline_signing_secret_file: SECRET, alert_severities: [warn]}":               "alert_source_for_nodes_sending_without_the_hub",
+	} {
+		path := testhelpers.ConfigFile(t, "fleet_hub_role: {report_every: 30s, alert_after_hub_unreachable_for: 3m, send_alert_without_hub_after_waiting_for: 30s, undelivered_alerts_of_nodes_content_size_limit: 32MiB, listen_on_address: '0.0.0.0:8445', address_for_nodes: 'hub.test:8445'}\ncheck_groups: {app: {shell: 'true'}}\n")
+		destinations := "destinations: {on_call: {mmhotline: {mmhotline_url: 'http://10.20.0.1:8484', mmhotline_alert_source_id: fleet, mmhotline_signing_secret_file: " + secret + ", alert_source_for_nodes_sending_without_the_hub: " + strings.ReplaceAll(written, "SECRET", secret) + "}, alert_severities: [warn, sos]}}\n"
+		if err := os.WriteFile(filepath.Join(path, "alert_destinations.yml"), []byte(destinations), 0600); err != nil {
+			t.Fatal(err)
+		}
+		c, err := config.Load(path)
+		if problem == "" && err != nil || problem != "" && (err == nil || !strings.Contains(err.Error(), problem)) {
+			t.Errorf("%s: got %v, want %q", written, err, problem)
+		}
+		if problem == "" && err == nil {
+			if b := c.Alerts.Destinations["on_call"].MMHotline().AlertSourceForNodesSendingWithoutTheHub; b == nil || b.AlertSourceID != "nodes" || b.SigningSecretFile != secret {
+				t.Errorf("%s: read as %+v", written, b)
+			}
+		}
+	}
+	// The block's signing secret file follows the credential permission rule.
+	exposed := testhelpers.WriteSigningSecret(t)
+	if err := os.Chmod(exposed, 0644); err != nil {
+		t.Fatal(err)
+	}
+	c := &config.Config{Sources: map[string]checksandalerts.SourceLocation{}, Alerts: config.Alerts{Destinations: map[string]checksandalerts.Destination{"on_call": {Inputs: &checksandalerts.MMHotlineDestination{URL: "http://10.20.0.1:8484", AlertSourceID: "fleet", SigningSecretFile: secret,
+		AlertSourceForNodesSendingWithoutTheHub: &checksandalerts.MMHotlineAlertSource{AlertSourceID: "nodes", SigningSecretFile: exposed}}}}}}
+	if problems := c.SecretFilePermissionErrors(); len(problems) != 1 || !strings.Contains(problems[0].Error(), block+"mmhotline_signing_secret_file") {
+		t.Fatal(problems)
+	}
+}
+
+// On a hub, a loopback address that the block states for the nodes is
+// warned about like the destination's own.
+func TestTheLoopbackWarningCoversTheAddressOfTheNodeAlertSource(t *testing.T) {
+	t.Parallel()
+	settings := &config.Config{FleetHubRole: &config.FleetHubRole{}, Alerts: config.Alerts{Destinations: map[string]checksandalerts.Destination{"on_call": {Inputs: &checksandalerts.MMHotlineDestination{URL: "http://127.0.0.1:8484",
+		AlertSourceForNodesSendingWithoutTheHub: &checksandalerts.MMHotlineAlertSource{URL: "http://10.20.0.1:8484"}}}}}}
+	if warnings := settings.ValidationWarnings("hub", false).MMHotlineLoopbackWarnings; len(warnings) != 0 {
+		t.Fatal("the nodes use the block's address", warnings)
+	}
+	settings.Alerts.Destinations["on_call"].MMHotline().AlertSourceForNodesSendingWithoutTheHub.URL = "http://localhost:8484"
+	if warnings := settings.ValidationWarnings("hub", false).MMHotlineLoopbackWarnings; len(warnings) != 1 || !strings.Contains(warnings[0], "destinations.on_call.mmhotline.alert_source_for_nodes_sending_without_the_hub.mmhotline_url: joined nodes send alerts") {
+		t.Fatal(warnings)
+	}
+}
+
+// On a hub, a destination with the block is warned about while a joined
+// node reports a release older than 0.2.0, which refuses such fleet
+// settings.
+func TestAHubWarnsOfOlderJoinedNodesWhileTheNodeAlertSourceIsSet(t *testing.T) {
+	t.Parallel()
+	older := func(version string) bool { return version == "0.1.3" }
+	versions := map[string]string{"app-1": "0.2.0", "app-2": "0.1.3"}
+	settings := &config.Config{FleetHubRole: &config.FleetHubRole{}, Alerts: config.Alerts{Destinations: map[string]checksandalerts.Destination{
+		"on_call": {Inputs: &checksandalerts.MMHotlineDestination{URL: "http://10.20.0.1:8484", AlertSourceForNodesSendingWithoutTheHub: &checksandalerts.MMHotlineAlertSource{AlertSourceID: "nodes"}}},
+		"other":   {Inputs: &checksandalerts.MMHotlineDestination{URL: "http://10.20.0.2:8484"}}}}}
+	warnings := settings.OlderJoinedNodesWithNodeAlertSource(versions, older)
+	if len(warnings) != 1 || !strings.Contains(warnings[0], "destinations.on_call.mmhotline.alert_source_for_nodes_sending_without_the_hub: joined nodes older than MMWatchdog 0.2.0 refuse fleet settings with this block") || !strings.HasSuffix(warnings[0], ": app-2 (0.1.3)") {
+		t.Fatal(warnings)
+	}
+	if warnings := settings.OlderJoinedNodesWithNodeAlertSource(map[string]string{"app-1": "0.2.0"}, older); len(warnings) != 0 {
+		t.Fatal(warnings)
+	}
+	settings.FleetHubRole = nil
+	if warnings := settings.OlderJoinedNodesWithNodeAlertSource(versions, older); len(warnings) != 0 {
+		t.Fatal("warned on a standalone node", warnings)
 	}
 }

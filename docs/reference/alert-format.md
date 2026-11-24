@@ -372,8 +372,9 @@ with the command that lists them all,
 line of every `warn` and `sos` message to an
 [`mmhotline`](modules/mmhotline.md) destination names the problem with no
 node name, the same on every node: the exact finding when the finding has
-one, or else the failure message without the node's name. The node names
-are in the title and in later lines. MMHotline merges repeated warnings
+one, or else the first line of the failure message without the node's
+name. An update's first line is its summary, which names no node. The
+node names are in the title and in later lines. MMHotline merges repeated warnings
 that nodes send without the hub by this first line.
 
 **One closing alert for the fleet.** A destination whose service keeps

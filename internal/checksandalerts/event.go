@@ -99,7 +99,12 @@ type Event struct {
 	// MMHotlineAlert is what a mmhotline destination's queued delivery sends
 	// in place of the event.
 	MMHotlineAlert *MMHotlineAlert `json:"mmhotline_alert,omitempty"`
-	Notify         bool            `json:"-"`
+	// MMHotlineAlertSource is, on a queued mmhotline delivery, the alert
+	// source that it sends under (MMHotlineDestination.AlertSourceNamed),
+	// and on the record of a direct send that a node's report carries, the
+	// alert source that the node sent under; "" is the destination's own.
+	MMHotlineAlertSource string `json:"mmhotline_alert_source,omitempty"`
+	Notify               bool   `json:"-"`
 }
 
 // AboutCheck names what a check's alert is about, for people: the check as

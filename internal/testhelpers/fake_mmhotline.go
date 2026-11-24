@@ -122,7 +122,8 @@ func DecodeMMHotlineCheckIn(body []byte) (map[string]any, error) {
 	return generic, nil
 }
 
-// FakeMMHotline is one MMHotline backend endpoint. It verifies each
+// FakeMMHotline is one MMHotline backend endpoint, with the alert source
+// TestSourceID and any that AddAlertSource adds. It verifies each
 // request's Mmhotline-Signature with the alert source's signing secret, decodes
 // the body as MMHotline does, refuses a body over 64 KiB with an unsigned
 // 413, and answers as its mode says, signing receipts over the route,
@@ -132,22 +133,41 @@ type FakeMMHotline struct {
 	Mu sync.Mutex
 	// Mode is ok, unsigned, wrongly_signed, other_route (a signed answer to
 	// another request), 401, 503, 400, or 429.
-	Mode     string
-	secret   []byte
+	Mode string
+	// secrets are the signing secrets of the alert sources, by ID.
+	secrets  map[string][]byte
 	date     time.Time
 	requests int
 	alerts   []MMHotlineAlert
 	checkIns []map[string]any
+	// alertSources and checkInSources name the alert source of each
+	// accepted alert and check-in.
+	alertSources, checkInSources []string
 }
 
 // NewFakeMMHotline starts a fake MMHotline endpoint that answers as mode
 // says, until the test ends.
 func NewFakeMMHotline(t *testing.T, mode string) *FakeMMHotline {
 	t.Helper()
-	f := &FakeMMHotline{Mode: mode, secret: TestSigningSecret}
+	f := &FakeMMHotline{Mode: mode, secrets: map[string][]byte{TestSourceID: TestSigningSecret}}
 	f.Server = httptest.NewServer(http.HandlerFunc(f.serve))
 	t.Cleanup(f.Close)
 	return f
+}
+
+// AddAlertSource adds an alert source with its signing secret.
+func (f *FakeMMHotline) AddAlertSource(id string, secret []byte) {
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	f.secrets[id] = bytes.Clone(secret)
+}
+
+// ReceivedSources names the alert source of each alert and each check-in
+// that Received returns.
+func (f *FakeMMHotline) ReceivedSources() (alerts, checkIns []string) {
+	f.Mu.Lock()
+	defer f.Mu.Unlock()
+	return append([]string{}, f.alertSources...), append([]string{}, f.checkInSources...)
 }
 
 // SetMode changes how the endpoint answers.
@@ -199,12 +219,17 @@ func (f *FakeMMHotline) serve(w http.ResponseWriter, r *http.Request) {
 		timestamp, _ = strings.CutPrefix(fields[0], "timestamp_unix_seconds=")
 		requestHMAC, _ = strings.CutPrefix(fields[1], "hmac_sha256_hex=")
 	}
-	mac := hmac.New(sha256.New, f.secret)
+	source := ""
+	if len(parts) == 2 {
+		source = parts[1]
+	}
+	secret, known := f.secrets[source]
+	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(timestamp + "."))
 	mac.Write(body)
 	seconds, _ := strconv.ParseInt(timestamp, 10, 64)
-	verified := strconv.FormatInt(seconds, 10) == timestamp && hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(requestHMAC)) && time.Since(time.Unix(seconds, 0)).Abs() < 5*time.Minute
-	if !verified || f.Mode == "401" || len(parts) != 2 || parts[1] != TestSourceID || (route != "alert-intake" && route != "check-in") || r.Header.Get("Content-Type") != "application/json" {
+	verified := known && strconv.FormatInt(seconds, 10) == timestamp && hmac.Equal([]byte(hex.EncodeToString(mac.Sum(nil))), []byte(requestHMAC)) && time.Since(time.Unix(seconds, 0)).Abs() < 5*time.Minute
+	if !verified || f.Mode == "401" || len(parts) != 2 || (route != "alert-intake" && route != "check-in") || r.Header.Get("Content-Type") != "application/json" {
 		w.WriteHeader(401)
 		return
 	}
@@ -220,9 +245,9 @@ func (f *FakeMMHotline) serve(w http.ResponseWriter, r *http.Request) {
 		case "wrongly_signed":
 			w.Header().Set("Mmhotline-Receipt-Signature", receiptHeader(bytes.Repeat([]byte{1}, 32), route, status, requestHMAC, b))
 		case "other_route":
-			w.Header().Set("Mmhotline-Receipt-Signature", receiptHeader(f.secret, "check-in", status, requestHMAC, b))
+			w.Header().Set("Mmhotline-Receipt-Signature", receiptHeader(secret, "check-in", status, requestHMAC, b))
 		default:
-			w.Header().Set("Mmhotline-Receipt-Signature", receiptHeader(f.secret, route, status, requestHMAC, b))
+			w.Header().Set("Mmhotline-Receipt-Signature", receiptHeader(secret, route, status, requestHMAC, b))
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -251,11 +276,13 @@ func (f *FakeMMHotline) serve(w http.ResponseWriter, r *http.Request) {
 	case route == "alert-intake":
 		if f.Mode == "ok" {
 			f.alerts = append(f.alerts, alert)
+			f.alertSources = append(f.alertSources, source)
 		}
 		answer(200, map[string]any{"mmhotline_alert_id": "al_" + alert["sender_alert_id"], "already_received": false})
 	default:
 		if f.Mode == "ok" {
 			f.checkIns = append(f.checkIns, checkIn)
+			f.checkInSources = append(f.checkInSources, source)
 		}
 		answer(200, map[string]any{"check_in_received_at": time.Now().UTC().Format(time.RFC3339)})
 	}
@@ -280,9 +307,10 @@ func WriteToken(t *testing.T, value string) string {
 	return path
 }
 
-// SetSigningSecret rotates the source's signing secret for a reload test.
+// SetSigningSecret rotates the signing secret of TestSourceID for a reload
+// test.
 func (f *FakeMMHotline) SetSigningSecret(secret []byte) {
 	f.Mu.Lock()
 	defer f.Mu.Unlock()
-	f.secret = bytes.Clone(secret)
+	f.secrets[TestSourceID] = bytes.Clone(secret)
 }

@@ -3,8 +3,11 @@ package store
 import (
 	"database/sql"
 	"encoding/json"
+	"slices"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
@@ -40,23 +43,23 @@ func (f QueuedBy) SentBy() string {
 // already knows is over is not sent, because its resolution has gone or
 // will go without it. A failure or raise carries its key's severity: the
 // highest of the key's open incidents. A key that was sent at sos resolves
-// its SOS as soon as no open incident of the key is sos.
+// its SOS as soon as no open incident of the key is sos. A joined node's
+// fallback sends under the destination's alert source for nodes sending
+// without the hub, when the destination has one, and records what it sent
+// for its reports.
 func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, message checksandalerts.Event, members []checksandalerts.Event, from QueuedBy, now time.Time) error {
 	set := IncidentSet{Destination: name, AlertSource: dest.MMHotline().AlertSourceID}
 	var alerts []checksandalerts.Event
+	// key is the readable key of an alert of an incident that the hub or a
+	// standalone node sends.
+	key := ""
 	changed := map[string]string{}
 	switch message.Type {
 	case "reminder":
 		return nil
 	case "failed", "cannot_check", checksandalerts.FailureIncidentEvents.Raised, checksandalerts.CannotCheckIncidentEvents.Raised:
 		if from.Role == FallbackSender {
-			// Reports carry it until the hub has heard of it, so the hub can
-			// resolve it even if it recovers before the hub returns.
-			if e := recordSentWithoutTheHub(tx, name, members, now); e != nil {
-				return e
-			}
-			alerts = []checksandalerts.Event{MMHotlineFailure(message, members, from, message.AlertSeverity)}
-			break
+			return queueWithoutTheHub(tx, at, name, dest, MMHotlineFailure(message, members, from, message.AlertSeverity), members, now)
 		}
 		kept, over, e := set.openIncidents(tx, members, from.hub(), now)
 		if e != nil {
@@ -64,7 +67,7 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 		}
 		changed = over
 		if len(kept) > 0 {
-			key := checksandalerts.ReadableFleetIncidentKey(kept[0], checksandalerts.IncidentKind(kept[0].Type), from.hub())
+			key = checksandalerts.ReadableFleetIncidentKey(kept[0], checksandalerts.IncidentKind(kept[0].Type), from.hub())
 			open, e := set.keyRows(tx, key, FleetIncidentOpen)
 			if e != nil {
 				return e
@@ -79,10 +82,9 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 		// (queueGrouped); a standalone node and a joined node's fallback send
 		// a changed exact finding at its incident's severity, with its key.
 		if from.Role == FallbackSender {
-			if e := recordSentWithoutTheHub(tx, name, members, now); e != nil {
-				return e
-			}
+			return queueWithoutTheHub(tx, at, name, dest, mmhotlineGroupedAlert(message, from), members, now)
 		}
+		key = checksandalerts.ReadableFleetIncidentKey(message, "failed", from.hub())
 		alerts = []checksandalerts.Event{mmhotlineGroupedAlert(message, from)}
 	case "recovered", "can_check_again", "closed_without_recovery":
 		if from.Role == FallbackSender {
@@ -93,9 +95,13 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 			return e
 		}
 	default:
-		alerts = []checksandalerts.Event{MMHotlineNotice(message, from)}
+		notice := MMHotlineNotice(message, from)
+		if from.Role == FallbackSender {
+			notice.MMHotlineAlertSource = dest.MMHotline().NodeAlertSourceID()
+		}
+		alerts = []checksandalerts.Event{notice}
 	}
-	if e := queueAlerts(tx, at, name, dest, alerts); e != nil || len(changed) == 0 || from.AwaitingFirstReports {
+	if e := set.queueMMHotlineAlerts(tx, at, name, dest, key, alerts, sendsMore); e != nil || len(changed) == 0 || from.AwaitingFirstReports {
 		return e
 	}
 	waiting, e := waitingFailureKeys(tx, from.hub(), members)
@@ -107,6 +113,154 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 		return e
 	}
 	return set.queueClosings(tx, at, name, dest, closings, nil, message, from, now)
+}
+
+// queueWithoutTheHub queues a joined node's direct alert, of the incidents
+// of members, under the destination's alert source for nodes sending
+// without the hub when it has one, and records it with that source for the
+// node's reports, which carry it until the hub has heard of it: so the hub
+// can resolve it even if it recovers before the hub returns.
+func queueWithoutTheHub(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, alert checksandalerts.Event, members []checksandalerts.Event, now time.Time) error {
+	alert.MMHotlineAlertSource = dest.MMHotline().NodeAlertSourceID()
+	if e := recordSentWithoutTheHub(tx, name, members, alert.MMHotlineAlertSource, now); e != nil {
+		return e
+	}
+	return queueAlerts(tx, at, name, dest, []checksandalerts.Event{alert})
+}
+
+// What an alert of a key does to the key's incident in MMHotline, for the
+// choice of its alert source (queueMMHotlineAlerts).
+type mmhotlineKeyStep int
+
+const (
+	// sendsMore: a failure, a raise, an update, or a new exact finding.
+	sendsMore mmhotlineKeyStep = iota
+	// resolvesSos: the key's resolved-sos, while the key stays open below sos.
+	resolvesSos
+	// closesKey: the key's one resolution.
+	closesKey
+)
+
+// queueMMHotlineAlerts queues MMHotline alerts of the readable key (""
+// for alerts without one) for the mmhotline destination name, each under
+// the alert source of the key's incident in MMHotline. MMHotline matches an
+// incident by alert source and key, and a joined node sending without the
+// hub may have opened it under the destination's alert source for those
+// nodes. So once a settled direct send says so (recordMMHotlineSource),
+// every further alert of the key goes under that source, or a hub's sos
+// would open a second incident and wake someone again. A resolution goes
+// under each alert source that got alerts of the key since its last
+// resolution, each with its own sender_alert_id, so none is left open; the
+// key's one resolution then starts the key over.
+func (set IncidentSet) queueMMHotlineAlerts(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, key string, alerts []checksandalerts.Event, step mmhotlineKeyStep) error {
+	if key == "" || len(alerts) == 0 {
+		return queueAlerts(tx, at, name, dest, alerts)
+	}
+	sent, e := set.mmhotlineSourcesSent(tx, dest, key)
+	if e != nil {
+		return e
+	}
+	queued := []checksandalerts.Event{}
+	if step == sendsMore {
+		for _, a := range alerts {
+			if a, e = set.underTheKeysAlertSource(tx, dest, key, a); e != nil {
+				return e
+			}
+			queued = append(queued, a)
+		}
+	} else {
+		if len(sent) == 0 {
+			sent = []string{set.AlertSource}
+		}
+		for i, source := range sent {
+			if source == set.AlertSource {
+				source = ""
+			}
+			for _, a := range alerts {
+				if i > 0 {
+					a = withOwnSenderAlertID(a)
+				}
+				a.MMHotlineAlertSource = source
+				queued = append(queued, a)
+			}
+		}
+		if step == closesKey {
+			if _, e = tx.Exec("UPDATE fleet_incident_keys SET mmhotline_alert_sources_sent='' WHERE "+inSet+" AND incident_key=?", set.with(key)...); e != nil {
+				return e
+			}
+		}
+	}
+	return queueAlerts(tx, at, name, dest, queued)
+}
+
+// underTheKeysAlertSource is alert, a further alert of the key that is
+// not its resolution, under the alert source of the key's incident in
+// MMHotline: the alert source for nodes sending without the hub once a
+// node's direct send under it was settled, until the key's resolution;
+// otherwise the destination's own. It records the source.
+func (set IncidentSet) underTheKeysAlertSource(tx *sql.Tx, dest checksandalerts.Destination, key string, alert checksandalerts.Event) (checksandalerts.Event, error) {
+	sent, e := set.mmhotlineSourcesSent(tx, dest, key)
+	if e != nil {
+		return alert, e
+	}
+	alert.MMHotlineAlertSource = ""
+	if node := dest.MMHotline().NodeAlertSourceID(); node != "" && slices.Contains(sent, node) {
+		alert.MMHotlineAlertSource = node
+	}
+	return alert, set.recordMMHotlineSource(tx, dest, key, alert.MMHotlineAlertSource)
+}
+
+// mmhotlineSourcesSent lists the alert sources of the destination that got
+// alerts of the key since its last resolution, the destination's own
+// first; a source that the destination no longer has is left out.
+func (set IncidentSet) mmhotlineSourcesSent(tx *sql.Tx, dest checksandalerts.Destination, key string) ([]string, error) {
+	var written string
+	e := tx.QueryRow("SELECT mmhotline_alert_sources_sent FROM fleet_incident_keys WHERE "+inSet+" AND incident_key=?", set.with(key)...).Scan(&written)
+	if e != nil && e != sql.ErrNoRows {
+		return nil, e
+	}
+	sent := []string{}
+	for _, source := range []string{set.AlertSource, dest.MMHotline().NodeAlertSourceID()} {
+		if source != "" && slices.Contains(strings.Split(written, ","), source) {
+			sent = append(sent, source)
+		}
+	}
+	return sent, nil
+}
+
+// recordMMHotlineSource records that the key got an alert under the alert
+// source source ("" for the destination's own) since its last resolution.
+// A source that the destination does not have, such as one that a node's
+// report names, is not recorded.
+func (set IncidentSet) recordMMHotlineSource(tx *sql.Tx, dest checksandalerts.Destination, key, source string) error {
+	if source == "" {
+		source = set.AlertSource
+	}
+	if p := dest.MMHotline(); p == nil || source != set.AlertSource && source != p.NodeAlertSourceID() {
+		return nil
+	}
+	var written string
+	e := tx.QueryRow("SELECT mmhotline_alert_sources_sent FROM fleet_incident_keys WHERE "+inSet+" AND incident_key=?", set.with(key)...).Scan(&written)
+	if e != nil && e != sql.ErrNoRows {
+		return e
+	}
+	sources := checksandalerts.NonEmpty(strings.Split(written, ","))
+	if slices.Contains(sources, source) {
+		return nil
+	}
+	_, e = tx.Exec("INSERT INTO fleet_incident_keys(destination,alert_source,incident_key,alert_severities_sent,last_closing_alert_at,mmhotline_alert_sources_sent) VALUES(?,?,?,'',0,?) ON CONFLICT(destination,alert_source,incident_key) DO UPDATE SET mmhotline_alert_sources_sent=excluded.mmhotline_alert_sources_sent",
+		set.with(key, strings.Join(append(sources, source), ","))...)
+	return e
+}
+
+// withOwnSenderAlertID is a copy of a queued MMHotline alert for another
+// alert source, with an ID of its own.
+func withOwnSenderAlertID(a checksandalerts.Event) checksandalerts.Event {
+	alert := *a.MMHotlineAlert
+	a.ID = incidents.ID()
+	alert.SenderAlertID = a.ID
+	a.MMHotlineAlert = &alert
+	return a
 }
 
 // queueAlerts queues MMHotline alerts for the mmhotline destination.
@@ -145,20 +299,95 @@ func MMHotlineFailure(message checksandalerts.Event, members []checksandalerts.E
 		shown.WriteAlertTexts(members, from.hub())
 	}
 	key := checksandalerts.ReadableFleetIncidentKey(members[0], checksandalerts.IncidentKind(members[0].Type), from.hub())
-	return MMHotlineEvent(message, message.ID, checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity), severity, shown.Title, []string{shown.Body, from.SentBy()})
+	return MMHotlineEvent(message, message.ID, checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity), severity, shown.Title, []string{withProblemFirst(shown.Body, members[0], len(members) == 1, from.hub()), from.SentBy()})
 }
 
 // mmhotlineGroupedAlert is MMHotline's alert for an alert of a key that
 // grouping by exact finding handles: a node's failure, raise, or changed
-// exact finding, or the hub's finding_nodes_changed update or reminder. It
-// goes at the alert's own severity, never promoted, with the alert's key,
-// title, and body. (The MMHotline wire mapping of these alerts, such as
-// their first line, is completed with the MMHotline lane.)
+// exact finding, or the hub's finding_nodes_changed update. It goes at the
+// alert's own severity, never promoted, with the alert's key, its own
+// sender_alert_id, title, and body. A node's alert names the problem on
+// its first line (withProblemFirst); an update's first line is its summary,
+// which names no node.
 func mmhotlineGroupedAlert(e checksandalerts.Event, from QueuedBy) checksandalerts.Event {
 	if e.Title == "" {
 		e.WriteAlertTexts([]checksandalerts.Event{e}, from.hub())
 	}
-	return MMHotlineEvent(e, e.ID, e.FleetIncidentKey, e.AlertSeverity, e.Title, []string{e.Body, from.SentBy()})
+	body := e.Body
+	if e.Type != checksandalerts.FindingNodesChanged {
+		body = withProblemFirst(body, e, true, from.hub())
+	}
+	return MMHotlineEvent(e, e.ID, e.FleetIncidentKey, e.AlertSeverity, e.Title, []string{body, from.SentBy()})
+}
+
+// withProblemFirst is the body of an alert to MMHotline about the failure
+// of node alert m, whose first line names the problem in the same words on
+// every node: m's exact finding when it has one, otherwise the first line
+// of m's own failure message with the node's name taken out. MMHotline
+// merges repeated warnings of the alert source for nodes sending without
+// the hub by key and first line, so a node's name there would keep repeats
+// apart, and different causes have different first lines. The node's name
+// stays in the title and in the lines below. A body of one node (single)
+// that starts with m's message starts with that line in place of the
+// message's first line instead.
+func withProblemFirst(body string, m checksandalerts.Event, single bool, hub string) string {
+	message, _, _ := strings.Cut(primitives.AsReadableLines(m.Message), "\n")
+	first := m.ExactFinding
+	if !checksandalerts.HasExactFinding(m) {
+		first = withoutNodeNames(message, checksandalerts.AlertNode(m, hub), m.Node)
+		if first == "" {
+			first = m.AboutCheck()
+		}
+	}
+	head, rest, more := strings.Cut(body, "\n")
+	switch {
+	case head == first:
+		return body
+	case single && head == message && !checksandalerts.HasExactFinding(m):
+		if !more {
+			return first
+		}
+		return first + "\n" + rest
+	}
+	return strings.Join(checksandalerts.NonEmpty([]string{first, body}), "\n")
+}
+
+// withoutNodeNames is line with each of names taken out where it stands as
+// a name of its own, not inside a longer name such as a host name, and the
+// spaces and separators left behind tidied.
+func withoutNodeNames(line string, names ...string) string {
+	nameCharacter := func(r rune) bool {
+		return r == '-' || r == '_' || r == '.' || unicode.IsLetter(r) || unicode.IsDigit(r)
+	}
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		var b strings.Builder
+		for start := 0; ; {
+			i := strings.Index(line[start:], name)
+			if i < 0 {
+				b.WriteString(line[start:])
+				break
+			}
+			i += start
+			end := i + len(name)
+			before, _ := utf8.DecodeLastRuneInString(line[:i])
+			after, _ := utf8.DecodeRuneInString(line[end:])
+			// A dot that ends the line ends the sentence, not the name.
+			alone := (i == 0 || !nameCharacter(before)) && (end == len(line) || !nameCharacter(after) || after == '.' && end+1 == len(line))
+			if alone {
+				b.WriteString(line[start:i])
+			} else {
+				b.WriteString(line[start:end])
+			}
+			start = end
+		}
+		line = b.String()
+	}
+	line = strings.Join(strings.Fields(line), " ")
+	line = strings.TrimLeft(line, ":;, ")
+	return strings.ReplaceAll(strings.ReplaceAll(line, " :", ":"), " ,", ",")
 }
 
 // MMHotlineNotice is the alert for a maintenance notice, a reboot notice, or

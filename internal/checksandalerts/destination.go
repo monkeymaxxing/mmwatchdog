@@ -253,7 +253,7 @@ func (d *Destination) CaptureCredentialContent(fileContents map[string]string) {
 func (d Destination) credentialAuthenticatesTheSender(input string) bool {
 	switch d.Inputs.(type) {
 	case *MMHotlineDestination:
-		return input == "mmhotline_signing_secret_file"
+		return input == "mmhotline_signing_secret_file" || input == mmhotlineNodeSigningSecretFileInput
 	case *Webhook:
 		return input == "bearer_token_file"
 	case *Email:

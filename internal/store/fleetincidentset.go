@@ -466,7 +466,7 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 		// Reports carry it until the hub has heard of it, so the hub sends
 		// the closing alert, even when the incident closes before the hub is
 		// back.
-		if e := recordSentWithoutTheHub(tx, name, members, now); e != nil {
+		if e := recordSentWithoutTheHub(tx, name, members, "", now); e != nil {
 			return e
 		}
 		return queueEvent(tx, at, name, dest, message)
@@ -629,8 +629,9 @@ func closingTitle(readable string, about checksandalerts.Event, nodes []string, 
 
 // recordSentWithoutTheHub records, on a joined node, each incident of
 // members whose failure or raise its fallback sent to the destination
-// without the hub, with every severity sent.
-func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksandalerts.Event, now time.Time) error {
+// without the hub, with every severity sent, and the MMHotline alert
+// source that it sent under ("" for the destination's own).
+func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksandalerts.Event, alertSource string, now time.Time) error {
 	for _, m := range members {
 		var earlier string
 		e := tx.QueryRow("SELECT alert_severities_sent_for_incident FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?", destination, m.Incident).Scan(&earlier)
@@ -638,10 +639,10 @@ func recordSentWithoutTheHub(tx *sql.Tx, destination string, members []checksand
 			return e
 		}
 		sent := strings.Join(lowestFirst(append(strings.Split(earlier, ","), m.AlertSeverity)), ",")
-		if _, e = tx.Exec(`INSERT INTO incidents_sent_without_the_hub(destination,incident_id,check_group,check_name,finding,kind,alert_severities_sent_for_incident,at,exact_finding,exact_finding_sequence) VALUES(?,?,?,?,?,?,?,?,?,?)
- ON CONFLICT(destination,incident_id) DO UPDATE SET alert_severities_sent_for_incident=excluded.alert_severities_sent_for_incident,
+		if _, e = tx.Exec(`INSERT INTO incidents_sent_without_the_hub(destination,incident_id,check_group,check_name,finding,kind,alert_severities_sent_for_incident,at,exact_finding,exact_finding_sequence,alert_source) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+ ON CONFLICT(destination,incident_id) DO UPDATE SET alert_severities_sent_for_incident=excluded.alert_severities_sent_for_incident, alert_source=excluded.alert_source,
  exact_finding=CASE WHEN excluded.exact_finding_sequence>=exact_finding_sequence THEN excluded.exact_finding ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,excluded.exact_finding_sequence)`,
-			destination, m.Incident, m.CheckGroup, m.Check, m.Finding, checksandalerts.IncidentKind(m.Type), sent, now.UnixNano(), m.ExactFinding, m.ExactFindingSequence); e != nil {
+			destination, m.Incident, m.CheckGroup, m.Check, m.Finding, checksandalerts.IncidentKind(m.Type), sent, now.UnixNano(), m.ExactFinding, m.ExactFindingSequence, alertSource); e != nil {
 			return e
 		}
 	}
@@ -853,7 +854,7 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 				var open keyRows
 				if open, e = set.keyRows(tx, key, FleetIncidentOpen); e == nil {
 					if e = set.recordSent(tx, key, open.highest); e == nil {
-						e = queueAlerts(tx, at, name, dest, []checksandalerts.Event{MMHotlineFailure(failure, []checksandalerts.Event{failure}, from, open.highest)})
+						e = set.queueMMHotlineAlerts(tx, at, name, dest, key, []checksandalerts.Event{MMHotlineFailure(failure, []checksandalerts.Event{failure}, from, open.highest)}, sendsMore)
 					}
 				}
 			default:
@@ -866,7 +867,8 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 		}
 		for _, closing := range r.setAside {
 			if dest.MMHotline() != nil {
-				e = queueAlerts(tx, at, name, dest, []checksandalerts.Event{MMHotlineEvent(closing, closing.ID, closing.FleetIncidentKey, "resolved-"+closing.AlertSeverity, closing.Title, []string{closing.Body, from.SentBy()})})
+				key := checksandalerts.ReadableFleetIncidentKey(closing, "failed", s.Node)
+				e = set.queueMMHotlineAlerts(tx, at, name, dest, key, []checksandalerts.Event{MMHotlineEvent(closing, closing.ID, closing.FleetIncidentKey, "resolved-"+closing.AlertSeverity, closing.Title, []string{closing.Body, from.SentBy()})}, closesKey)
 			} else {
 				e = queueEvent(tx, at, name, dest, closing)
 			}
@@ -1109,9 +1111,14 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 						changed[key] = "recovered"
 					}
 				}
+				if x, ok := held[id]; ok && x.state != fleetIncidentResolved && !r.Forgotten {
+					if e = set.recordMMHotlineSource(tx, destinations[name], checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), hub), c.MMHotlineAlertSource); e != nil {
+						return out, e
+					}
+				}
 				continue
 			}
-			if e = set.settleDirectSend(tx, reporter, id, c, r, func() (string, error) {
+			if e = set.settleDirectSend(tx, destinations[name], reporter, id, c, r, func() (string, error) {
 				state := fleetIncidentClosed
 				if _, shown := r.Incidents[id]; shown {
 					state = FleetIncidentOpen
@@ -1171,14 +1178,17 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 // key is open for the destination, the destination gets
 // closed_without_recovery. The record is acknowledged afterwards
 // (IncidentsKnownToTheHub).
-func (set IncidentSet) settleDirectSend(tx *sql.Tx, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), reason string, changed map[string]string, out *reconciled, from QueuedBy, now time.Time) error {
+func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), reason string, changed map[string]string, out *reconciled, from QueuedBy, now time.Time) error {
 	var settled bool
 	if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_direct_sends_settled WHERE destination=? AND reporter=? AND incident_id=?)", set.Destination, reporter, id).Scan(&settled); e != nil || settled || r.Forgotten {
 		return e
 	}
 	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
-	var e error
+	// The key's further alerts and its resolution go under the alert
+	// source that the node sent under (queueMMHotlineAlerts).
+	e := set.recordMMHotlineSource(tx, dest, key, c.MMHotlineAlertSource)
 	switch {
+	case e != nil:
 	case reason != "":
 		var open bool
 		if open, e = set.hasOpen(tx, key, ""); e == nil && !open {

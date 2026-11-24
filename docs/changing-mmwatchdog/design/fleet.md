@@ -1573,6 +1573,10 @@ to MMHotline names the problem with no node name, from the hub and from a
 node that sends directly. Node names go in the title or in later lines.
 
 - For a key with an exact finding, the first line is the exact finding.
+- An update's first line is its summary, such as
+  `packages/flaws: CVE-2026-123158 openssh: 3 nodes added`, which names no
+  node and differs from a node's own first line, so MMHotline never merges
+  an update into a node's warning.
 - Otherwise the first line is the node's own failure message without the
   node's name. Different causes have different first lines and are never
   merged.
@@ -1689,18 +1693,24 @@ destinations:
   large fleet cannot use up MMHotline's hourly budget. Without the block,
   direct sends use the hub's source.
 - The block may state its own `mmhotline_url` when the nodes reach
-  MMHotline at another address than the hub.
+  MMHotline at another address than the hub. Its
+  `mmhotline_alert_source_id` must differ from the destination's own.
 - The block reaches the joined nodes in the fleet settings, like the main
   signing secret. It is left out of the fleet settings' fingerprint when it
   is not set, so fleets without it are unaffected. A fleet that sets it
   needs 0.2.0 on every joined node, because an older node refuses the
   changed fleet settings. `mmwatchdog validate` on the hub warns while a
   joined node reports an older version.
-- MMHotline matches an incident by alert source and key. So while an
-  incident that a node opened on the second source is open, the hub sends
-  every further alert of that key, and its closing alert, under the second
-  source. The hub has both secrets. Otherwise an `sos` from the hub would
-  open a second incident and wake someone again.
+- MMHotline matches an incident by alert source and key. So once the hub
+  has settled a node's direct send of a key under the second source, it
+  sends every further alert of that key under the second source, until
+  the key's closing alert. The hub has both secrets. Otherwise an `sos`
+  from the hub would open a second incident and wake someone again. The
+  closing alert, and a `resolved-sos`, go under each source that got
+  alerts of the key since its last closing alert, each with its own
+  `sender_alert_id`, so an incident that the hub opened under its own
+  source before it went away closes too. The hub keeps these sources for
+  each destination and key in `state.db`.
 - Check-ins go on the hub's source only, because MMHotline never expects
   check-ins from a source that has never sent one.
 - A resolution on the second source ends MMHotline's one-hour merge window

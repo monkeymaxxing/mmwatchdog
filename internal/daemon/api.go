@@ -708,9 +708,13 @@ func (d *Daemon) recoveryAttemptStatus(group string) (map[string]RecoveryAttempt
 	return units, commands
 }
 
-// ValidationWarnings includes routing against a joined node's saved fleet settings.
+// ValidationWarnings includes routing against a joined node's saved fleet
+// settings, and on a hub the versions that its joined nodes report.
 func ValidationWarnings(c *config.Config, node string, checkNodeFiles bool) config.ValidationWarnings {
 	warnings := c.ValidationWarnings(node, checkNodeFiles)
+	if checkNodeFiles && c.FleetHubRole != nil {
+		warnings.OlderJoinedNodesWithAlertSourceForNodesSendingWithoutTheHub = c.OlderJoinedNodesWithNodeAlertSource(fleet.JoinedNodeVersions(c.StateDir), func(version string) bool { return fleet.ReleaseOlderThan(version, 0, 2) })
+	}
 	if checkNodeFiles && c.JoinFleetHub != nil {
 		if settings := fleet.ReadFleetSettings(filepath.Join(c.StateDir, fleet.FleetSettingsFile), c.Modules); settings != nil {
 			c.RoutingWarnings(settings.Destinations, &warnings)

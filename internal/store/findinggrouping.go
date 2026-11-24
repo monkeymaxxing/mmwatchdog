@@ -218,14 +218,19 @@ func (set IncidentSet) hasOpen(tx *sql.Tx, key, severity string) (bool, error) {
 	return exists, e
 }
 
-// queueToDestination queues one alert of a grouped key for the destination
-// name: for the mmhotline destination as MMHotline's alert
-// (mmhotlineGroupedAlert), otherwise as the destination takes it, a
-// reminder replacing the undelivered one it supersedes. announces is the
-// key whose announcement the alert carries, or "".
-func queueToDestination(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, alert checksandalerts.Event, from QueuedBy, announces string) error {
+// queueToDestination queues one alert of the grouped key for the
+// destination name: for the mmhotline destination as MMHotline's alert
+// (mmhotlineGroupedAlert) under the alert source of the key's incident in
+// MMHotline, otherwise as the destination takes it, a reminder replacing
+// the undelivered one it supersedes. announces is the key when the alert
+// carries its announcement, or "".
+func queueToDestination(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, key string, alert checksandalerts.Event, from QueuedBy, announces string) error {
 	if dest.MMHotline() != nil {
-		alert = mmhotlineGroupedAlert(alert, from)
+		set, _ := IncidentSetOf(name, dest)
+		var e error
+		if alert, e = set.underTheKeysAlertSource(tx, dest, key, mmhotlineGroupedAlert(alert, from)); e != nil {
+			return e
+		}
 	} else {
 		if e := replaceQueuedReminder(tx, name, alert); e != nil {
 			return e
@@ -301,7 +306,7 @@ func (set IncidentSet) groupedOpening(tx *sql.Tx, at int64, name string, dest ch
 	if _, e = tx.Exec("UPDATE fleet_incident_set SET pending_change='' WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(m.Node, m.Incident)...); e != nil {
 		return e
 	}
-	return queueToDestination(tx, at, name, dest, m, from, key)
+	return queueToDestination(tx, at, name, dest, key, m, from, key)
 }
 
 // groupedClosing applies an alert that closes node incidents of a grouped
@@ -376,7 +381,11 @@ func (set IncidentSet) queueClosings(tx *sql.Tx, at int64, name string, dest che
 		}
 		var e error
 		if dest.MMHotline() != nil {
-			e = queueAlerts(tx, at, name, dest, []checksandalerts.Event{c.mmhotlineAlert(cause, from, now)})
+			step := closesKey
+			if c.stillOpen != nil {
+				step = resolvesSos
+			}
+			e = set.queueMMHotlineAlerts(tx, at, name, dest, c.key, []checksandalerts.Event{c.mmhotlineAlert(cause, from, now)}, step)
 		} else {
 			e = queueEvent(tx, at, name, dest, c.closingAlert(closedBy[c.key], cause, from, now))
 		}
@@ -456,7 +465,7 @@ func (set IncidentSet) queueUpdate(tx *sql.Tx, at int64, name string, dest check
 			return e
 		}
 	}
-	return queueToDestination(tx, at, name, dest, update, from, "")
+	return queueToDestination(tx, at, name, dest, key, update, from, "")
 }
 
 // findingNodesUpdate is the finding_nodes_changed update of the key about,
@@ -680,7 +689,7 @@ func (set IncidentSet) remind(tx *sql.Tx, name string, dest checksandalerts.Dest
 			reminder.Message = fmt.Sprintf("%s still failing since %s", reminder.AboutCheck(), checksandalerts.ClockTime(time.Unix(0, opened), now))
 		}
 		reminder.WriteAlertTexts([]checksandalerts.Event{reminder}, from.hub())
-		if e = queueToDestination(tx, now.UnixNano(), name, dest, reminder, from, ""); e != nil {
+		if e = queueToDestination(tx, now.UnixNano(), name, dest, key, reminder, from, ""); e != nil {
 			return e
 		}
 	} else {

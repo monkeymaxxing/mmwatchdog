@@ -418,6 +418,9 @@ func yamlTypeOfInput(t reflect.Type) string {
 		return "list_of_integers"
 	case t == reflect.TypeOf(map[string]string{}):
 		return "mapping_of_strings"
+	case t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct:
+		// A block of inputs of its own, which the description names.
+		return "mapping"
 	}
 	return "no type that a description has: " + t.String()
 }

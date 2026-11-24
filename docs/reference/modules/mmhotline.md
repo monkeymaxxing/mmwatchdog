@@ -119,6 +119,12 @@ The destination's values:
   Quote an ID made only of digits, so the ID stays text.
 - The destination block takes every severity. Narrow `alert_severities`
   to send MMHotline fewer severities.
+- `alert_source_for_nodes_sending_without_the_hub` is optional, and only
+  for an MMWatchdog fleet hub: a second alert source for the joined nodes
+  that send alerts without the hub, with its own
+  `mmhotline_alert_source_id` and `mmhotline_signing_secret_file`, and
+  `mmhotline_url` when the nodes reach MMHotline at another address
+  ([the alert source for nodes sending without the hub](#the-alert-source-for-nodes-sending-without-the-hub)).
 
 **With MMX,** put the block in the MMX configuration and the secret in the
 MMX vault (`mmx secrets set mmwatchdog_secret_files NAME`), and let the deploy write the secret file.
@@ -169,6 +175,7 @@ and reload.
 - `mmhotline_url` (string; required): MMHotline's alert intake address, http:// or https://, without an alert-intake or check-in route.
 - `mmhotline_alert_source_id` (string; required): The alert_source_id of the alert source in MMHotline's settings file: 1 to 64 letters, digits, _ and -, such as monitoring.
 - `mmhotline_signing_secret_file` (string; required): The absolute path of the file that holds the signing secret. MMWatchdog reads it for each delivery.
+- `alert_source_for_nodes_sending_without_the_hub` (mapping; optional): On a fleet hub, a second alert source for the joined nodes that send alerts without the hub: mmhotline_alert_source_id, mmhotline_signing_secret_file, and mmhotline_url when the nodes reach MMHotline at another address. Joined nodes get its signing secret with the fleet settings, and need MMWatchdog 0.2.0 or later.
 
 ## What it sends
 
@@ -182,7 +189,7 @@ format that is not particular to MMWatchdog, posted to
 | `sender_incident_key` | The alert's fixed-length `fleet_incident_key`; [incident keys](../../how-it-works.md#one-incident-per-check-across-the-fleet) describes its scope |
 | `severity` | The alert's [severity](../../how-to/send-alerts-somewhere.md#send-a-checks-alerts-to-chosen-destinations), mapped as the table below says |
 | `title` | The alert's [title](../alert-format.md), such as `web-3: myapp/http failed`, without the label of its severity, because MMHotline puts its own label in front |
-| `message` | The alert's body, followed by who sent it: `Sent by the standalone MMWatchdog node web-3.`, `Sent by the MMWatchdog fleet hub on util01.`, or, from a joined node that delivers without the hub, `Sent directly by the MMWatchdog node app-2 because the MMWatchdog fleet hub did not accept the alert in time.` |
+| `message` | The alert's body, whose first line, for a node's failure, raise, or changed exact finding, names the problem without the node's name: the exact finding, or the node's failure message with the node's name taken out ([alert format](../alert-format.md#fleet-messages)). Then who sent it: `Sent by the standalone MMWatchdog node web-3.`, `Sent by the MMWatchdog fleet hub on util01.`, or, from a joined node that delivers without the hub, `Sent directly by the MMWatchdog node app-2 because the MMWatchdog fleet hub did not accept the alert in time.` |
 | `happened_at` | When the alert happened, from the node's clock. MMHotline only displays the occurrence time |
 
 MMHotline accepts a title of up to 256 characters, a message of up to 16 KiB,
@@ -507,6 +514,57 @@ on one joined node can therefore send alerts as the fleet's alert source.
 [Rotate the signing secret](#set-up) when a joined node is lost or
 compromised.
 
+#### The alert source for nodes sending without the hub
+
+The hub sends under the destination's own alert source, and MMHotline
+keeps every warning from it. During a hub outage on a large fleet, many
+nodes send the same warning directly, which can use up MMHotline's hourly
+budget for warnings. A fleet can therefore give those nodes a second alert
+source, which MMHotline sets to merge repeated warnings
+(`repeated_warnings: fold_by_sender_incident_key_and_first_message_line`
+in MMHotline's settings file):
+
+```yaml
+# /etc/mmwatchdog/alert_destinations.yml (on the MMWatchdog fleet hub)
+destinations:
+  mmhotline_on_call:
+    mmhotline:
+      mmhotline_url: http://10.20.0.1:8484
+      mmhotline_alert_source_id: mmwatchdog_fleet_hub
+      mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-signing-secret
+      alert_source_for_nodes_sending_without_the_hub:
+        mmhotline_alert_source_id: mmwatchdog_nodes_without_the_hub
+        mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-nodes-signing-secret
+    alert_severities: [warn, sos]
+```
+
+- The block's ID must differ from `mmhotline_alert_source_id`. Its
+  signing secret file follows the same rules as the destination's own, and
+  its `mmhotline_url`, when stated, the same rules as the destination's.
+- The hub copies the block's signing secret to the joined nodes in
+  `file_contents_by_destination`, under
+  `alert_source_for_nodes_sending_without_the_hub.mmhotline_signing_secret_file`.
+  A fleet without the block has the same fleet settings as before.
+- A joined node needs MMWatchdog 0.2.0 or later: an older node refuses
+  fleet settings with the block and keeps its earlier copy.
+  `mmwatchdog validate` and `mmwatchdog reload` on the hub warn while a
+  joined node's latest report states an older release.
+- A joined node sends every alert that it delivers without the hub under
+  the second source, and its reports name the source with each incident
+  that they carry.
+- Once the hub has settled a node's direct send under the second source,
+  it sends every further alert of that key under the second source too,
+  because MMHotline matches an incident by alert source and key: a hub
+  `sos` then joins the incident that the node opened instead of waking
+  someone again. The key's resolution goes under each alert source that
+  got alerts of the key since its last resolution, each with its own
+  `sender_alert_id`, so no MMHotline incident stays open. Then the key's
+  alerts go under the hub's own source again.
+- Check-ins go under the destination's own source only.
+- The first line of each alert names the problem in the same words on
+  every node, so MMHotline merges the repeats of one problem
+  ([alert format](../alert-format.md#fleet-messages)).
+
 ## Errors and what they mean
 
 **Validation errors,** from `mmwatchdog validate`, `mmwatchdog reload`, and a
@@ -520,10 +578,11 @@ each validation error:
 | `destinations.mmhotline_on_call.mmhotline.mmhotline_alert_source_id: expected the alert_source_id of an alert source in MMHotline's settings file: 1 to 64 letters, digits, _ and -, such as monitoring` | Copy `alert_source_id` from MMHotline's settings file |
 | `destinations.mmhotline_on_call.mmhotline.mmhotline_signing_secret_file: must be absolute` | Write the whole path, starting with `/` |
 | `destinations.mmhotline_on_call.mmhotline.mmhotline_signing_secret_file: /etc/mmwatchdog/secrets/mmhotline-signing-secret: expected an MMHotline signing secret of 64 hex characters` | From `mmwatchdog validate` or a delivery: the signing-secret file does not hold the secret. Write the secret that MMHotline's settings file lists for the alert source into `/etc/mmwatchdog/secrets/mmhotline-signing-secret`. Or make a new signing secret as [rotate the signing secret](#set-up) says |
+| `destinations.mmhotline_on_call.mmhotline.alert_source_for_nodes_sending_without_the_hub.mmhotline_alert_source_id: must differ from the destination's own mmhotline_alert_source_id: ...` | Give the nodes' alert source its own ID in MMHotline's settings file, or leave the block out so the nodes send under the destination's alert source. The other errors of the destination's values come with the block's path in front in the same way |
 | `destinations.mmhotline_on_call.remind_every: an mmhotline destination takes no remind_every: MMHotline repeats and escalates on its own` | Remove `remind_every` |
 | `destinations.mmhotline_on_call.send_only_the_alert_title: an mmhotline destination takes no send_only_the_alert_title: MMHotline puts the title in its notifications on its own, and shows the body on the alert's page` | Remove the setting |
 
-**A validation warning,** on the MMWatchdog fleet hub only, with the file
+**Validation warnings,** on the MMWatchdog fleet hub only, with the file
 and the line of the setting in front:
 
 ```text
@@ -533,7 +592,17 @@ destinations.mmhotline_on_call.mmhotline.mmhotline_url: joined nodes send alerts
 The address is a loopback address (`localhost`, `127.0.0.0/8`, or `::1`).
 The hub delivers the hub's own alerts to MMHotline at the loopback address,
 but a joined node's direct alerts would fail. Write an address of the
-MMHotline server that every node reaches.
+MMHotline server that every node reaches. When
+`alert_source_for_nodes_sending_without_the_hub` states its own
+`mmhotline_url`, the warning is about that address, which the nodes use.
+
+```text
+destinations.mmhotline_on_call.mmhotline.alert_source_for_nodes_sending_without_the_hub: joined nodes older than MMWatchdog 0.2.0 refuse fleet settings with this block and keep their earlier copy of the fleet settings, so they send alerts without the hub to the destinations of that copy. Upgrade these joined nodes to 0.2.0 or later: app-2 (0.1.3)
+```
+
+The joined nodes named, with the release that their latest report states,
+are older than 0.2.0. Upgrade them, or leave the block out until they are
+upgraded.
 
 **What `mmwatchdog status` shows.** One line for each `mmhotline`
 destination names its address and when it last gave a signed answer.
