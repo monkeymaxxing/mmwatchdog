@@ -1416,7 +1416,10 @@ When the check `myapp/http` fails on two nodes, the hub sends:
   because the closing alert lists what the destination got.
 - A reminder goes out only while its incident is open in the set. A
   reminder that waited in fleet alert grouping while the key closed would
-  open the service's incident again, with nothing left to close it.
+  open the service's incident again, with nothing left to close it. It
+  goes under the key of its incident's row in the set, or, when the set
+  has no row yet, under the key that the hub derives from the incident,
+  never under a key that a node's alert carried.
 - A failure still waiting in the one-minute [fleet alert
   grouping](#fleet-alert-grouping) window keeps its key open, so no closing
   alert goes out before a failure that is about to be sent. A failure whose

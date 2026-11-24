@@ -521,16 +521,28 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 		}
 		// It goes under the key of its incident's row in the set, the key
 		// of the opening and the closing alert, so the closing alert stops
-		// what the reminder repeats.
+		// what the reminder repeats. Without a row, such as before the
+		// node's report reaches the hub, it goes under the key that the hub
+		// derives from the incident, never under a key that a node's alert
+		// carried; a reminder without a check names no incident and is
+		// dropped.
 		reminder := onlyStillOpen(message, open, members, from.hub())
 		var key string
 		switch e = tx.QueryRow("SELECT incident_key FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(open[0].Node, open[0].Incident)...).Scan(&key); e {
 		case nil:
-			reminder.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
 		case sql.ErrNoRows:
+			if open[0].CheckGroup == "" {
+				return nil
+			}
+			kind := checksandalerts.FailureIncidentEvents.Failed
+			if checksandalerts.ReminderIsAboutCannotCheck(open[0]) {
+				kind = "cannot_check"
+			}
+			key = checksandalerts.ReadableFleetIncidentKey(open[0], kind, from.hub())
 		default:
 			return e
 		}
+		reminder.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
 		return queueEvent(tx, at, name, dest, reminder)
 	default:
 		return queueEvent(tx, at, name, dest, message)

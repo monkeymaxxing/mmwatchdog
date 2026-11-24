@@ -352,6 +352,26 @@ func TestAServiceThatKeepsIncidentsGetsTheHubsOwnKey(t *testing.T) {
 	}
 }
 
+// A reminder of an incident that the hub's set does not hold, such as one
+// that a node sent without the hub before its report arrives, goes under
+// the key that the hub derives from the incident, never under the key
+// that the node's alert carried.
+func TestAReminderWithoutASetRowGetsTheHubsOwnKey(t *testing.T) {
+	t.Parallel()
+	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities}
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"pager": pager})
+	reminder := failureOf(h, "app-1", "app-1 cannot resolve db.internal", tenOFive)
+	reminder.Type, reminder.Destination = "reminder", "pager"
+	reminder.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey("another key"), "app-1", groupingFleet)
+	h.arrive(reminder.At, reminder)
+	h.arrive(reminder.At.Add(2 * time.Minute))
+	got := h.take("pager")
+	want := checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(checksandalerts.ReadableFleetIncidentKey(reminder, "failed", "")), h.s.Node, groupingFleet)
+	if len(got) != 1 || got[0].FleetIncidentKey != want {
+		t.Fatalf("the reminder %+v, want the key %s", got, want)
+	}
+}
+
 // A joined node's direct reminder to a service that keeps incidents is
 // recorded once the service accepts it, like a failure: a reminder that
 // lands after the hub's closing alert opened the service's incident again,
