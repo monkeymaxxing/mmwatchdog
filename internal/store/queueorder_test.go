@@ -147,6 +147,49 @@ func TestAFailingSosHoldsBackNoSosOfAnotherKey(t *testing.T) {
 	}
 }
 
+// An sos that failed once still takes turns with a warn that keeps
+// failing ahead of it: it is delivered on its second attempt, not when the
+// warn expires.
+func TestAnSosThatFailedOnceTakesTurnsWithAStuckWarn(t *testing.T) {
+	t.Parallel()
+	q := newQueue(t)
+	q.queue("A failed", "failed", "warn", "http", "i-a")
+	q.queue("B failed", "failed", "sos", "dns", "i-b")
+	triesOfB := 0
+	answers := func(id string) bool {
+		if id == "B failed" {
+			triesOfB++
+			return triesOfB == 2
+		}
+		return false
+	}
+	tried := []string{}
+	for range 5 {
+		tried = append(tried, q.attempt(answers))
+	}
+	if want := []string{"A failed", "B failed", "A failed", "B failed", "A failed"}; !slices.Equal(tried, want) {
+		t.Fatalf("tried %q while A keeps failing, want %q", tried, want)
+	}
+}
+
+// Two sos alerts that keep failing behind a stuck warn take turns with it
+// and with each other.
+func TestTwoFailingSosTakeTurns(t *testing.T) {
+	t.Parallel()
+	q := newQueue(t)
+	q.queue("A failed", "failed", "warn", "http", "i-a")
+	q.queue("B failed", "failed", "sos", "dns", "i-b")
+	q.queue("C failed", "failed", "sos", "tls", "i-c")
+	tried := []string{}
+	for range 9 {
+		tried = append(tried, q.attempt(refuses))
+	}
+	want := []string{"A failed", "B failed", "C failed", "A failed", "B failed", "C failed", "A failed", "B failed", "C failed"}
+	if !slices.Equal(tried, want) {
+		t.Fatalf("tried %q while every alert fails, want %q", tried, want)
+	}
+}
+
 // An sos never passes a closing alert of its own key that precedes it: the
 // key closed and opened again, and the sos belongs after the closing.
 func TestAnSosNeverPassesTheClosingOfItsKey(t *testing.T) {
@@ -162,6 +205,30 @@ func TestAnSosNeverPassesTheClosingOfItsKey(t *testing.T) {
 		t.Fatalf("%q went ahead of the oldest alert", got)
 	}
 	if got, want := q.drain(), []string{"A recovered", "A failed again"}; !slices.Equal(got, want) {
+		t.Fatalf("delivered in the order %q, want %q", got, want)
+	}
+}
+
+// An sos that failed once still never passes the closing alert of its own
+// key that precedes it.
+func TestARetriedSosNeverPassesTheClosingOfItsKey(t *testing.T) {
+	t.Parallel()
+	q := newQueue(t)
+	q.queue("A failed", "failed", "warn", "dns", "i-a")
+	if got := q.attempt(refuses); got != "A failed" {
+		t.Fatal(got)
+	}
+	q.queue("B failed", "failed", "warn", "http", "i-b")
+	q.queue("B recovered", "recovered", "warn", "http", "i-b")
+	q.queue("B failed again", "failed", "sos", "http", "i-b2")
+	tried := []string{}
+	for range 3 {
+		tried = append(tried, q.attempt(refuses))
+	}
+	if want := []string{"A failed", "A failed", "A failed"}; !slices.Equal(tried, want) {
+		t.Fatalf("tried %q, want only the oldest while the closing of the sos's key waits", tried)
+	}
+	if got, want := q.drain(), []string{"A failed", "B failed", "B recovered", "B failed again"}; !slices.Equal(got, want) {
 		t.Fatalf("delivered in the order %q, want %q", got, want)
 	}
 }
@@ -190,10 +257,10 @@ func TestTheWaitDoublesWhileTheDestinationKeepsFailing(t *testing.T) {
 	fail("B failed", 2*time.Second)
 	fail("C failed", 4*time.Second)
 	fail("A failed", 8*time.Second)
-	if got := q.attempt(accepts); got != "A failed" {
+	if got := q.attempt(accepts); got != "B failed" {
 		t.Fatal(got)
 	}
-	fail("B failed", time.Second)
+	fail("C failed", time.Second)
 }
 
 // A joined node queues its alerts for the hub by the same rule as every

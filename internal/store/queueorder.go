@@ -12,15 +12,17 @@ import (
 // The order of each destination's queue in the outbox, one rule
 // (Store.Pending). The queue is first in, first out, with one exception:
 // while its oldest delivery has had a failed attempt and waits for a
-// retry, the next attempt goes to the oldest sos alert that has not had a
-// failed attempt yet and that no closing alert of its own key precedes in
-// the queue; if there is none, to the oldest delivery again. So an alert
-// that keeps failing holds no sos back, an sos that keeps failing holds
-// back no sos of another key, and an sos never passes the closing alert of
-// its own key. Nothing is removed. The cost: while a destination is
-// failing, an sos can reach it before the warn of its own incident. The
-// wait before the next attempt is the destination's (Store.Delivered), so
-// a change of the delivery tried never shortens it. The rule is in the
+// retry, the next attempt goes to whichever of the oldest delivery and the
+// sos alerts that no closing alert of their own key precedes in the queue
+// has had the fewest attempts, ties to the oldest. So the oldest delivery
+// and each such sos take turns and none of them starves: an alert that
+// keeps failing holds no sos back, also not one that failed once, an sos
+// that keeps failing holds back no sos of another key, and an sos never
+// passes the closing alert of its own key. Nothing is removed. On a
+// healthy destination the queue is plain first in, first out. The cost:
+// while a destination is failing, an sos can reach it before the warn of
+// its own incident. The wait before the next attempt is the destination's
+// (Store.Delivered), so a change of the delivery tried never shortens it. The rule is in the
 // design of alert delivery, "An sos goes first".
 
 // outboxOrderOf says where a queued delivery stands: urgent for an sos

@@ -1119,12 +1119,14 @@ destination.
     alert in the order it was queued, so an incident's opening reaches it
     before its raise.
   - The one exception: while the oldest delivery has had a failed attempt
-    and waits to be retried, the next attempt goes to the oldest `sos`
-    that has not had a failed attempt yet and that no closing alert of its
-    own key precedes in the queue. If there is none, the next attempt goes
-    to the oldest delivery again. So a `warn` stuck behind a refusal or
-    HTTP `429` never holds an `sos` back, and an `sos` that keeps failing
-    holds back no `sos` of another key, which gets the next attempt.
+    and waits to be retried, the next attempt goes to whichever of the
+    oldest delivery and the `sos` alerts that no closing alert of their own
+    key precedes in the queue has had the fewest attempts. A tie goes to
+    the oldest. So the oldest delivery and each such `sos` take turns, and
+    none of them starves: a `warn` stuck behind a refusal or HTTP `429`
+    never holds an `sos` back, also not an `sos` whose own first attempt
+    failed, and an `sos` that keeps failing holds back no `sos` of another
+    key.
   - An `sos` never passes a closing alert of its own key, so closing and
     opening alerts of one key keep their order.
   - Nothing is removed: each delivery that waits goes after the `sos`,

@@ -921,15 +921,16 @@ func scanEvents(rows *sql.Rows, maxBytes int) ([]checksandalerts.Event, error) {
 
 // Pending returns the next undelivered alert of each destination, by the
 // queue rule (queueorder.go): the oldest, or, while the oldest waits for a
-// retry, the oldest sos alert not attempted yet that no closing alert of
-// its key precedes. One delivery per destination lets destinations proceed
+// retry, whichever of the oldest and the sos alerts that no closing alert
+// of their key precedes has had the fewest attempts, ties to the oldest. One delivery per destination lets destinations proceed
 // independently. Whether it is due for an attempt the notifications worker
 // decides on the monotonic clock (Daemon.attemptDue), for the destination
 // as a whole; Next is for display and for the first wait after a start.
 func (s *Store) Pending() ([]Delivery, error) {
 	rows, e := s.DB.Query(`SELECT seq,destination,event,target,attempts,next,error,sent_without_the_hub FROM outbox WHERE seq IN (
- SELECT CASE WHEN h.attempts=0 THEN h.seq ELSE COALESCE((SELECT MIN(r.seq) FROM outbox r WHERE r.destination=h.destination AND r.urgent=1 AND r.attempts=0
-   AND NOT EXISTS (SELECT 1 FROM outbox c WHERE c.destination=r.destination AND c.incident_key=r.incident_key AND c.closes=1 AND c.seq<r.seq)), h.seq) END
+ SELECT CASE WHEN h.attempts=0 THEN h.seq ELSE COALESCE((SELECT r.seq FROM outbox r WHERE r.destination=h.destination AND r.urgent=1 AND r.attempts<h.attempts
+   AND NOT EXISTS (SELECT 1 FROM outbox c WHERE c.destination=r.destination AND c.incident_key=r.incident_key AND c.closes=1 AND c.seq<r.seq)
+   ORDER BY r.attempts, r.seq LIMIT 1), h.seq) END
  FROM outbox h WHERE h.seq IN (SELECT MIN(seq) FROM outbox GROUP BY destination)) ORDER BY seq`)
 	if e != nil {
 		return nil, e
