@@ -462,6 +462,24 @@ func TestAnOpeningAfterItsOwnRaiseAddsNoNode(t *testing.T) {
 	h.tick(tenOFive.Add(5 * time.Minute))
 	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
 	expectKinds(t, h.take("chat"))
+	// Any alert below the severity that the set holds the incident at is
+	// older news: app-3's change of exact finding, overtaken by its raise
+	// to sos, and app-4's raise to warn, overtaken by its raise to sos.
+	raised := checksandalerts.FailureIncidentEvents.Raised
+	changed := h.alert("app-3", checksandalerts.ExactFindingChanged, "warn", versionB, 1, tenOFive.Add(6*time.Hour+time.Minute))
+	h.arrive(tenOFive.Add(6*time.Hour+3*time.Minute), h.alert("app-3", raised, "sos", versionB, 1, tenOFive.Add(6*time.Hour+2*time.Minute)))
+	expectKinds(t, h.take("chat"), raised+" sos")
+	h.arrive(tenOFive.Add(6*time.Hour+4*time.Minute), changed)
+	h.tick(tenOFive.Add(6*time.Hour + 5*time.Minute))
+	expectKinds(t, h.take("chat"))
+	toWarn := h.alert("app-4", raised, "warn", versionA, 0, tenOFive.Add(6*time.Hour+6*time.Minute))
+	h.arrive(tenOFive.Add(6*time.Hour+8*time.Minute), h.alert("app-4", raised, "sos", versionA, 0, tenOFive.Add(6*time.Hour+7*time.Minute)))
+	h.tick(tenOFive.Add(6*time.Hour + 9*time.Minute))
+	expectKinds(t, h.take("chat"), checksandalerts.FindingNodesChanged+" sos")
+	h.arrive(tenOFive.Add(6*time.Hour+10*time.Minute), toWarn)
+	h.tick(tenOFive.Add(6*time.Hour + 11*time.Minute))
+	h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+	expectKinds(t, h.take("chat"))
 }
 
 // Each destination's messages come from its own set, which holds only the

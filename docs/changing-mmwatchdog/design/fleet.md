@@ -839,9 +839,11 @@ For one destination and one key:
      decides: a node whose incident recovered and that failed again in a
      later incident of the key before the update is listed as joined,
      never as ok again.
-   - A node's opening that reaches the hub after the node's own raise,
-     which the set holds already, is older news: the node keeps its state,
-     and no update names it as joined.
+   - A node's alert below the severity at which the set holds its
+     incident, such as an opening, a raise, or a change of exact finding
+     that reaches the hub after the node's own later raise, is older news:
+     an incident's severity only rises, so the node keeps its state, and no
+     update names it.
    - **An update's severity** is the highest severity among the nodes that
      it adds or changes. A `warn` node that joins an `sos` key goes in a
      `warn` update, and never wakes the person who handles the SOS. An
