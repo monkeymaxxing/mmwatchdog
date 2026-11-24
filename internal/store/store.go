@@ -1024,8 +1024,9 @@ func destinationAnswered(tx *sql.Tx, destination string) error {
 
 // ForgetFailedAttempts resets the failed attempts in a row of each named
 // destination: a reload replaced the destination with another receiver,
-// or, for the hub, a report reached it. The next failure then waits one
-// second, not the doubled delay of failures that another receiver had.
+// or, for the hub, a report reached it. The alerts that wait for the
+// destination are due at once, and the next failure waits one second, not
+// the doubled delay of failures that another receiver had.
 func (s *Store) ForgetFailedAttempts(destinations ...string) error {
 	tx, e := s.DB.Begin()
 	if e != nil {
@@ -1034,6 +1035,9 @@ func (s *Store) ForgetFailedAttempts(destinations ...string) error {
 	defer tx.Rollback()
 	for _, name := range destinations {
 		if e = destinationAnswered(tx, name); e != nil {
+			return e
+		}
+		if _, e = tx.Exec("UPDATE outbox SET next=0 WHERE destination=? AND next!=0", name); e != nil {
 			return e
 		}
 	}

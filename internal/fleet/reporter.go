@@ -178,14 +178,28 @@ func Post(ctx context.Context, client *http.Client, url, credential string, v an
 	return resp.StatusCode, body, e
 }
 
+// HubRefusal is the hub's answer other than HTTP 200 to a request, with
+// the hub's error when it gave one as plain text.
+type HubRefusal struct {
+	Status  int
+	Message string
+}
+
+func (r *HubRefusal) Error() string {
+	if r.Message != "" {
+		return fmt.Sprintf("hub returned HTTP %d: %s", r.Status, r.Message)
+	}
+	return fmt.Sprintf("hub returned HTTP %d", r.Status)
+}
+
 func HubError(status int, body []byte) error {
 	var failure struct {
 		Error string `json:"error"`
 	}
 	if json.Unmarshal(body, &failure) == nil && checksandalerts.PlainText(failure.Error, 200) && failure.Error != "" {
-		return fmt.Errorf("hub returned HTTP %d: %s", status, failure.Error)
+		return &HubRefusal{Status: status, Message: failure.Error}
 	}
-	return fmt.Errorf("hub returned HTTP %d", status)
+	return &HubRefusal{Status: status}
 }
 
 // ReadCredential returns the stored credential, or nil when there is none or

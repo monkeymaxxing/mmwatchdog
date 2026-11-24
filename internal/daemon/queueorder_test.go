@@ -9,6 +9,7 @@ import (
 
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
+	"mmwatchdog/internal/fleet"
 	"mmwatchdog/internal/incidents"
 	"mmwatchdog/internal/store"
 	"mmwatchdog/internal/testhelpers"
@@ -208,11 +209,93 @@ func TestAReportThatReachesTheHubEndsTheWaitOfFailedAlertAttempts(t *testing.T) 
 	if e := node.report(context.Background()); e != nil {
 		t.Fatal(e)
 	}
+	// The alert that waits is due at once, also when the delivery worker
+	// reads it from the outbox again.
+	if !headIsDue(t, node, config.HubDestination) {
+		t.Fatal("the alert waits out the failures after a report reached the hub")
+	}
 	node.fallBack(node.now().Add(time.Minute))
 	if n := outboxCount(t, node, config.HubDestination); n != 1 {
 		t.Fatal("the alert went the direct way after a report reached the hub", n)
 	}
 	if delay := failOnce(t, node, config.HubDestination, errors.New("refused")); delay != time.Second {
 		t.Fatalf("the next failure waits %s, want 1s", delay)
+	}
+}
+
+// attemptOnce makes one attempt to deliver the head of the destination's
+// queue as the delivery worker does: only when it is due, through the
+// destination's sender, with the worker's bookkeeping. It returns the
+// attempt's error, or reports that nothing was due.
+func attemptOnce(t *testing.T, d *Daemon, destination string) (attempted bool, err error) {
+	t.Helper()
+	heads, e := d.store.Pending()
+	if e != nil {
+		t.Fatal(e)
+	}
+	for _, head := range heads {
+		if head.Destination != destination {
+			continue
+		}
+		d.mu.Lock()
+		sender, ok := d.sender(head)
+		due := ok && d.attemptDue(head, d.now())
+		d.mu.Unlock()
+		if !due {
+			return false, nil
+		}
+		err = send(context.Background(), sender, head.Event)
+		delay, e := d.store.Delivered(head, err)
+		if e != nil {
+			t.Fatal(e)
+		}
+		d.mu.Lock()
+		d.afterAttempt(head, delay)
+		if destination == config.HubDestination {
+			d.latestHubAttemptError = err
+		}
+		d.mu.Unlock()
+		return true, err
+	}
+	return false, nil
+}
+
+// A hub that accepts reports while its alert intake refuses alerts, with
+// HTTP 503 because the intake is full, keeps the node's failure: a report
+// proves nothing about alert intake, and the overdue alert goes the
+// direct way.
+func TestAReportDoesNotEndTheFailureOfAlertsThatTheHubsIntakeRefuses(t *testing.T) {
+	t.Parallel()
+	hub, code, _ := startHubWith(t, map[string]checksandalerts.Destination{"ops": {RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, Inputs: &checksandalerts.Webhook{URL: "http://127.0.0.1:9/"}, TimeLimitPerDeliveryAttempt: "1m"}})
+	node := joinedNode(t, code, "app-1")
+	if e := node.report(context.Background()); e != nil {
+		t.Fatal(e)
+	}
+	limits := *hub.store.Limits.Load()
+	limits.UndeliveredAlertsOfNodesBytes = 1
+	hub.store.Limits.Store(&limits)
+	node.mu.Lock()
+	node.fleetSettings.Fleet.SendAlertWithoutHubAfterWaitingFor = "1s"
+	e := node.record([]checksandalerts.Event{{AlertSeverity: "warn", ID: incidents.ID(), CheckGroup: "app", Check: "shell", Type: "failed", At: node.now(), Message: "the test's alert", Notify: true}})
+	node.mu.Unlock()
+	if e != nil {
+		t.Fatal(e)
+	}
+	attempted, e := attemptOnce(t, node, config.HubDestination)
+	var refusal *fleet.HubRefusal
+	if !attempted || !errors.As(e, &refusal) || refusal.Status != 503 {
+		t.Fatal("the hub's alert intake did not refuse the alert", attempted, e)
+	}
+	for range 2 {
+		if e = node.report(context.Background()); e != nil {
+			t.Fatal(e)
+		}
+	}
+	if node.latestHubAttemptError == nil {
+		t.Fatal("a report ended the failure of the alert that the hub's alert intake refused")
+	}
+	node.fallBack(node.now().Add(2 * time.Second))
+	if n := outboxCount(t, node, config.HubDestination); n != 0 {
+		t.Fatal("the overdue alert took neither route after reports reached the hub", n)
 	}
 }

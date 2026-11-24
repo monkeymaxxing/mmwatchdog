@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"maps"
@@ -116,13 +117,21 @@ func (d *Daemon) report(ctx context.Context) error {
 
 // hubAnswered ends what a joined node's failed alert attempts to the hub
 // left, once a report reached the hub: the hub is reachable, and this
-// node holds a credential that it accepts. The next alert gets its own
-// attempt at once, not after the wait of the failures, nor by the direct
-// way while that wait lasts: an attempt made before the node joined, or
-// while the hub was down, says nothing about the hub now. The caller holds
-// d.mu.
+// node holds a credential that it accepts. The alert that waits gets its
+// own attempt at once, not after the wait of the failures, nor by the
+// direct way while that wait lasts: an attempt made before the node
+// joined, or while the hub was down, says nothing about the hub now. That
+// attempt decides the alert's route again, so no alert is left with
+// neither route.
+//
+// A hub that answered the latest alert attempt with a refusal other than
+// of the credential, such as HTTP 503 while its alert intake is full,
+// keeps the failure: a report that the hub accepts proves nothing about
+// its alert intake, and an overdue alert still goes the direct way. The
+// caller holds d.mu.
 func (d *Daemon) hubAnswered() {
-	if d.latestHubAttemptError == nil {
+	var refusal *fleet.HubRefusal
+	if d.latestHubAttemptError == nil || errors.As(d.latestHubAttemptError, &refusal) && refusal.Status != http.StatusUnauthorized {
 		return
 	}
 	d.latestHubAttemptError = nil
