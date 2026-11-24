@@ -298,6 +298,9 @@ start on another format rather than load only part of the database.
   (`deliverFromMemory`), routed as `Store.Save` would queue it
   (`Store.DeliveriesFromMemory`), and remembers in `Daemon.fromMemory`,
   bounded by the pending alerts, which destination accepted which alert.
+  A joined node's accepted direct sends wait for the commit in
+  `store.AcceptedFromMemory`, one compact record for each destination,
+  incident, and alert source.
   The later commit queues the same alerts, which go out again: a duplicate
   is better than a dropped alert, and the record of what went out cannot be
   saved.

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1081,6 +1082,49 @@ func TestTheStoreRefusesAMachineWithoutAHostName(t *testing.T) {
 	_, e := store.OpenStore(filepath.Join(t.TempDir(), "state"), config.DefaultStorageLimits)
 	if e == nil || !strings.Contains(e.Error(), "MMWatchdog cannot run: this machine has no host name, and MMWatchdog names the node by it: set a host name with hostnamectl set-hostname NAME") {
 		t.Fatal(e)
+	}
+}
+
+// A joined node's direct sends that destinations accepted from memory are
+// kept for the next commit one per destination and incident, however
+// often they went out, and a delivery that records nothing keeps nothing:
+// what waits for the commit grows with the incidents, not the alerts. The
+// commit records every severity accepted.
+func TestAcceptedDirectSendsFromMemoryKeepOnePerIncident(t *testing.T) {
+	t.Parallel()
+	s, err := store.OpenStore(filepath.Join(t.TempDir(), "state"), config.DefaultStorageLimits)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities}
+	destinations := map[string]checksandalerts.Destination{"pager": pager, "chat": {RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities, Inputs: &checksandalerts.Webhook{URL: "https://chat.example.com"}}}
+	fallback := store.QueuedBy{Role: store.FallbackSender, Node: "app-1", DestinationsWhoseServiceKeepsIncidents: []string{"pager"}}
+	at := time.Now()
+	var accepted store.AcceptedFromMemory
+	for i := range 1000 {
+		severity, kind := "warn", "failed"
+		if i%2 == 1 {
+			severity, kind = "sos", checksandalerts.FailureIncidentEvents.Raised
+		}
+		event := checksandalerts.Event{ID: fmt.Sprint(i), Incident: "i1", CheckGroup: "web", Check: "http", Type: kind, AlertSeverity: severity, At: at, Notify: true}
+		for _, role := range []store.QueuedBy{fallback, {Role: store.StandaloneSender, Node: "app-1"}} {
+			for _, d := range s.DeliveriesFromMemory(event, destinations, role) {
+				if err = accepted.Add(d); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+	}
+	if len(accepted) != 1 {
+		t.Fatalf("%d sends kept for one incident", len(accepted))
+	}
+	if err = s.Save(incidents.FreshSnapshot(), nil, store.AlertRoute{Joined: true, AcceptedFromMemory: accepted}); err != nil {
+		t.Fatal(err)
+	}
+	records, err := s.SentWithoutTheHub()
+	if err != nil || len(records) != 1 || records[0].Destination != "pager" || records[0].Incident != "i1" || !slices.Equal(records[0].AlertSeveritiesSentForIncident, []string{"warn", "sos"}) {
+		t.Fatal("the commit records", records, err)
 	}
 }
 

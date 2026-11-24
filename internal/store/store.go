@@ -439,12 +439,11 @@ type AlertRoute struct {
 	Destinations                           map[string]checksandalerts.Destination
 	Joined, Hub                            bool
 	DestinationsWhoseServiceKeepsIncidents []string
-	// AcceptedFromMemory are the deliveries that the daemon sent from
-	// memory while state.db could not be written, and that their
-	// destination accepted (DeliveriesFromMemory). The commit records what
-	// a joined node's direct send among them records on acceptance, so the
-	// hub settles it, as for a delivery from the outbox.
-	AcceptedFromMemory []Delivery
+	// AcceptedFromMemory are a joined node's direct sends that the daemon
+	// sent from memory while state.db could not be written, and that their
+	// destination accepted. The commit records them, so the hub settles
+	// them, as for a delivery from the outbox.
+	AcceptedFromMemory AcceptedFromMemory
 }
 
 // Known lists every destination whose queued deliveries stay valid.
@@ -568,10 +567,8 @@ func (s *Store) Save(snap incidents.Snapshot, events []checksandalerts.Event, ro
 			}
 		}
 	}
-	for _, d := range route.AcceptedFromMemory {
-		if e = recordAcceptance(tx, d); e != nil {
-			return e
-		}
+	if e = route.AcceptedFromMemory.record(tx, time.Now()); e != nil {
+		return e
 	}
 	// Only added events and deliveries can exceed the byte limits. Age
 	// expiry runs separately through Prune.

@@ -92,7 +92,9 @@ func (d *Daemon) deliverFromMemory(ctx context.Context, now time.Time, wg *sync.
 				var refused *checksandalerts.MMHotlineRefusal
 				r.done = e == nil || errors.As(e, &refused)
 				if e == nil {
-					d.acceptedFromMemory = append(d.acceptedFromMemory, delivery)
+					if kept := d.acceptedFromMemory.Add(delivery); kept != nil {
+						d.storage.Report("notification bookkeeping "+delivery.Destination, kept)
+					}
 				}
 				delay := time.Duration(0)
 				if !r.done {

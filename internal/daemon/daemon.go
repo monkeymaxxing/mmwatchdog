@@ -134,11 +134,10 @@ type Daemon struct {
 	// in pending goes that the notifications worker sends straight from
 	// memory (deliverFromMemory).
 	fromMemory map[memoryDeliveryKey]*memoryDelivery
-	// acceptedFromMemory holds the deliveries from memory that their
-	// destination accepted, until a commit succeeds: it records a joined
-	// node's direct send among them for the node's reports
-	// (store.AlertRoute.AcceptedFromMemory).
-	acceptedFromMemory []store.Delivery
+	// acceptedFromMemory holds a joined node's direct sends from memory
+	// that their destination accepted, until a commit succeeds and records
+	// them for the node's reports (store.AlertRoute.AcceptedFromMemory).
+	acceptedFromMemory store.AcceptedFromMemory
 	// deliveriesFinished counts, by destination, the deliveries that have
 	// finished. The notifications worker reads the queue without d.mu, so a
 	// delivery that finishes after that read can be of a row in what it read.

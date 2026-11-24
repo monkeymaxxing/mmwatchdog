@@ -1190,7 +1190,10 @@ destination.
   destination accepted is kept in memory until that commit, which records
   it for the node's reports as an accepted delivery from the outbox is
   recorded, so the hub closes what it opened, also when the hub is
-  reachable again before `state.db` can be written.
+  reachable again before `state.db` can be written. Memory keeps only
+  what that record needs, once for each destination, incident, and alert
+  source, so it grows with the incidents sent directly, not with the
+  alerts.
 
 On a joined node the hub is one more route with the outbox rules for
 retries, order, independence, bounded queues, reminders, identity, and

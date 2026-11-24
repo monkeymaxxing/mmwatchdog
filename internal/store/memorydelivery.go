@@ -1,6 +1,11 @@
 package store
 
 import (
+	"database/sql"
+	"encoding/json"
+	"slices"
+	"time"
+
 	"mmwatchdog/internal/checksandalerts"
 	"mmwatchdog/internal/config"
 )
@@ -111,4 +116,69 @@ func (s *Store) receivesWithoutWriting(name string, dest checksandalerts.Destina
 		}
 	}
 	return config.GoesTo(name, dest, message, destinations)
+}
+
+// AcceptedFromMemory holds a joined node's direct sends that their
+// destination accepted from memory (DeliveriesFromMemory), until a commit
+// records them for the node's reports, as the outbox's acceptance records
+// a send (recordAcceptance). It keeps only what the record needs, one
+// entry for each destination, incident, and alert source, however often
+// the incident was sent, and nothing of a delivery that records nothing.
+// So while state.db cannot be written, it grows with the incidents sent
+// directly, not with the alerts.
+type AcceptedFromMemory map[acceptedFromMemoryKey]*acceptedDirectSend
+
+type acceptedFromMemoryKey struct{ destination, incident, alertSource string }
+
+// acceptedDirectSend is one incident's record: the incident as its first
+// accepted send names it, with the newest exact finding, every severity
+// accepted, and whether a reminder was accepted.
+type acceptedDirectSend struct {
+	incident   checksandalerts.Event
+	severities []string
+	reminder   bool
+}
+
+// Add keeps what delivery d, which its destination accepted, records.
+func (a *AcceptedFromMemory) Add(d Delivery) error {
+	if d.sentWithoutTheHub == "" {
+		return nil
+	}
+	var sent sentWithoutTheHub
+	if e := json.Unmarshal([]byte(d.sentWithoutTheHub), &sent); e != nil {
+		return e
+	}
+	if *a == nil {
+		*a = AcceptedFromMemory{}
+	}
+	for _, m := range sent.Members {
+		key := acceptedFromMemoryKey{d.Destination, m.Incident, sent.AlertSource}
+		r := (*a)[key]
+		if r == nil {
+			r = &acceptedDirectSend{incident: m}
+			(*a)[key] = r
+		}
+		if m.ExactFindingSequence > r.incident.ExactFindingSequence {
+			r.incident.ExactFinding, r.incident.ExactFindingSequence = m.ExactFinding, m.ExactFindingSequence
+		}
+		if !slices.Contains(r.severities, m.AlertSeverity) {
+			r.severities = append(r.severities, m.AlertSeverity)
+		}
+		r.reminder = r.reminder || sent.Reminder
+	}
+	return nil
+}
+
+// record records every kept send in the commit tx.
+func (a AcceptedFromMemory) record(tx *sql.Tx, now time.Time) error {
+	for key, r := range a {
+		for _, severity := range r.severities {
+			m := r.incident
+			m.AlertSeverity = severity
+			if e := recordSentWithoutTheHub(tx, key.destination, []checksandalerts.Event{m}, key.alertSource, r.reminder, now); e != nil {
+				return e
+			}
+		}
+	}
+	return nil
 }
