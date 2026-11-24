@@ -50,6 +50,11 @@ func migrateStateDatabase(path string) error {
 		`ALTER TABLE fleet_incident_keys ADD COLUMN next_update_due INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE fleet_incident_keys ADD COLUMN next_reminder_due INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE fleet_incident_keys ADD COLUMN mmhotline_alert_sources_sent TEXT NOT NULL DEFAULT ''`,
+		// Before this format every MMHotline alert went under the
+		// destination's own alert source, so a key that got alerts since its
+		// last resolution has its incident open there: its resolution must go
+		// there too, also after a node opens the key on the node source.
+		`UPDATE fleet_incident_keys SET mmhotline_alert_sources_sent=alert_source WHERE alert_source!='' AND alert_severities_sent!=''`,
 		// What the destinations got for a key that is open stays announced,
 		// at the highest severity sent since the key's last closing alert. No
 		// exact finding was announced before this format.

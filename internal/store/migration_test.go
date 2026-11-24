@@ -123,6 +123,26 @@ func TestFormat20MigratesInPlaceOnEveryRole(t *testing.T) {
 			t.Fatal("the queued alert is lost", ds, e)
 		}
 	})
+	t.Run("hub with an open MMHotline incident", func(t *testing.T) {
+		t.Parallel()
+		// 0.1.x opened the incident under the destination's own alert source.
+		dir := format20Database(t, `
+ INSERT INTO fleet_incident_set VALUES('hotline','source-1','app-1','incident-app-1','myapp/dns failed','myapp','dns','','app-1',1,'sos',0,1);
+ INSERT INTO fleet_incident_keys VALUES('hotline','source-1','myapp/dns failed','sos',0)`)
+		h := &groupingHub{t: t, s: openMigrated(t, dir), destinations: map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()}}
+		h.s.FleetIdentity = groupingFleet
+		// After the upgrade a node sends the key without the hub, under the
+		// node alert source; then every node recovers.
+		h.report(tenOFive, map[string]store.ReportedIncidents{"app-1": reportOf("app-1", "sos", "-", time.Unix(0, 1), tenOFive), "app-2": reportOf("app-2", "sos", nodeAlertSource, tenOFive, tenOFive)})
+		expectKinds(t, h.take("hotline"))
+		later := tenOFive.Add(time.Hour)
+		h.report(later, map[string]store.ReportedIncidents{"app-1": {Sent: later}, "app-2": {Sent: later}})
+		got := h.take("hotline")
+		expectKinds(t, got, "recovered resolved-sos", "recovered resolved-sos")
+		if sourceOf(got[0]) != "source-1" || sourceOf(got[1]) != nodeAlertSource {
+			t.Fatal("the resolutions go under", sourceOf(got[0]), sourceOf(got[1]))
+		}
+	})
 	t.Run("joined node", func(t *testing.T) {
 		t.Parallel()
 		dir := format20Database(t, `
