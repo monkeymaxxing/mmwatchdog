@@ -721,6 +721,26 @@ func CancelDeliveries(tx *sql.Tx, destinations map[string]checksandalerts.Destin
 		n, _ := r.RowsAffected()
 		cancelled += n
 	}
+	// An mmhotline destination's alert queued under its alert source for
+	// nodes sending without the hub, which the destination no longer has or
+	// has replaced: sent under another source, it could close another
+	// incident of its key in MMHotline (MMHotlineDestination.AlertSourceNamed).
+	for _, name := range checksandalerts.Names(destinations) {
+		p := destinations[name].MMHotline()
+		if p == nil {
+			continue
+		}
+		where, args := "destination=? AND COALESCE(json_extract(event,'$.mmhotline_alert_source'),'') NOT IN ('',?,?)", []any{name, p.AlertSourceID, p.NodeAlertSourceID()}
+		if e = forgetUndeliveredAnnouncements(tx, where, args...); e != nil {
+			return 0, e
+		}
+		r, e := tx.Exec("DELETE FROM outbox WHERE "+where, args...)
+		if e != nil {
+			return 0, e
+		}
+		n, _ := r.RowsAffected()
+		cancelled += n
+	}
 	return cancelled, nil
 }
 

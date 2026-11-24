@@ -59,7 +59,7 @@ func TestTheNodeAlertSourceTravelsInTheFleetSettings(t *testing.T) {
 	if e = copied.Validate(nil); e != nil {
 		t.Fatal(e)
 	}
-	if source, input := copied.Destinations["team_hotline"].MMHotline().AlertSourceNamed("mmwatchdog_nodes"); source.AlertSourceID != "mmwatchdog_nodes" || source.URL != "http://10.20.0.1:8484" || copied.FileContentsByDestination["team_hotline"][input] != nodeSecret {
+	if source, input, known := copied.Destinations["team_hotline"].MMHotline().AlertSourceNamed("mmwatchdog_nodes"); !known || source.AlertSourceID != "mmwatchdog_nodes" || source.URL != "http://10.20.0.1:8484" || copied.FileContentsByDestination["team_hotline"][input] != nodeSecret {
 		t.Fatalf("%+v %s", source, input)
 	}
 	delete(copied.FileContentsByDestination["team_hotline"], "alert_source_for_nodes_sending_without_the_hub.mmhotline_signing_secret_file")

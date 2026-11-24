@@ -1145,7 +1145,10 @@ destination.
   so a mount that is temporarily unavailable cannot discard notifications.
 
   Address means the webhook URL, SMTP server and recipients, MMHotline alert
-  source ID, or a destination module's recipient inputs.
+  source ID, or a destination module's recipient inputs. An alert queued
+  under the MMHotline alert source for nodes sending without the hub has
+  that source's ID as its address too: removing or replacing the source
+  cancels it alone.
   Message presentation such as `mention`, delivery limits, reminders,
   severity filters, and module run settings do not change the receiver.
 

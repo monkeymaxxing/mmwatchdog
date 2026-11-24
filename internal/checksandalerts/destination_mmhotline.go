@@ -48,17 +48,20 @@ const (
 // the destination's second alert source, with the destination's address
 // unless the block states its own, or else the destination's own alert
 // source; and the name of the credential input that holds its signing
-// secret. Any other id, such as that of a second source removed since an
-// alert was queued, is the destination's own alert source.
-func (p *MMHotlineDestination) AlertSourceNamed(id string) (MMHotlineDestination, string) {
+// secret. "" names the destination's own alert source. Any other id, such
+// as that of a second source removed since an alert was queued, names no
+// source of the destination (false): an alert of a key's incident under
+// the wrong source could close another incident of the key in MMHotline.
+// Store.Commit cancels such queued alerts (CancelDeliveries).
+func (p *MMHotlineDestination) AlertSourceNamed(id string) (MMHotlineDestination, string, bool) {
 	if b := p.AlertSourceForNodesSendingWithoutTheHub; b != nil && id == b.AlertSourceID {
 		source := MMHotlineDestination{URL: p.URL, AlertSourceID: b.AlertSourceID, SigningSecretFile: b.SigningSecretFile}
 		if b.URL != "" {
 			source.URL = b.URL
 		}
-		return source, mmhotlineNodeSigningSecretFileInput
+		return source, mmhotlineNodeSigningSecretFileInput, true
 	}
-	return MMHotlineDestination{URL: p.URL, AlertSourceID: p.AlertSourceID, SigningSecretFile: p.SigningSecretFile}, "mmhotline_signing_secret_file"
+	return MMHotlineDestination{URL: p.URL, AlertSourceID: p.AlertSourceID, SigningSecretFile: p.SigningSecretFile}, "mmhotline_signing_secret_file", id == "" || id == p.AlertSourceID
 }
 
 // NodeAlertSourceID is the ID of the second alert source, or "" without
@@ -178,7 +181,10 @@ func (s mmhotlineSender) Send(ctx context.Context, event Event) error {
 		return fmt.Errorf("queued without an MMHotline alert")
 	}
 	destination := s.delivery.Destination
-	source, input := destination.MMHotline().AlertSourceNamed(event.MMHotlineAlertSource)
+	source, input, known := destination.MMHotline().AlertSourceNamed(event.MMHotlineAlertSource)
+	if !known {
+		return fmt.Errorf("queued under the MMHotline alert source %q, which the destination no longer has", event.MMHotlineAlertSource)
+	}
 	written, e := s.delivery.Credential(input)
 	if e != nil {
 		return e

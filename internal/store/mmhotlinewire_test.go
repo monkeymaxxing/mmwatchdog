@@ -253,6 +253,52 @@ func TestAJoinedNodeSendsWithoutTheHubUnderTheNodeAlertSource(t *testing.T) {
 	}
 }
 
+// An alert queued under the node alert source, when the destination no
+// longer has that source, is cancelled with the destination's other
+// changes, never sent under the destination's own source, where its
+// resolution could close another incident. Alerts under the destination's
+// own source stay.
+func TestAnAlertQueuedUnderARemovedNodeAlertSourceIsCancelled(t *testing.T) {
+	t.Parallel()
+	n := newJoinedNode(t)
+	fallBack(t, n.s, failureOf(n, "app-2", "app-2 cannot resolve db.internal", tenOFive), map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()})
+	fallBack(t, n.s, failureOf(n, "app-3", "app-3 cannot resolve db.internal", tenOFive), map[string]checksandalerts.Destination{"hotline": hotline()})
+	for _, c := range []struct {
+		name        string
+		destination checksandalerts.Destination
+		cancelled   int64
+	}{{"kept", hotlineWithNodeAlertSource(), 0}, {"removed", hotline(), 1}} {
+		other := hotlineWithNodeAlertSource()
+		p := *other.MMHotline()
+		p.AlertSourceForNodesSendingWithoutTheHub = &checksandalerts.MMHotlineAlertSource{AlertSourceID: "another_source", SigningSecretFile: "/etc/mmwatchdog/another"}
+		other.Inputs = &p
+		if c.name == "removed" {
+			// A replaced node source cancels as a removed one does.
+			c.destination = other
+		}
+		tx, e := n.s.DB.Begin()
+		if e != nil {
+			t.Fatal(e)
+		}
+		cancelled, e := store.CancelDeliveries(tx, map[string]checksandalerts.Destination{"hotline": c.destination})
+		if e != nil || cancelled != c.cancelled {
+			t.Fatal(c.name, cancelled, e)
+		}
+		if e = tx.Commit(); e != nil {
+			t.Fatal(e)
+		}
+	}
+	got := n.take("hotline")
+	if len(got) != 1 || got[0].MMHotlineAlertSource != "" || got[0].Node != "app-3" {
+		t.Fatalf("%+v", got)
+	}
+	// Nor does a delivery under a source the destination lacks fall back to
+	// the destination's own.
+	if _, _, ok := hotline().MMHotline().AlertSourceNamed(nodeAlertSource); ok {
+		t.Fatal("an unknown alert source is sent under the destination's own")
+	}
+}
+
 // reportOf is node's report at sent that shows its open incident of
 // myapp/dns at severity, and, with source, says that the node sent it
 // without the hub under that alert source.
