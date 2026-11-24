@@ -211,18 +211,25 @@ func (r *NodeStatusReport) Validate() error {
 		return fmt.Errorf("report %s", problem)
 	}
 	for _, c := range r.Checks {
-		tracks := []*incidents.Track{c.FailureIncident, c.CannotCheckIncident}
+		// Each track with the kind and the finding of its incident: only a
+		// finding's failure has an exact finding.
+		type track struct {
+			t             *incidents.Track
+			kind, finding string
+		}
+		tracks := []track{{c.FailureIncident, "failed", ""}, {c.CannotCheckIncident, "cannot_check", ""}}
 		for unit, u := range c.Findings {
 			if !checksandalerts.ValidFindingID(unit) || len(u.Findings) > 0 {
 				return fmt.Errorf("report carries a finding with an invalid ID")
 			}
-			tracks = append(tracks, u.FailureIncident, u.CannotCheckIncident)
+			tracks = append(tracks, track{u.FailureIncident, "failed", unit}, track{u.CannotCheckIncident, "cannot_check", unit})
 		}
-		for _, t := range tracks {
+		for _, x := range tracks {
+			t := x.t
 			if t != nil && (config.SeverityRank(t.AlertSeverity) < 0 || !config.ValidSeverityList(t.AnnouncedAlertSeverities)) {
 				return fmt.Errorf("report carries an incident with an invalid alert severity")
 			}
-			if t != nil && !ValidExactFinding(checksandalerts.Event{Finding: "f", ExactFinding: t.CurrentExactFinding, ExactFindingSequence: t.ExactFindingSequence}) {
+			if t != nil && !ValidExactFinding(checksandalerts.Event{Type: x.kind, Finding: x.finding, ExactFinding: t.CurrentExactFinding, ExactFindingSequence: t.ExactFindingSequence}) {
 				return fmt.Errorf("report carries an incident with an invalid exact finding")
 			}
 		}

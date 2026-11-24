@@ -791,6 +791,24 @@ func TestReportRequestsAreAuthenticatedAndStrict(t *testing.T) {
 	if status := post(cred, valid+`}`); status != http.StatusOK {
 		t.Fatal(status)
 	}
+	// Only a finding's failure has an exact finding, on an ordinary check
+	// track too.
+	withCheck := func(check string) string {
+		return `,"checks":{"app/shell":` + check + `}}`
+	}
+	exact := `{"incident_id":"` + incidents.ID() + `","alert_severity":"warn","current_exact_finding":"x","exact_finding_sequence":1,"reminder_eligible":true}`
+	for _, bad := range []string{
+		withCheck(`{"state":"unknown","message":"m","cannot_check_incident":` + exact + `}`),
+		withCheck(`{"state":"failed","message":"m","failure_incident":` + exact + `}`),
+		withCheck(`{"state":"failed","message":"m","findings":{"unit":{"state":"unknown","message":"m","cannot_check_incident":` + exact + `}}}`),
+	} {
+		if status := post(cred, valid+bad); status != http.StatusBadRequest {
+			t.Fatal("an exact finding outside a finding's failure accepted", bad, status)
+		}
+	}
+	if status := post(cred, strings.Replace(valid, `"report_sequence_number":99`, `"report_sequence_number":100`, 1)+withCheck(`{"state":"failed","message":"m","findings":{"unit":{"state":"failed","message":"m","failure_incident":`+exact+`}}}`)); status != http.StatusOK {
+		t.Fatal("a finding's exact finding refused", status)
+	}
 	// Incidents a node sent without the hub are checked like the rest.
 	entryWithSeverity := func(incident, group, check, kind, severity string) string {
 		return `,"incidents_sent_without_the_hub":[{"destination":"on_call_pager","incident_id":"` + incident + `","check_group":"` + group + `","check":"` + check + `","type":"` + kind + `","alert_severities_sent_for_incident":[` + severity + `]}]}`
@@ -805,7 +823,7 @@ func TestReportRequestsAreAuthenticatedAndStrict(t *testing.T) {
 			t.Fatal("invalid incident sent without the hub accepted", bad, status)
 		}
 	}
-	if status := post(cred, strings.Replace(valid, `"report_sequence_number":99`, `"report_sequence_number":100`, 1)+entry(incidents.ID(), checksandalerts.NodeReportsCheckGroup, checksandalerts.HubCheck, "failed")); status != http.StatusOK {
+	if status := post(cred, strings.Replace(valid, `"report_sequence_number":99`, `"report_sequence_number":101`, 1)+entry(incidents.ID(), checksandalerts.NodeReportsCheckGroup, checksandalerts.HubCheck, "failed")); status != http.StatusOK {
 		t.Fatal(status)
 	}
 	if status := post(cred, `{"daemon_start_id":"`+strings.Repeat("x", fleet.ReportLimit)+`"}`); status != http.StatusBadRequest {
