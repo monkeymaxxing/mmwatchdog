@@ -1815,8 +1815,9 @@ set_aside_findings:
     each destination and key gets **one** opening alert, with the note
     `an earlier exact finding was set aside: <reason>`. The alert names
     each of their exact findings with its nodes, and announces only the
-    exact findings that it names; what does not fit in the message's
-    bound goes in the next update. The hub keeps the reason on the node
+    exact findings that it names; an exact finding that does not fit
+    whole in the message's bound, counted with the text that the alert
+    sends, goes in the next update. The hub keeps the reason on the node
     incident while it is set aside, so the reason is known after the
     entry is gone.
 - **Joined nodes never set anything aside.** While the hub is unreachable,

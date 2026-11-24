@@ -514,6 +514,59 @@ func TestTheOpeningAfterASetAsideNamesOnlyWhatFits(t *testing.T) {
 	}
 }
 
+// The opening's bound counts its own text as it goes out, with only the
+// exact findings that it names. Here leaving the last exact finding out
+// changes which 20 nodes the text names, from that finding's names to
+// long ones of the others. The message stays within its bound, so
+// MMHotline clips no exact finding that the opening names, and the rest
+// goes in the next update.
+func TestTheOpeningAfterASetAsideCountsTheTextItSends(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline()})
+	versions := []string{versionA, versionB, versionC}
+	entries := []config.SetAsideFinding{}
+	for i, v := range versions {
+		entries = append(entries, entryFor(v, fmt.Sprintf("reason %d", i)))
+	}
+	h.setAside(tenOFive, entries...)
+	at := tenOFive.Add(time.Minute)
+	reports := map[string]store.ReportedIncidents{}
+	add := func(node, exactFinding string) {
+		reports[node] = shows(node, "warn", exactFinding, 0, tenOFive, at)
+	}
+	// The nodes in the order of their names: a and b each lead an exact
+	// finding of 21 nodes, then the 19 of the last exact finding, then the
+	// other 40 with long names.
+	add("a", versionA)
+	add("b", versionB)
+	for n := range 19 {
+		add(fmt.Sprintf("c-%02d-%s", n, strings.Repeat("c", 60)), versionC)
+	}
+	for n := range 20 {
+		add(fmt.Sprintf("z-a-%02d-%s", n, strings.Repeat("x", 240)), versionA)
+		add(fmt.Sprintf("z-b-%02d-%s", n, strings.Repeat("x", 240)), versionB)
+	}
+	h.report(at, reports)
+	expectKinds(t, h.take("hotline"))
+	h.setAside(at.Add(time.Minute))
+	opening := h.take("hotline")
+	expectKinds(t, opening, "failed warn")
+	sent := []string{wire(t, opening[0])["message"]}
+	if len(sent[0]) > store.UpdateMessageLimit {
+		t.Fatalf("the opening is %d bytes, more than %d", len(sent[0]), store.UpdateMessageLimit)
+	}
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	for _, a := range h.take("hotline") {
+		sent = append(sent, wire(t, a)["message"])
+	}
+	all := strings.Join(sent, "\n")
+	for _, v := range versions {
+		if !strings.Contains(all, v) {
+			t.Fatalf("MMHotline never got %q", v)
+		}
+	}
+}
+
 // The one opening for several nodes that set-aside entries no longer cover
 // names their exact finding in its body, also when they share one, so a
 // chat shows which exact finding it announces.

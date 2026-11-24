@@ -341,28 +341,47 @@ func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, d
 		return alert
 	}
 	// The exact findings that the alert names, each with its nodes, inside
-	// the bound of the whole message: the alert's own text, as long as it is
-	// with every exact finding named, the first line that MMHotline gets in
-	// front of it, and the line that says who sent it come first.
-	blocks, budget := []string{}, UpdateMessageLimit
-	if len(exactFindings) > 0 {
-		budget -= len(opening(exactFindings).Body) + checksandalerts.ExactFindingLimit + len(from.SentBy()) + 2
-	}
-	for i, exactFinding := range exactFindings {
+	// the bound of the whole message: the alert's text as it goes out, the
+	// first line that MMHotline gets in front of it, and the line that says
+	// who sent it. The estimate counts the alert's own text with every exact
+	// finding; with fewer, that text can name other nodes, so the alert as
+	// built is checked too, and each exact finding that does not fit whole
+	// goes in the next update. The first one is always named.
+	blocks := []string{}
+	for _, exactFinding := range exactFindings {
 		nodes := []string{}
 		for _, c := range byExactFinding[exactFinding] {
 			nodes = append(nodes, c.node)
 		}
-		block := exactFinding + "\n  on " + countNodes(len(nodes)) + ": " + namedNodes(nodes)
-		if budget -= len(block) + 1; budget < 0 && i > 0 {
-			for _, rest := range exactFindings[i:] {
-				growth = append(growth, byExactFinding[rest]...)
+		blocks = append(blocks, exactFinding+"\n  on "+countNodes(len(nodes))+": "+namedNodes(nodes))
+	}
+	around := checksandalerts.ExactFindingLimit + len(from.SentBy()) + 2
+	named := len(exactFindings)
+	if named > 0 {
+		budget := UpdateMessageLimit - len(opening(exactFindings).Body) - around
+		for i, block := range blocks {
+			if budget -= len(block) + 1; budget < 0 && i > 0 {
+				named = i
+				break
 			}
-			exactFindings = exactFindings[:i]
+		}
+	}
+	var alert checksandalerts.Event
+	for ; named > 0; named-- {
+		alert = opening(exactFindings[:named])
+		// An alert of several nodes names each exact finding with its nodes,
+		// also a single one: its own text names none.
+		if alert.NodeCount > 1 || named > 1 {
+			alert.Body = strings.Join(append([]string{alert.Body}, blocks[:named]...), "\n")
+		}
+		if named == 1 || len(alert.Body)+around <= UpdateMessageLimit {
 			break
 		}
-		blocks = append(blocks, block)
 	}
+	for _, rest := range exactFindings[named:] {
+		growth = append(growth, byExactFinding[rest]...)
+	}
+	exactFindings = exactFindings[:named]
 	for _, c := range growth {
 		if e = set.markPending(tx, key, c.reporter, c.incident, pendingJoined, c.severity, from, now); e != nil {
 			return e
@@ -386,12 +405,6 @@ func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, d
 				return e
 			}
 		}
-	}
-	alert := opening(exactFindings)
-	// An alert of several nodes names each exact finding with its nodes,
-	// also a single one: its own text names none.
-	if alert.NodeCount > 1 || len(exactFindings) > 1 {
-		alert.Body = strings.Join(append([]string{alert.Body}, blocks...), "\n")
 	}
 	if e = set.recordSent(tx, key, alert.AlertSeverity); e != nil {
 		return e
