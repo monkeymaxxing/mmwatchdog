@@ -799,7 +799,8 @@ func TestReportRequestsAreAuthenticatedAndStrict(t *testing.T) {
 		return entryWithSeverity(incident, group, check, kind, `"warn","sos"`)
 	}
 	invalidDestination := strings.Replace(entry(incidents.ID(), "app", "shell", "failed"), `"destination":"on_call_pager",`, `"destination":"a/b",`, 1)
-	for _, bad := range []string{invalidDestination, entry("x", "app", "shell", "failed"), entry(incidents.ID(), "a/b", "shell", "failed"), entry(incidents.ID(), "app", "", "failed"), entry(incidents.ID(), "app", "shell", "recovered"), entryWithSeverity(incidents.ID(), "app", "shell", "failed", ""), entryWithSeverity(incidents.ID(), "app", "shell", "failed", `"sos","sos"`)} {
+	cannotCheckWithExactFinding := strings.Replace(entry(incidents.ID(), "app", "shell", "cannot_check"), `"type":`, `"finding":"unit","exact_finding":"x","type":`, 1)
+	for _, bad := range []string{invalidDestination, cannotCheckWithExactFinding, entry("x", "app", "shell", "failed"), entry(incidents.ID(), "a/b", "shell", "failed"), entry(incidents.ID(), "app", "", "failed"), entry(incidents.ID(), "app", "shell", "recovered"), entryWithSeverity(incidents.ID(), "app", "shell", "failed", ""), entryWithSeverity(incidents.ID(), "app", "shell", "failed", `"sos","sos"`)} {
 		if status := post(cred, valid+bad); status != http.StatusBadRequest {
 			t.Fatal("invalid incident sent without the hub accepted", bad, status)
 		}

@@ -232,7 +232,7 @@ func (r *NodeStatusReport) Validate() error {
 	}
 	for _, d := range r.IncidentsSentWithoutTheHub {
 		if !checksandalerts.NamePattern.MatchString(d.Destination) || !IDPattern.MatchString(d.Incident) || !checksandalerts.NamePattern.MatchString(d.CheckGroup) || !checksandalerts.NamePattern.MatchString(d.Check) || (d.Finding != "" && !checksandalerts.ValidFindingID(d.Finding)) || (d.Type != "failed" && d.Type != "cannot_check") || len(d.AlertSeveritiesSentForIncident) == 0 || !config.ValidSeverityList(d.AlertSeveritiesSentForIncident) ||
-			!ValidExactFinding(checksandalerts.Event{Finding: d.Finding, ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence}) ||
+			!ValidExactFinding(checksandalerts.Event{Type: d.Type, Finding: d.Finding, ExactFinding: d.ExactFinding, ExactFindingSequence: d.ExactFindingSequence}) ||
 			(d.AlertSource != "" && !checksandalerts.MMHotlineIDPattern.MatchString(d.AlertSource)) {
 			return fmt.Errorf("report carries an invalid incident sent without the hub")
 		}

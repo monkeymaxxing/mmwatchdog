@@ -244,12 +244,15 @@ var Notifying = map[string]bool{"failed": true, "recovered": true, "cannot_check
 
 // ValidExactFinding reports an exact finding that a node may send: plain
 // text on one line of at most 255 bytes, with its sequence number in
-// range. A node is less trusted than the hub.
+// range, of a finding's failure incident only, never of a cannot-check
+// incident, which keeps fleet alert grouping's one-minute window. A
+// changed exact finding names its incident. A node is less trusted than
+// the hub.
 func ValidExactFinding(e checksandalerts.Event) bool {
 	if e.ExactFindingSequence < 0 || e.ExactFindingSequence > MaxSequenceNumber || len(e.ExactFinding) > 255 || !utf8.ValidString(e.ExactFinding) {
 		return false
 	}
-	if e.ExactFinding != "" && e.Finding == "" || e.Type == checksandalerts.ExactFindingChanged && !checksandalerts.HasExactFinding(e) {
+	if e.ExactFinding != "" && (e.Finding == "" || checksandalerts.IncidentKind(e.Type) == "cannot_check") || e.Type == checksandalerts.ExactFindingChanged && (!checksandalerts.HasExactFinding(e) || e.Incident == "") {
 		return false
 	}
 	return !strings.ContainsFunc(e.ExactFinding, unicode.IsControl)
