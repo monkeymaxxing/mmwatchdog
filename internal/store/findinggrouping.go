@@ -83,7 +83,7 @@ func opensOrChanges(eventType string) bool {
 func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members []checksandalerts.Event, from QueuedBy) ([]checksandalerts.Event, bool, []coverageChange, error) {
 	hub := from.hub()
 	if message.Type == "reminder" {
-		return remindableMembers(tx, members)
+		return remindableMembers(tx, members, from.SetAsideFindings)
 	}
 	opening, closing := opensOrChanges(message.Type), checksandalerts.Closes(message.Type)
 	if !opening && !closing {
@@ -165,15 +165,24 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 // those whose node incident no set-aside entry covers. A covered incident's
 // alerts never went out, or went out before the entry closed them, so no
 // reminder of it goes out either, whoever made it: a joined node, a 0.1.x
-// node, or the hub's own scheduler.
-func remindableMembers(tx *sql.Tx, members []checksandalerts.Event) ([]checksandalerts.Event, bool, []coverageChange, error) {
+// node, or the hub's own scheduler. A node incident that the hub holds
+// carries its coverage (fleet_node_incidents.set_aside_entry); for one
+// that the hub has not learned of yet, such as one that a node opened
+// directly during a hub outage, the entries of setAside decide from the
+// reminder itself. A reminder at sos always goes out: sos is never set
+// aside, also not while the hub still holds the incident as covered at a
+// lower severity.
+func remindableMembers(tx *sql.Tx, members []checksandalerts.Event, setAside config.SetAsideFindings) ([]checksandalerts.Event, bool, []coverageChange, error) {
 	kept := []checksandalerts.Event{}
 	for _, m := range members {
-		var setAside bool
-		if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM fleet_node_incidents WHERE reporter=? AND incident_id=? AND set_aside_entry!='')", m.Node, m.Incident).Scan(&setAside); e != nil {
+		var covered bool
+		e := tx.QueryRow("SELECT set_aside_entry!='' FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", m.Node, m.Incident).Scan(&covered)
+		if e == sql.ErrNoRows {
+			_, covered = setAside.Covering(m.CheckGroup+"/"+m.Check, m.Finding, m.ExactFinding, m.AlertSeverity)
+		} else if e != nil {
 			return nil, false, nil, e
 		}
-		if !setAside {
+		if !covered || m.AlertSeverity == "sos" {
 			kept = append(kept, m)
 		}
 	}

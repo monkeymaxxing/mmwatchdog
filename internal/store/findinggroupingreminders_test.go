@@ -145,6 +145,46 @@ func TestAJoinedNodesReminderOfASetAsideFindingIsDropped(t *testing.T) {
 	}
 }
 
+// A joined node's reminder of an incident that the hub has not learned of
+// yet, such as one the node opened directly during a hub outage, is
+// dropped when a set-aside entry covers the reminder itself; a reminder of
+// another exact finding goes on.
+func TestAReminderOfAnIncidentTheHubDoesNotKnowFollowsTheSetAsideFile(t *testing.T) {
+	t.Parallel()
+	chat := chatTaking("https://chat.example.com", "warn")
+	chat.RemindEvery = "1h"
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chat})
+	h.setAside(tenOFive, entryFor(versionA, reasonNoPAM))
+	at := tenOFive.Add(time.Hour)
+	covered, other := h.alert("app-2", "reminder", "warn", versionA, 0, at), h.alert("app-3", "reminder", "warn", versionB, 0, at)
+	covered.Destination, other.Destination = "chat", "chat"
+	h.arrive(at, covered, other)
+	got := h.take("chat")
+	expectKinds(t, got, "reminder warn")
+	if got[0].Node != "app-3" {
+		t.Fatal("the reminder that went on is of", got[0].Node)
+	}
+}
+
+// A reminder at sos of an incident that the hub holds as set aside at warn
+// goes out: the node raised it to sos during a hub outage, and sos is never
+// set aside.
+func TestAnSosReminderOfAnIncidentSetAsideAtWarnGoesOut(t *testing.T) {
+	t.Parallel()
+	chat := chatTaking("https://chat.example.com", "warn", "sos")
+	chat.RemindEvery = "1h"
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chat})
+	h.arrive(tenOFive, h.alert("app-2", "failed", "warn", versionA, 0, tenOFive))
+	expectKinds(t, h.take("chat"), "failed warn")
+	h.setAside(tenOFive.Add(time.Minute), entryFor(versionA, reasonNoPAM))
+	expectKinds(t, h.take("chat"), "closed_without_recovery warn")
+	at := tenOFive.Add(time.Hour)
+	reminder := h.alert("app-2", "reminder", "sos", versionA, 0, at)
+	reminder.Destination = "chat"
+	h.arrive(at, reminder)
+	expectKinds(t, h.take("chat"), "reminder sos")
+}
+
 // The hub's reminder of a key names only the members grouped by exact
 // finding. At one destination whose service keeps incidents, app-1 has an
 // exact finding and app-2, at sos, has none: app-2 reminds of its own
