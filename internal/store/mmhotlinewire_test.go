@@ -309,9 +309,10 @@ func TestAGroupedOpeningGoesUnderTheHubsOwnKey(t *testing.T) {
 	}
 }
 
-// A destination whose service keeps incidents gets the opening and the
-// closing alert of a key under the key that the hub derives, whatever key
-// the node's alerts carried, for a grouped key and for any other.
+// A destination whose service keeps incidents gets the opening, the
+// node's reminder, and the closing alert of a key under the key that the
+// hub derives, whatever key the node's alerts carried, for a grouped key
+// and for any other: the closing alert stops what the reminder repeats.
 func TestAServiceThatKeepsIncidentsGetsTheHubsOwnKey(t *testing.T) {
 	t.Parallel()
 	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities}
@@ -326,6 +327,15 @@ func TestAServiceThatKeepsIncidentsGetsTheHubsOwnKey(t *testing.T) {
 		h.arrive(failure.At, failure)
 		h.arrive(failure.At.Add(2 * time.Minute))
 		opening := h.take("pager")
+		var reminder []checksandalerts.Event
+		if !grouped {
+			// The hub sends its own reminders of a grouped key.
+			r := failure
+			r.ID, r.Type, r.At, r.Destination = failure.ID+"-reminder", "reminder", tenOFive.Add(30*time.Minute), "pager"
+			h.arrive(r.At, r)
+			h.arrive(r.At.Add(2 * time.Minute))
+			reminder = h.take("pager")
+		}
 		recovery := failure
 		recovery.ID, recovery.Type, recovery.At, recovery.AlertSeveritiesSentForIncident = failure.ID+"-recovered", "recovered", tenOFive.Add(time.Hour), []string{"warn"}
 		h.arrive(recovery.At, recovery)
@@ -334,6 +344,9 @@ func TestAServiceThatKeepsIncidentsGetsTheHubsOwnKey(t *testing.T) {
 		want := checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(checksandalerts.ReadableFleetIncidentKey(failure, "failed", "")), h.s.Node, groupingFleet)
 		if len(opening) != 1 || len(closing) != 1 || opening[0].FleetIncidentKey != want || closing[0].FleetIncidentKey != want {
 			t.Fatalf("%s: the opening %+v and the closing %+v", failure.Check, opening, closing)
+		}
+		if !grouped && (len(reminder) != 1 || reminder[0].FleetIncidentKey != want) {
+			t.Fatalf("%s: the reminder %+v", failure.Check, reminder)
 		}
 	}
 }

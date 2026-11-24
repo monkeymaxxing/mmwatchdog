@@ -518,7 +518,19 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 		if e != nil || len(open) == 0 {
 			return e
 		}
-		return queueEvent(tx, at, name, dest, onlyStillOpen(message, open, members, from.hub()))
+		// It goes under the key of its incident's row in the set, the key
+		// of the opening and the closing alert, so the closing alert stops
+		// what the reminder repeats.
+		reminder := onlyStillOpen(message, open, members, from.hub())
+		var key string
+		switch e = tx.QueryRow("SELECT incident_key FROM fleet_incident_set WHERE "+inSet+" AND reporter=? AND incident_id=?", set.with(open[0].Node, open[0].Incident)...).Scan(&key); e {
+		case nil:
+			reminder.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
+		case sql.ErrNoRows:
+		default:
+			return e
+		}
+		return queueEvent(tx, at, name, dest, reminder)
 	default:
 		return queueEvent(tx, at, name, dest, message)
 	}
