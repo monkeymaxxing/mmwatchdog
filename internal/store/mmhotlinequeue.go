@@ -173,10 +173,14 @@ func (set IncidentSet) queueMMHotlineAlerts(tx *sql.Tx, at int64, name string, d
 			queued = append(queued, a)
 		}
 	} else {
-		if e = set.reportRemovedAlertSources(tx, name, dest, key); e != nil {
+		removed, e := set.reportRemovedAlertSources(tx, name, dest, key)
+		if e != nil {
 			return e
 		}
-		if len(sent) == 0 {
+		// A key with no recorded source got its alerts under the
+		// destination's own. One whose only sources were removed gets no
+		// resolution under another source, which holds no incident of it.
+		if len(sent) == 0 && removed == 0 {
 			sent = []string{set.AlertSource}
 		}
 		for i, source := range sent {
@@ -255,19 +259,20 @@ func removedAlertSources(written string, dest checksandalerts.Destination) []str
 // key since its last resolution and that the destination name no longer
 // has, MMHotline keeps an incident open that MMWatchdog cannot resolve. A
 // person closes it in MMHotline; mmwatchdog validate warned of it at the
-// reload (MMHotlineKeysUnderRemovedAlertSources).
-func (set IncidentSet) reportRemovedAlertSources(tx *sql.Tx, name string, dest checksandalerts.Destination, key string) error {
+// reload (MMHotlineKeysUnderRemovedAlertSources). It returns how many
+// such alert sources there are.
+func (set IncidentSet) reportRemovedAlertSources(tx *sql.Tx, name string, dest checksandalerts.Destination, key string) (int, error) {
 	var written string
 	e := tx.QueryRow("SELECT mmhotline_alert_sources_sent FROM fleet_incident_keys WHERE "+inSet+" AND incident_key=?", set.with(key)...).Scan(&written)
 	if e == sql.ErrNoRows {
-		return nil
+		return 0, nil
 	}
 	if e != nil {
-		return e
+		return 0, e
 	}
 	removed := removedAlertSources(written, dest)
 	if len(removed) == 0 {
-		return nil
+		return 0, nil
 	}
 	now := time.Now().UTC()
 	for _, source := range removed {
@@ -275,10 +280,10 @@ func (set IncidentSet) reportRemovedAlertSources(tx *sql.Tx, name string, dest c
 			Message: fmt.Sprintf("%s: the resolution of %q was not sent under the MMHotline alert source %s, which the destination no longer has; close its incident in MMHotline", name, key, source)}
 		b, _ := json.Marshal(event)
 		if _, e = tx.Exec("INSERT INTO events(at,data) VALUES(?,?)", now.UnixNano(), b); e != nil {
-			return e
+			return 0, e
 		}
 	}
-	return addDeliveryGaps(tx, int64(len(removed)), now)
+	return len(removed), addDeliveryGaps(tx, int64(len(removed)), now)
 }
 
 // MMHotlineKeysUnderRemovedAlertSources reads, from the hub's or a
@@ -328,13 +333,17 @@ func MMHotlineKeysUnderRemovedAlertSources(stateDir string, destinations map[str
 
 // recordMMHotlineSource records that the key got an alert under the alert
 // source source ("" for the destination's own) since its last resolution.
-// A source that the destination does not have, such as one that a node's
-// report names, is not recorded.
+// It is the key's delivery history: a source that a node's report names
+// and that the destination no longer has, such as one removed before the
+// report reached the hub, is recorded too, so that mmwatchdog validate
+// warns of it and its resolution that cannot go out is a delivery gap.
+// Alerts go only under the sources that the destination has
+// (mmhotlineSourcesSent).
 func (set IncidentSet) recordMMHotlineSource(tx *sql.Tx, dest checksandalerts.Destination, key, source string) error {
 	if source == "" {
 		source = set.AlertSource
 	}
-	if p := dest.MMHotline(); p == nil || source != set.AlertSource && source != p.NodeAlertSourceID() {
+	if dest.MMHotline() == nil {
 		return nil
 	}
 	var written string

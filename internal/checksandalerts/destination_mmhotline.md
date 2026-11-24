@@ -545,8 +545,11 @@ destinations:
   `mmwatchdog reload` warn while such incidents are open and name their
   keys. When the key closes, `sudo mmwatchdog events` shows a
   `delivery_gap` for the resolution that could not go out, and status
-  counts it. Close those incidents in MMHotline, or keep the block until
-  they resolve.
+  counts it. This holds too for an alert that a joined node sent under
+  the old ID during a hub outage, when the node's report reaches the hub
+  only after the change. The resolution never goes under the destination's
+  own alert source instead. Close those incidents in MMHotline, or keep
+  the block until they resolve.
 - A joined node needs MMWatchdog 0.2.0 or later: an older node refuses
   fleet settings with the block and keeps its earlier copy.
   `mmwatchdog validate` and `mmwatchdog reload` on the hub warn while a
