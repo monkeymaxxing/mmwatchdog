@@ -249,7 +249,7 @@ func (set IncidentSet) closeSetAside(tx *sql.Tx, at int64, name string, dest che
 	if len(sent) == 0 {
 		return nil
 	}
-	first := covered[0]
+	first := covered[0] //nolint:nilaway // the only caller passes closing[key] for a key of closing, whose entries are only appended to.
 	about := checksandalerts.Event{Node: first.reporter, CheckGroup: first.checkGroup, Check: first.check, Finding: first.finding, Incident: first.incident, ExactFinding: first.exactFinding, AlertSeveritiesSentForIncident: sent}
 	nodes, reasons := []string{}, []string{}
 	for _, c := range covered {

@@ -592,6 +592,7 @@ func findingNodesUpdate(key string, about checksandalerts.Event, pending []pendi
 	e := checksandalerts.Event{ID: incidents.ID(), Type: checksandalerts.FindingNodesChanged, Node: from.Node, CheckGroup: about.CheckGroup, Check: about.Check, Finding: about.Finding, At: now,
 		FleetIncidentKey: checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)}
 	byExactFinding := map[string]*checksandalerts.ExactFindingNodes{}
+	groups := []*checksandalerts.ExactFindingNodes{}
 	recovered := []string{}
 	for _, p := range pending {
 		if p.change == pendingRecovered {
@@ -603,6 +604,7 @@ func findingNodesUpdate(key string, about checksandalerts.Event, pending []pendi
 		if group == nil {
 			group = &checksandalerts.ExactFindingNodes{ExactFinding: p.exactFinding, Nodes: []string{}}
 			byExactFinding[p.exactFinding] = group
+			groups = append(groups, group)
 		}
 		if len(group.Nodes) < CombinedNames {
 			group.Nodes = append(group.Nodes, p.node)
@@ -616,10 +618,13 @@ func findingNodesUpdate(key string, about checksandalerts.Event, pending []pendi
 	if e.AlertSeverity == "" {
 		e.AlertSeverity = "info"
 	}
-	exactFindings := checksandalerts.Names(byExactFinding)
-	// The exact findings that were not announced before come first.
-	slices.SortStableFunc(exactFindings, func(a, b string) int {
-		return boolRank(slices.Contains(announced, a)) - boolRank(slices.Contains(announced, b))
+	// The exact findings that were not announced before come first; within
+	// each part, the exact findings are in the order of their text.
+	slices.SortFunc(groups, func(a, b *checksandalerts.ExactFindingNodes) int {
+		return strings.Compare(a.ExactFinding, b.ExactFinding)
+	})
+	slices.SortStableFunc(groups, func(a, b *checksandalerts.ExactFindingNodes) int {
+		return boolRank(slices.Contains(announced, a.ExactFinding)) - boolRank(slices.Contains(announced, b.ExactFinding))
 	})
 	e.RecoveredNodeCount = len(recovered)
 	e.RecoveredNodes = recovered[:min(len(recovered), CombinedNames)]
@@ -663,8 +668,8 @@ func findingNodesUpdate(key string, about checksandalerts.Event, pending []pendi
 	last = append(last, "List every node on the MMWatchdog fleet hub: "+listAll)
 	lines := []string{title}
 	listed, budget := 0, UpdateMessageLimit-len(title)-len(strings.Join(last, "\n"))-512
-	for _, exactFinding := range exactFindings {
-		group := byExactFinding[exactFinding]
+	for _, group := range groups {
+		exactFinding := group.ExactFinding
 		block := exactFinding + "\n  on " + nodes(group.NodeCount) + ": " + nameNodes(group.Nodes, group.NodeCount)
 		if !slices.Contains(announced, exactFinding) {
 			block = "new: " + block
@@ -676,10 +681,10 @@ func findingNodesUpdate(key string, about checksandalerts.Event, pending []pendi
 		e.NodesByExactFinding = append(e.NodesByExactFinding, *group)
 		listed++
 	}
-	if more := len(exactFindings) - listed; more > 0 {
+	if more := len(groups) - listed; more > 0 {
 		count := 0
-		for _, exactFinding := range exactFindings[listed:] {
-			count += byExactFinding[exactFinding].NodeCount
+		for _, group := range groups[listed:] {
+			count += group.NodeCount
 		}
 		lines = append(lines, fmt.Sprintf("and %d more exact findings on %s", more, nodes(count)))
 	}
@@ -814,7 +819,7 @@ func (set IncidentSet) remind(tx *sql.Tx, name string, dest checksandalerts.Dest
 		}
 		reminder.Message = fmt.Sprintf("%s still failing on %d nodes since %s: %s", reminder.AboutCheck(), reminder.NodeCount, checksandalerts.ClockTime(time.Unix(0, opened), now), names)
 		if reminder.NodeCount == 1 {
-			reminder.Node, reminder.Nodes, reminder.NodeCount = reminder.Nodes[0], nil, 0
+			reminder.Node, reminder.Nodes, reminder.NodeCount = reminder.Nodes[0], nil, 0 //nolint:nilaway // NodeCount 1 means the loop appended exactly one node to Nodes.
 			reminder.Message = fmt.Sprintf("%s still failing since %s", reminder.AboutCheck(), checksandalerts.ClockTime(time.Unix(0, opened), now))
 		}
 		reminder.WriteAlertTexts([]checksandalerts.Event{reminder}, from.hub())

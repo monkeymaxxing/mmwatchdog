@@ -1215,7 +1215,7 @@ func (h *Hub) View(name string, m *member, now time.Time) FleetNode {
 		s.NodeStatusReport = &shown
 	}
 	s.NodeGroups = append([]string{}, m.fleetSettings().ThisNodeIsInNodeGroups...)
-	if m.Offset > clockOffsetShown || m.Offset < -clockOffsetShown {
+	if m.Offset > clockOffsetShown || m.Offset < -clockOffsetShown { //nolint:nilaway // every writer of h.Nodes (Load, Join) stores an allocated member, and callers pass h.Nodes[name] for a name from h.Nodes.
 		s.ClockOffset = m.Offset
 	}
 	switch {

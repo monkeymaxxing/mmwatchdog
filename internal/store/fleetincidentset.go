@@ -1447,7 +1447,7 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 			}
 		}
 		slices.Sort(nodes)
-		about := sends[0].sent
+		about := sends[0].sent //nolint:nilaway // key comes from setAsideSends, whose only writer (settleDirectSend) appends one send per key.
 		about.AlertSeveritiesSentForIncident = sent
 		out.setAside = append(out.setAside, setAsideClosingAlert(about, nodes, key, strings.Join(reasons, "; "), from, now))
 	}

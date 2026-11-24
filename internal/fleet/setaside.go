@@ -116,8 +116,9 @@ func (h *Hub) Findings(check, finding string, now time.Time) FindingsOfCheck {
 	h.Mu.Lock()
 	defer h.Mu.Unlock()
 	byFinding := map[string][]NodeFinding{}
-	for _, name := range checksandalerts.Names(h.Nodes) {
-		m := h.Nodes[name]
+	// The nodes of each finding are sorted below, so the map's order does
+	// not matter here.
+	for name, m := range h.Nodes {
 		if m.NodeStatusReport == nil {
 			continue
 		}
@@ -190,7 +191,7 @@ func (h *Hub) SetAsideFindingsNow(now time.Time) []SetAsideFindingNow {
 		e := SetAsideFindingNow{SetAsideFinding: entry, CoveredNodes: []string{}, MatchesNoNodeNow: true}
 		for _, name := range checksandalerts.Names(h.Nodes) {
 			m := h.Nodes[name]
-			report := m.NodeStatusReport
+			report := m.NodeStatusReport //nolint:nilaway // every writer of h.Nodes (Load, Join) stores an allocated member, and name comes from h.Nodes.
 			c, has := ReportedCheck{}, false
 			if report != nil {
 				c, has = report.Checks[entry.Check]
