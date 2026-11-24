@@ -171,7 +171,6 @@ func applyCoverageChanges(tx *sql.Tx, at int64, changes []coverageChange, destin
 	if len(changes) == 0 {
 		return nil
 	}
-	hub := from.hub()
 	for _, name := range checksandalerts.Names(destinations) {
 		dest := destinations[name]
 		set, _ := IncidentSetOf(name, dest)
@@ -215,7 +214,7 @@ func applyCoverageChanges(tx *sql.Tx, at int64, changes []coverageChange, destin
 			}
 		}
 		for _, key := range checksandalerts.Names(opening) {
-			if e := set.openNoLongerSetAside(tx, at, name, dest, key, opening[key], hub, from, now); e != nil {
+			if e := set.openNoLongerSetAside(tx, at, name, dest, key, opening[key], from, now); e != nil {
 				return e
 			}
 		}
@@ -273,7 +272,8 @@ func (set IncidentSet) closeSetAside(tx *sql.Tx, at int64, name string, dest che
 // joined its set, with the note "an earlier exact finding was set aside:
 // REASON". The alert announces their exact findings, as a key's first
 // alert does.
-func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, key string, members []coverageChange, hub string, from QueuedBy, now time.Time) error {
+func (set IncidentSet) openNoLongerSetAside(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, key string, members []coverageChange, from QueuedBy, now time.Time) error {
+	hub := from.hub()
 	slices.SortFunc(members, func(a, b coverageChange) int { return strings.Compare(a.node, b.node) })
 	events, reasons, highest := []checksandalerts.Event{}, []string{}, ""
 	for _, c := range members {
