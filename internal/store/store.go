@@ -165,6 +165,11 @@ type Delivery struct {
 	Attempts  int
 	Next      time.Time
 	LastError string
+	// sentWithoutTheHub is what a joined node's direct failure or raise
+	// records once its destination accepts it (recordOnAcceptance), or "".
+	// The delivery carries it, so an acceptance is recorded even when
+	// retention removed the row while the attempt was under way.
+	sentWithoutTheHub string
 }
 
 // storedDestination is private state. Public destination JSON never contains
@@ -916,7 +921,7 @@ func scanEvents(rows *sql.Rows, maxBytes int) ([]checksandalerts.Event, error) {
 // (Daemon.attemptDue), for the destination as a whole; Next is for display
 // and for the first wait after a start.
 func (s *Store) Pending() ([]Delivery, error) {
-	rows, e := s.DB.Query(`SELECT seq,destination,event,target,attempts,next,error FROM outbox WHERE seq IN (
+	rows, e := s.DB.Query(`SELECT seq,destination,event,target,attempts,next,error,sent_without_the_hub FROM outbox WHERE seq IN (
  SELECT COALESCE((SELECT MIN(u.seq) FROM outbox u WHERE u.destination=o.destination AND u.urgent=1
   AND NOT EXISTS (SELECT 1 FROM outbox c WHERE c.destination=u.destination AND c.incident_key=u.incident_key AND c.closes=1 AND c.seq<u.seq)), MIN(o.seq))
  FROM outbox o GROUP BY o.destination) ORDER BY seq`)
@@ -931,7 +936,7 @@ func (s *Store) Pending() ([]Delivery, error) {
 		var d Delivery
 		var event, w []byte
 		var next int64
-		if e = rows.Scan(&d.Seq, &d.Destination, &event, &w, &d.Attempts, &next, &d.LastError); e != nil {
+		if e = rows.Scan(&d.Seq, &d.Destination, &event, &w, &d.Attempts, &next, &d.LastError, &d.sentWithoutTheHub); e != nil {
 			return nil, e
 		}
 		if e = json.Unmarshal(event, &d.Event); e != nil {
@@ -979,29 +984,24 @@ func (s *Store) Delivered(d Delivery, err error) (time.Duration, error) {
 }
 
 // accepted removes a delivery that its destination accepted from the
-// outbox. A joined node's direct alert records its incidents for the
-// node's reports in the same transaction (recordOnAcceptance): only an
-// alert that the destination took needs the hub's closing alert.
+// outbox, if the outbox still holds it: retention can remove it while the
+// attempt is under way, and SQLite can then reuse its sequence number. A
+// joined node's direct alert records its incidents for the node's reports
+// in the same transaction (recordOnAcceptance), from what the delivery
+// carries, also when the row is gone: only an alert that the destination
+// took needs the hub's closing alert, and this one took it.
 func (s *Store) accepted(d Delivery) error {
 	tx, e := s.DB.Begin()
 	if e != nil {
 		return e
 	}
 	defer tx.Rollback()
-	var recorded string
-	e = tx.QueryRow("SELECT sent_without_the_hub FROM outbox WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID).Scan(&recorded)
-	if e == sql.ErrNoRows {
-		return nil
-	}
-	if e != nil {
+	if _, e = tx.Exec("DELETE FROM outbox WHERE seq=? AND destination=? AND json_extract(event,'$.id')=?", d.Seq, d.Destination, d.Event.ID); e != nil {
 		return e
 	}
-	if _, e = tx.Exec("DELETE FROM outbox WHERE seq=?", d.Seq); e != nil {
-		return e
-	}
-	if recorded != "" {
+	if d.sentWithoutTheHub != "" {
 		var sent sentWithoutTheHub
-		if e = json.Unmarshal([]byte(recorded), &sent); e != nil {
+		if e = json.Unmarshal([]byte(d.sentWithoutTheHub), &sent); e != nil {
 			return e
 		}
 		if e = recordSentWithoutTheHub(tx, d.Destination, sent.Members, sent.AlertSource, time.Now()); e != nil {

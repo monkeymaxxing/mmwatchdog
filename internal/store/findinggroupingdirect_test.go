@@ -453,3 +453,39 @@ func TestADirectRaiseOfAnOrdinaryCheckIsAcknowledgedOnlyOnceSettled(t *testing.T
 		t.Fatal("the settled raise is not acknowledged", known, e)
 	}
 }
+
+// Retention can remove a direct send from the outbox while MMHotline is
+// accepting it, and a later alert can take its sequence number. The
+// accepted send is still recorded for the node's reports, so the hub
+// learns of it, and the later alert stays queued.
+func TestADirectSendThatRetentionRemovedDuringItsAttemptIsRecorded(t *testing.T) {
+	t.Parallel()
+	destinations := map[string]checksandalerts.Destination{"hotline": hotlineWithNodeAlertSource()}
+	node := newJoinedNode(t)
+	raised := failureOf(node, "app-1", "app-1 cannot resolve db.internal", tenOFive)
+	raised.AlertSeverity = "sos"
+	fallBack(t, node.s, raised, destinations)
+	heads, e := node.s.Pending()
+	if e != nil || len(heads) != 1 {
+		t.Fatal(heads, e)
+	}
+	if e = node.s.Prune(time.Now().Add(30 * 24 * time.Hour)); e != nil {
+		t.Fatal(e)
+	}
+	later := failureOf(node, "app-2", "app-2 cannot resolve db.internal", tenOFive.Add(time.Minute))
+	later.Incident = "incident-app-2"
+	fallBack(t, node.s, later, destinations)
+	if again, e := node.s.Pending(); e != nil || len(again) != 1 || again[0].Seq != heads[0].Seq {
+		t.Fatalf("the later alert does not reuse the sequence number: %+v %v", again, e)
+	}
+	if _, e = node.s.Delivered(heads[0], nil); e != nil {
+		t.Fatal(e)
+	}
+	records, e := node.s.SentWithoutTheHub()
+	if e != nil || len(records) != 1 || records[0].Incident != raised.Incident || !slices.Equal(records[0].AlertSeveritiesSentForIncident, []string{"sos"}) {
+		t.Fatalf("the accepted send is not recorded: %+v %v", records, e)
+	}
+	if again, e := node.s.Pending(); e != nil || len(again) != 1 || again[0].Event.ID != later.ID {
+		t.Fatalf("the later alert is lost: %+v %v", again, e)
+	}
+}

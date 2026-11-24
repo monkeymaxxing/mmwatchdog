@@ -2476,8 +2476,12 @@ structure.
     The joined node records each failure or raise sent through fallback to
     a destination whose service keeps incidents once the destination
     accepts it: the queued delivery carries the record
-    (`outbox.sent_without_the_hub`), and `Store.Delivered` writes it in the
-    transaction that removes the delivery. The record in
+    (`outbox.sent_without_the_hub`), `Store.Pending` hands it to the
+    in-flight delivery, and `Store.Delivered` writes it in the transaction
+    that removes the delivery. Retention can remove the row during the
+    attempt: the accepted send is still recorded, and only a row that
+    still matches the delivery's sequence number, destination, and event
+    ID is removed. The record in
     `incidents_sent_without_the_hub` includes the destination and every
     severity sent, without age or count expiry. A reply's acknowledgment
     removes a record only while it still equals the version that the
