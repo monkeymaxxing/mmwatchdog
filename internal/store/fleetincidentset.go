@@ -192,7 +192,9 @@ func (set IncidentSet) closeIncidents(tx *sql.Tx, members []checksandalerts.Even
 		if e != nil {
 			return nil, nil, e
 		}
-		if _, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{fleetIncidentClosed, now.UnixNano()}, set.with(m.Node, m.Incident)...)...); e != nil {
+		// A retired incident's pending change ends with it: it is no news
+		// for an update. A recovery keeps its own for the key's last update.
+		if _, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=?, pending_change=CASE WHEN ?='closed_without_recovery' THEN '' ELSE pending_change END WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{fleetIncidentClosed, now.UnixNano(), change}, set.with(m.Node, m.Incident)...)...); e != nil {
 			return nil, nil, e
 		}
 		closed[key] = change
@@ -1095,7 +1097,9 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 			}
 			switch x.state {
 			case FleetIncidentOpen:
-				_, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=? WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{fleetIncidentClosed, now.UnixNano()}, set.with(reporter, id)...)...)
+				// A forgotten node's pending change ends with it: it is no
+				// news for an update.
+				_, e = tx.Exec("UPDATE fleet_incident_set SET state=?, changed=?, pending_change=CASE WHEN ? THEN '' ELSE pending_change END WHERE "+inSet+" AND reporter=? AND incident_id=?", append([]any{fleetIncidentClosed, now.UnixNano(), r.Forgotten}, set.with(reporter, id)...)...)
 				// A report cannot tell a recovery from a retirement; a forget
 				// retires.
 				if r.Forgotten {
