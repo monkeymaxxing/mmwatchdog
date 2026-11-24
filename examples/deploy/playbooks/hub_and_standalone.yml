@@ -203,6 +203,23 @@ fleet_stages:
                   exit "$changed"
                 success_exit_codes: [0, 2]
                 changed_when: {equals: ["{{ .this_node_task.exit_code }}", 2]}
+            # The hub's set_aside_findings.yml goes when the project has none,
+            # so a finding that the project no longer sets aside alerts again.
+            - id: remove_set_aside_findings_not_in_project
+              shell:
+                script: |
+                  installed=/etc/mmwatchdog/set_aside_findings.yml
+                  [ -e "$installed" ] || [ -L "$installed" ] || exit 0
+                  [ -f /usr/local/lib/mmwatchdog/candidate_config/set_aside_findings.yml ] && exit 0
+                  rm -f -- "$installed" || exit 1
+                  exit 2
+                dryrun: |
+                  installed=/etc/mmwatchdog/set_aside_findings.yml
+                  [ -e "$installed" ] || [ -L "$installed" ] || exit 0
+                  [ -f /usr/local/lib/mmwatchdog/candidate_config/set_aside_findings.yml ] && exit 0
+                  exit 2
+                success_exit_codes: [0, 2]
+                changed_when: {equals: ["{{ .this_node_task.exit_code }}", 2]}
             - id: track_config_files
               file:
                 path: /usr/local/lib/mmwatchdog/installed_config_files

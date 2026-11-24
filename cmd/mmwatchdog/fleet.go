@@ -43,6 +43,9 @@ func printFleet(b []byte, asJSON bool, now time.Time) error {
 				printNodeLine(s, now)
 			}
 		}
+		if f.SetAsideFindingCount > 0 {
+			fmt.Printf("Set aside: %s on %s\n", countOf(f.SetAsideFindingCount, "finding"), countOf(f.NodesWithSetAsideFindings, "node"))
+		}
 		if f.NodeGroup == "" {
 			outageAlerters := []string{}
 			for _, s := range f.Nodes {
@@ -229,7 +232,13 @@ func printNode(b []byte, asJSON bool, now time.Time) error {
 				// An every_systemd_unit check has one line for each failed unit.
 				for _, unit := range checksandalerts.Names(c.Findings) {
 					u := c.Findings[unit]
-					fmt.Printf("  %-26s %-12s %s\n", unit, u.State, u.Message)
+					message := u.Message
+					for _, a := range s.SetAsideFindings {
+						if a.Check == key && a.Finding == unit {
+							message = "set aside (" + a.Reason + ") until the exact finding changes"
+						}
+					}
+					fmt.Printf("  %-26s %-12s %s\n", unit, u.State, message)
 				}
 				if c.FailureIncident != nil {
 					fmt.Println("  Failure evidence:")
@@ -256,6 +265,99 @@ func printNode(b []byte, asJSON bool, now time.Time) error {
 	}
 	if s.ExitCode != 0 {
 		return exitStatus(s.ExitCode)
+	}
+	return nil
+}
+
+// printFindings shows every node with a finding of one check: each finding,
+// then each exact finding with the nodes that have it.
+func printFindings(b []byte, asJSON bool) error {
+	var found fleet.FindingsOfCheck
+	if e := json.Unmarshal(b, &found); e != nil {
+		return e
+	}
+	if asJSON {
+		return printJSON(found)
+	}
+	found = cleaned(found)
+	nodes := map[string]bool{}
+	for _, f := range found.Findings {
+		for _, n := range f.Nodes {
+			nodes[n.Node] = true
+		}
+	}
+	fmt.Printf("%s: %s on %s\n", found.Check, countOf(len(found.Findings), "finding"), countOf(len(nodes), "node"))
+	for _, f := range found.Findings {
+		fmt.Println(f.Finding)
+		for i, n := range f.Nodes {
+			if i == 0 || n.ExactFinding != f.Nodes[i-1].ExactFinding {
+				exact, count := n.ExactFinding, 0
+				for _, other := range f.Nodes[i:] {
+					if other.ExactFinding == exact {
+						count++
+					}
+				}
+				if exact == "" {
+					exact = "no exact finding"
+				}
+				fmt.Printf("  %s: %s\n", exact, countOf(count, "node"))
+			}
+			line := fmt.Sprintf("    %-24s %-12s %-5s", n.Node, n.State, n.AlertSeverity)
+			if !n.FailingSince.IsZero() {
+				line += " failing since " + n.FailingSince.Format(time.RFC3339)
+			}
+			if n.NodeState != "reporting" {
+				line += " (node " + n.NodeState + ")"
+			}
+			if n.SetAside {
+				line += " set aside (" + n.SetAsideReason + ")"
+			}
+			fmt.Println(strings.TrimRight(line, " "))
+		}
+	}
+	return nil
+}
+
+// printSetAsideFindings shows each set-aside entry in force, with what it
+// covers now.
+func printSetAsideFindings(b []byte, asJSON bool) error {
+	var listing struct {
+		SetAsideFindings []fleet.SetAsideFindingNow `json:"set_aside_findings"`
+	}
+	if e := json.Unmarshal(b, &listing); e != nil {
+		return e
+	}
+	if asJSON {
+		return printJSON(listing)
+	}
+	listing = cleaned(listing)
+	if len(listing.SetAsideFindings) == 0 {
+		fmt.Println("No finding is set aside: the hub has no entry in /etc/mmwatchdog/set_aside_findings.yml.")
+		return nil
+	}
+	for i, e := range listing.SetAsideFindings {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("%s: %s\n", e.Check, e.Finding)
+		fmt.Println("  Exact finding:", e.ExactFinding)
+		fmt.Println("  Reason:", e.Reason)
+		fmt.Println("  Investigation note:", e.InvestigationNote)
+		fmt.Printf("  Set aside by %s on %s\n", e.SetAsideBy, e.SetAsideOn)
+		covers := "  Covers " + countOf(e.CoveredNodeCount, "node") + " now"
+		if len(e.CoveredNodes) > 0 {
+			covers += ": " + strings.Join(e.CoveredNodes, ", ")
+			if more := e.CoveredNodeCount - len(e.CoveredNodes); more > 0 {
+				covers += fmt.Sprintf(", and %d more", more)
+			}
+		}
+		fmt.Println(covers)
+		if e.MatchesNoNodeNow {
+			fmt.Println("  Matches no node now")
+		} else {
+			fmt.Println("  Matches a node now")
+		}
+		fmt.Printf("  Nodes that cannot check now: %d\n", e.NodesThatCannotCheckNow)
 	}
 	return nil
 }

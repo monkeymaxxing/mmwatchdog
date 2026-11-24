@@ -99,10 +99,7 @@ func TestADirectSendOfASetAsideIncidentIsSettled(t *testing.T) {
 	t.Parallel()
 	h := newGroupingHub(t, map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")})
 	// The set-aside entry that covers the incident on the hub.
-	if _, e := h.s.DB.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible,set_aside_entry,set_aside_reason)
- VALUES('app-2','incident-app-2',?,'app-2','packages','flaws',?,?,0,'warn',?,1,'entry-1','Needs musl without PAM')`, readableFlaw, flaw, versionA, tenOFive.UnixNano()); e != nil {
-		t.Fatal(e)
-	}
+	h.setAside(tenOFive, entryFor(versionA, "Needs musl without PAM"))
 	record := store.IncidentSentWithoutTheHub{Destination: "chat", Incident: "incident-app-2", CheckGroup: "packages", Check: "flaws", Finding: flaw, Type: "failed", AlertSeveritiesSentForIncident: []string{"warn"}, ExactFinding: versionA}
 	report := shows("app-2", "warn", versionA, 0, tenOFive, tenOFive.Add(10*time.Minute))
 	report.SentWithoutTheHub = map[string]map[string]checksandalerts.Event{"chat": {record.Incident: {Node: "app-2", CheckGroup: "packages", Check: "flaws", Finding: flaw, Type: "failed", Incident: record.Incident, AlertSeverity: "warn", AlertSeveritiesSentForIncident: []string{"warn"}, ExactFinding: versionA}}}

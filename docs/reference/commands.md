@@ -48,7 +48,7 @@ the service is stopped.
 
 | Flag | Used by | What the flag does |
 |---|---|---|
-| `--json` | `version`, `validate`, `status`, `config`, `events`, `check-now`, `reload`, `readings`, `fleet`, `fleet NODE`, `fleet readings`, `fleet join-code`, `fleet rotate-join-code`, `describe-module`, `module-usage` | Prints JSON on standard output instead of text. Each command's entry lists the fields. The exit code stays the same. |
+| `--json` | `version`, `validate`, `status`, `config`, `events`, `check-now`, `reload`, `readings`, `fleet`, `fleet NODE`, `fleet readings`, `fleet findings`, `fleet set-aside-findings`, `fleet join-code`, `fleet rotate-join-code`, `describe-module`, `module-usage` | Prints JSON on standard output instead of text. Each command's entry lists the fields. The exit code stays the same. |
 | `--socket PATH` | `status`, `config`, `events`, `check-now`, `reload`, `maintenance`, `reset-recovery-attempts`, `send-notice`, `fleet` (not `fleet readings`) | The socket of the node monitoring process. The default is `/run/mmwatchdog/mmwatchdog.sock`. Give the flag only when the node setting `socket` names another path, because the command does not read the configuration to find the socket. |
 | `--config-dir DIR` | `validate`, `check-now --without-daemon`, `describe-module`, `module-usage`, `readings`, `fleet readings`, `daemon` | The configuration directory. The default is `/etc/mmwatchdog`. `check-now` refuses the flag without `--without-daemon`. |
 | `--official-extra-module-dir DIR`, `--external-module-dir DIR` | `validate`, `describe-module`, `module-usage` | Look for the official extra modules, or for the modules of your own, in `DIR` instead of the directories that the node settings `official_extra_module_dir` and `external_module_dir` name. A relative `DIR` starts at the current directory. An empty `DIR` is refused. |
@@ -872,13 +872,19 @@ A time flag without a node name is refused with
 **JSON.** `mmwatchdog fleet --json` prints `exit_code`, `hub_address`,
 `hub_outage_alerter_nodes`, `node_group` (with `--node-group`),
 `refused_joins` (`count`, `address`, `last`), `storage_error`,
-`measurement_history_of_nodes`, and `nodes`. Each node has `name`,
+`measurement_history_of_nodes`, `set_aside_finding_count` and
+`nodes_with_set_aside_findings` (the numbers of the line `Set aside:`),
+and `nodes`. Each node has `name`,
 `state`, `exit_code`, `has_fleet_hub_role`, `is_hub_outage_alerter_node`,
 `prefer_this_node_as_hub_outage_alerter`, `this_node_is_in_node_groups`,
 `joined_at`, `joined_from_address`, `last_report_received_at`,
 `clock_offset_ns`, `replaced_silent_node_of_same_name_at`, `conflict`
-(`claimed_from_address` and `at`), and `report`, the node's latest status
-report without its checks. `refused_joins` has
+(`claimed_from_address` and `at`), `report`, the node's latest status
+report without its checks, and `set_aside_findings`: each finding of the
+node that the hub sets aside now, with `check`, `finding`,
+`exact_finding`, and `reason`. A set-aside finding is not in
+`report.summary.attention`, and does not count for `exit_code` or
+`report.summary.exit_code`. `refused_joins` has
 `last_refused_from_address` after a refused join. `mmwatchdog fleet NODE
 --json` prints one node with the checks in `report.checks` and its events
 in `events`. A field without a value is left out.
@@ -1000,15 +1006,35 @@ exact finding, and this command lists all of them.
 mmwatchdog fleet findings CHECK_GROUP/CHECK [--finding ID] [--json]
 ```
 
-- For each finding, the command lists each node with its exact finding and
-  the time of its first failure.
+```text
+$ sudo mmwatchdog fleet findings installed_packages/known_exploited_flaws
+installed_packages/known_exploited_flaws: 1 finding on 3 nodes
+CVE-2026-123158 openssh
+  Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-CVE-2026-123158 modified 2026-11-20T08:12:00Z: 2 nodes
+    app001                   failed       warn  failing since 2026-11-22T22:51:12Z set aside (Needs musl without PAM)
+    db01                     failed       sos   failing since 2026-11-22T22:52:12Z
+  no exact finding: 1 node
+    util01                   failed       warn  failing since 2026-11-23T00:14:00Z (node silent)
+```
+
+- For each finding, the command lists its exact findings, and below each
+  exact finding every node that has it: the finding's state and severity,
+  when its failing time began, the node's state when the node is not
+  `reporting`, and the reason when the hub sets the finding aside. The
+  command reads every node's latest saved report, also the hub's own and
+  those of silent nodes.
 - `--finding ID` lists only the finding with that `id`, such as
   `--finding "CVE-2026-123158 openssh"`.
 - A finding without an exact finding, such as one from a node older than
-  0.2.0, is listed without one.
+  0.2.0, is listed under `no exact finding`.
+
+**JSON.** `check`, and `findings`: each with `finding` and `nodes`. Each
+node has `node`, `node_state`, `state`, `alert_severity`,
+`exact_finding`, `failing_since`, `set_aside`, and `set_aside_reason`. A
+field without a value is left out.
 
 Exit codes: 0, or 4 on a node that is not the hub, or for a wrong
-argument. [Exact findings](../changing-mmwatchdog/design/checks.md#exact-findings)
+argument, such as a check that is not written as `CHECK_GROUP/CHECK`. [Exact findings](../changing-mmwatchdog/design/checks.md#exact-findings)
 says which modules supply an exact finding.
 
 ## mmwatchdog fleet set-aside-findings
@@ -1020,6 +1046,21 @@ deploy can check that the hub has the entries that the project holds:
 ```text
 mmwatchdog fleet set-aside-findings [--json]
 ```
+
+```text
+$ sudo mmwatchdog fleet set-aside-findings
+installed_packages/known_exploited_flaws: CVE-2026-123158 openssh
+  Exact finding: Debian:13 CVE-2026-123158 openssh 1:10.0p1-7+deb13u4; fixed version: none; DEBIAN-CVE-2026-123158 modified 2026-11-20T08:12:00Z
+  Reason: Needs musl without PAM; every server with this exact finding runs glibc and sshd links PAM. Debian rates it unimportant.
+  Investigation note: triage_agent_notes/2026-11-23_openssh_package_warning_on_app001.md
+  Set aside by triage agent (MMHotline run b82fdd8b) on 2026-11-23
+  Covers 2 nodes now: app001, web01
+  Matches a node now
+  Nodes that cannot check now: 0
+```
+
+Without an entry, the command prints
+`No finding is set aside: the hub has no entry in /etc/mmwatchdog/set_aside_findings.yml.`
 
 For each entry the command shows its check, finding, exact finding,
 reason, investigation note, who set it aside, and when, and:
@@ -1035,12 +1076,14 @@ reason, investigation note, who set it aside, and when, and:
 An entry covers only incidents below `sos`; a node whose finding is `sos`
 alerts, whatever the file says, and is not counted as covered.
 
-**JSON.** Each entry has `check`, `finding`, `exact_finding`, `reason`,
+**JSON.** `set_aside_findings`, a list in the order of the file. Each
+entry has `check`, `finding`, `exact_finding`, `reason`,
 `investigation_note`, `set_aside_by`, `set_aside_on`,
 `covered_node_count`, `covered_nodes` (up to 20), `matches_no_node_now`,
 and `nodes_that_cannot_check_now`.
 
-Exit codes: 0, or 4 on a node that is not the hub.
+Exit codes: 0, or 4 on a node that is not the hub, or for a wrong
+argument.
 [Set a finding aside](../changing-mmwatchdog/design/fleet.md#set-a-finding-aside)
 gives every rule, and the
 [configuration files reference](configuration-files.md#the-set-aside-findings-file)

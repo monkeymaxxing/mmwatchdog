@@ -101,6 +101,9 @@ type QueuedBy struct {
 	// NewlyAffectedNodesEvery is, on the hub, the shared tick of the updates
 	// of grouped keys: fleet_hub_role.send_newly_affected_nodes_every.
 	NewlyAffectedNodesEvery time.Duration
+	// SetAsideFindings are, on the hub, the entries of
+	// set_aside_findings.yml in force (setaside.go).
+	SetAsideFindings config.SetAsideFindings
 	// Now is the time of the hub's step that queues, from its entry point;
 	// zero takes the clock's.
 	Now time.Time
@@ -828,16 +831,21 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 		return e
 	}
 	defer tx.Rollback()
-	setAside, e := reconcileNodeIncidents(tx, changes, s.Node)
+	from := QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), SetAsideFindings: s.setAsideFindings(), Now: now}
+	at := now.UnixNano()
+	setAside, coverage, e := reconcileNodeIncidents(tx, changes, s.Node, from.SetAsideFindings)
 	if e != nil {
+		return e
+	}
+	// A node whose exact finding moved onto or off a set-aside entry
+	// settles as a change of the file does.
+	if e = applyCoverageChanges(tx, at, coverage, destinations, from, now); e != nil {
 		return e
 	}
 	waiting, e := waitingFailureKeys(tx, s.Node, nil)
 	if e != nil {
 		return e
 	}
-	from := QueuedBy{Role: FleetHubSender, Node: s.Node, FleetIdentity: s.FleetIdentity, NewlyAffectedNodesEvery: s.newlyAffectedNodesEvery(), Now: now}
-	at := now.UnixNano()
 	for _, name := range checksandalerts.Names(destinations) {
 		dest := destinations[name]
 		set, keeps := IncidentSetOf(name, dest)
@@ -866,13 +874,8 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 			}
 		}
 		for _, closing := range r.setAside {
-			if dest.MMHotline() != nil {
-				key := checksandalerts.ReadableFleetIncidentKey(closing, "failed", s.Node)
-				e = set.queueMMHotlineAlerts(tx, at, name, dest, key, []checksandalerts.Event{MMHotlineEvent(closing, closing.ID, closing.FleetIncidentKey, "resolved-"+closing.AlertSeverity, closing.Title, []string{closing.Body, from.SentBy()})}, closesKey)
-			} else {
-				e = queueEvent(tx, at, name, dest, closing)
-			}
-			if e != nil {
+			key := checksandalerts.ReadableFleetIncidentKey(closing, "failed", s.Node)
+			if e = set.queueSetAsideClosing(tx, at, name, dest, key, closing, from); e != nil {
 				return e
 			}
 		}
@@ -888,66 +891,70 @@ func (s *Store) ReconcileIncidentSets(changes map[string]ReportedIncidents, dest
 // eligibility for the hub's reminders, and its exact finding, unless the
 // hub holds a newer one (exact_finding_sequence), whichever path it came
 // by. An incident that a newer report no longer shows, and each incident of
-// a forgotten node, is removed. It returns the set-aside reason of each
-// reported incident below sos that a set-aside entry covers, by reporter
-// and incident ID (reporter, a zero byte, the ID).
-func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hub string) (map[string]string, error) {
-	aside := map[string]string{}
+// a forgotten node, is removed. Whether a set-aside entry of setAside
+// covers each reported incident is settled (settleCoverage). It returns
+// the set-aside reason of each reported incident that an entry covers, by
+// reporter and incident ID (reporter, a zero byte, the ID), and the
+// changes of coverage.
+func reconcileNodeIncidents(tx *sql.Tx, changes map[string]ReportedIncidents, hub string, setAside config.SetAsideFindings) (map[string]string, []coverageChange, error) {
+	aside, coverage := map[string]string{}, []coverageChange{}
 	for _, reporter := range checksandalerts.Names(changes) {
 		r := changes[reporter]
-		type held struct {
-			opened        int64
-			entry, reason string
-		}
-		rows, e := tx.Query("SELECT incident_id, opened, set_aside_entry, set_aside_reason FROM fleet_node_incidents WHERE reporter=?", reporter)
+		rows, e := tx.Query("SELECT incident_id, opened FROM fleet_node_incidents WHERE reporter=?", reporter)
 		if e != nil {
-			return nil, e
+			return nil, nil, e
 		}
-		heldRows := map[string]held{}
+		heldRows := map[string]int64{}
 		for rows.Next() {
 			var id string
-			var x held
-			if e = rows.Scan(&id, &x.opened, &x.entry, &x.reason); e != nil {
+			var opened int64
+			if e = rows.Scan(&id, &opened); e != nil {
 				_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
-				return nil, e
+				return nil, nil, e
 			}
-			heldRows[id] = x
+			heldRows[id] = opened
 		}
 		_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
 		if e = rows.Err(); e != nil {
-			return nil, e
+			return nil, nil, e
 		}
 		for _, id := range checksandalerts.Names(heldRows) {
-			if _, shown := r.Incidents[id]; shown || !r.Forgotten && heldRows[id].opened >= r.Sent.UnixNano() {
+			if _, shown := r.Incidents[id]; shown || !r.Forgotten && heldRows[id] >= r.Sent.UnixNano() {
 				continue
 			}
 			if _, e = tx.Exec("DELETE FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", reporter, id); e != nil {
-				return nil, e
+				return nil, nil, e
 			}
 		}
 		for _, id := range checksandalerts.Names(r.Incidents) {
 			m := r.Incidents[id]
-			x, known := heldRows[id]
-			if !known {
+			if _, known := heldRows[id]; !known {
 				opened := m.At
 				if opened.IsZero() {
 					opened = r.Sent
 				}
-				_, e = tx.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
-					reporter, id, checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub), checksandalerts.AlertNode(m, hub), m.CheckGroup, m.Check, m.Finding, m.ExactFinding, m.ExactFindingSequence, m.AlertSeverity, opened.UnixNano(), r.ReminderEligible[id])
+				_, e = tx.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible,send_alerts_only_to_destinations) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+					reporter, id, checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub), checksandalerts.AlertNode(m, hub), m.CheckGroup, m.Check, m.Finding, m.ExactFinding, m.ExactFindingSequence, m.AlertSeverity, opened.UnixNano(), r.ReminderEligible[id], destinationsColumn(m.SendAlertsOnlyToDestinations))
 			} else {
-				_, e = tx.Exec(`UPDATE fleet_node_incidents SET alert_severity=?, reminder_eligible=?, exact_finding=CASE WHEN ?>=exact_finding_sequence THEN ? ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,?) WHERE reporter=? AND incident_id=?`,
-					m.AlertSeverity, r.ReminderEligible[id], m.ExactFindingSequence, m.ExactFinding, m.ExactFindingSequence, reporter, id)
-				if x.entry != "" && m.AlertSeverity != "sos" {
-					aside[reporter+"\x00"+id] = x.reason
-				}
+				_, e = tx.Exec(`UPDATE fleet_node_incidents SET alert_severity=?, reminder_eligible=?, exact_finding=CASE WHEN ?>=exact_finding_sequence THEN ? ELSE exact_finding END, exact_finding_sequence=MAX(exact_finding_sequence,?), send_alerts_only_to_destinations=? WHERE reporter=? AND incident_id=?`,
+					m.AlertSeverity, r.ReminderEligible[id], m.ExactFindingSequence, m.ExactFinding, m.ExactFindingSequence, destinationsColumn(m.SendAlertsOnlyToDestinations), reporter, id)
 			}
 			if e != nil {
-				return nil, e
+				return nil, nil, e
+			}
+			change, reason, e := settleCoverageOf(tx, setAside, reporter, id)
+			if e != nil {
+				return nil, nil, e
+			}
+			if change != nil {
+				coverage = append(coverage, *change)
+			}
+			if reason != "" {
+				aside[reporter+"\x00"+id] = reason
 			}
 		}
 	}
-	return aside, nil
+	return aside, coverage, nil
 }
 
 // reconciled is what applying the reports to one set sends: the failures
@@ -1192,7 +1199,7 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 	case reason != "":
 		var open bool
 		if open, e = set.hasOpen(tx, key, ""); e == nil && !open {
-			out.setAside = append(out.setAside, setAsideClosingAlert(c, key, reason, from, now))
+			out.setAside = append(out.setAside, setAsideClosingAlert(c, []string{c.Node}, key, reason, from, now))
 		}
 	default:
 		var state int
@@ -1214,21 +1221,6 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 		return e
 	}
 	_, e = tx.Exec("INSERT OR IGNORE INTO fleet_direct_sends_settled(destination,reporter,incident_id,settled) VALUES(?,?,?,?)", set.Destination, reporter, id, now.UnixNano())
-	return e
-}
-
-// setAsideClosingAlert is the closed_without_recovery that tells a
-// destination which got a node's direct send of an incident that a
-// set-aside entry covers on the hub that the incident is over for it:
-// "Set aside after investigation: REASON". c is the direct send's record.
-func setAsideClosingAlert(c checksandalerts.Event, key, reason string, from QueuedBy, now time.Time) checksandalerts.Event {
-	e := checksandalerts.Event{ID: incidents.ID(), Type: "closed_without_recovery", Node: c.Node, CheckGroup: c.CheckGroup, Check: c.Check, Finding: c.Finding, Incident: c.Incident,
-		AlertSeverity: config.HighestSeverity(c.AlertSeveritiesSentForIncident), AlertSeveritiesSentForIncident: c.AlertSeveritiesSentForIncident, At: now,
-		FleetIncidentKey: checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity), ExactFinding: c.ExactFinding}
-	e.Message = "Set aside after investigation: " + reason
-	e.Title, e.TitleWasShortened = checksandalerts.FitTitle([]checksandalerts.TitlePart{{Text: c.Node + ": " + e.AboutCheck() + " set aside after investigation"}})
-	e.WriteTitleWithAlertSeverity()
-	e.Body = primitives.AsReadableLines(e.Message)
 	return e
 }
 

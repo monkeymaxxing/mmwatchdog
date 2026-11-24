@@ -72,14 +72,19 @@ func opensOrChanges(eventType string) bool {
 // exact finding: every member that counts has an exact finding, as the
 // alert carries it or, for a closing alert, as the hub held it. An
 // exact_finding_changed older than the exact finding the hub holds does
-// not count, and neither does an alert of an incident that a set-aside
-// entry covers below sos (fleet_node_incidents.set_aside_entry).
-func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members []checksandalerts.Event, hub string) ([]checksandalerts.Event, bool, error) {
+// not count. Neither does an alert of an incident that a set-aside entry
+// of from covers (fleet_node_incidents.set_aside_entry), nor one that a
+// set-aside entry no longer covers below sos: it returns the changes of
+// coverage, which the destinations' sets apply instead
+// (applyCoverageChanges). A raise to sos of an incident that an entry
+// covered goes out as it is: sos is never set aside.
+func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members []checksandalerts.Event, from QueuedBy) ([]checksandalerts.Event, bool, []coverageChange, error) {
+	hub := from.hub()
 	opening, closing := opensOrChanges(message.Type), checksandalerts.Closes(message.Type)
 	if !opening && !closing {
-		return members, false, nil
+		return members, false, nil, nil
 	}
-	kept, grouped := []checksandalerts.Event{}, true
+	kept, grouped, coverage := []checksandalerts.Event{}, true, []coverageChange{}
 	for _, m := range members {
 		if m.Incident == "" {
 			kept, grouped = append(kept, m), false
@@ -90,13 +95,13 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 		e := tx.QueryRow("SELECT exact_finding, exact_finding_sequence, alert_severity, set_aside_entry FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", m.Node, m.Incident).Scan(&exactFinding, &sequence, &severity, &setAside)
 		known := e == nil
 		if e != nil && e != sql.ErrNoRows {
-			return nil, false, e
+			return nil, false, nil, e
 		}
 		switch {
 		case closing:
 			if known {
 				if _, e = tx.Exec("DELETE FROM fleet_node_incidents WHERE reporter=? AND incident_id=?", m.Node, m.Incident); e != nil {
-					return nil, false, e
+					return nil, false, nil, e
 				}
 			}
 			if m.ExactFinding == "" {
@@ -106,27 +111,39 @@ func nodeIncidentsOfMessage(tx *sql.Tx, message checksandalerts.Event, members [
 			if setAside != "" {
 				continue
 			}
+			kept, grouped = append(kept, m), grouped && checksandalerts.HasExactFinding(m)
+			continue
 		case known && message.Type == checksandalerts.ExactFindingChanged && m.ExactFindingSequence < sequence:
 			continue
 		case known:
 			if m.ExactFindingSequence >= sequence {
 				exactFinding, sequence = m.ExactFinding, m.ExactFindingSequence
 			}
-			if _, e = tx.Exec("UPDATE fleet_node_incidents SET exact_finding=?, exact_finding_sequence=?, alert_severity=? WHERE reporter=? AND incident_id=?", exactFinding, sequence, config.HigherSeverity(severity, m.AlertSeverity), m.Node, m.Incident); e != nil {
-				return nil, false, e
-			}
-			if setAside != "" && m.AlertSeverity != "sos" {
-				continue
-			}
+			_, e = tx.Exec("UPDATE fleet_node_incidents SET exact_finding=?, exact_finding_sequence=?, alert_severity=? WHERE reporter=? AND incident_id=?", exactFinding, sequence, config.HigherSeverity(severity, m.AlertSeverity), m.Node, m.Incident)
 		default:
-			if _, e = tx.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible) VALUES(?,?,?,?,?,?,?,?,?,?,?,1)`,
-				m.Node, m.Incident, checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub), checksandalerts.AlertNode(m, hub), m.CheckGroup, m.Check, m.Finding, m.ExactFinding, m.ExactFindingSequence, m.AlertSeverity, m.At.UnixNano()); e != nil {
-				return nil, false, e
+			_, e = tx.Exec(`INSERT INTO fleet_node_incidents(reporter,incident_id,incident_key,node,check_group,check_name,finding,exact_finding,exact_finding_sequence,alert_severity,opened,reminder_eligible,send_alerts_only_to_destinations) VALUES(?,?,?,?,?,?,?,?,?,?,?,1,?)`,
+				m.Node, m.Incident, checksandalerts.ReadableFleetIncidentKey(m, checksandalerts.IncidentKind(m.Type), hub), checksandalerts.AlertNode(m, hub), m.CheckGroup, m.Check, m.Finding, m.ExactFinding, m.ExactFindingSequence, m.AlertSeverity, m.At.UnixNano(), destinationsColumn(m.SendAlertsOnlyToDestinations))
+		}
+		if e != nil {
+			return nil, false, nil, e
+		}
+		change, reason, e := settleCoverageOf(tx, from.SetAsideFindings, m.Node, m.Incident)
+		switch {
+		case e != nil:
+			return nil, false, nil, e
+		case reason != "":
+			// A newly covered incident leaves the sets that hold it.
+			if change != nil {
+				coverage = append(coverage, *change)
 			}
+			continue
+		case change != nil && m.AlertSeverity != "sos":
+			coverage = append(coverage, *change)
+			continue
 		}
 		kept, grouped = append(kept, m), grouped && checksandalerts.HasExactFinding(m)
 	}
-	return kept, grouped && len(kept) > 0, nil
+	return kept, grouped && len(kept) > 0, coverage, nil
 }
 
 // keyAnnouncement is what has been announced to one destination for one

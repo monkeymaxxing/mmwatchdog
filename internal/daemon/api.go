@@ -99,6 +99,20 @@ func (d *Daemon) routes() http.Handler {
 		}
 		writeJSON(w, node)
 	})
+	mux.HandleFunc("GET /fleet/findings", func(w http.ResponseWriter, r *http.Request) {
+		if d.hub == nil {
+			apiError(w, fmt.Errorf("fleet findings runs on the hub; this node has no fleet_hub_role setting"), 400)
+			return
+		}
+		writeJSON(w, d.hub.Findings(r.URL.Query().Get("check"), r.URL.Query().Get("finding"), d.now()))
+	})
+	mux.HandleFunc("GET /fleet/set-aside-findings", func(w http.ResponseWriter, r *http.Request) {
+		if d.hub == nil {
+			apiError(w, fmt.Errorf("fleet set-aside-findings runs on the hub; this node has no fleet_hub_role setting"), 400)
+			return
+		}
+		writeJSON(w, map[string]any{"set_aside_findings": d.hub.SetAsideFindingsNow(d.now())})
+	})
 	mux.HandleFunc("GET /fleet/join-code", func(w http.ResponseWriter, r *http.Request) {
 		if d.hub == nil {
 			apiError(w, fmt.Errorf("only the hub has a join code; this node has no fleet_hub_role setting"), 400)
