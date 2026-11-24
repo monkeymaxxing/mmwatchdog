@@ -462,7 +462,7 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 	var changed map[string]string
 	var closedBy map[string][]checksandalerts.Event
 	switch {
-	case checksandalerts.Opens(message.Type) && from.Role == FallbackSender:
+	case opensOrChanges(message.Type) && from.Role == FallbackSender:
 		// Reports carry it until the hub has heard of it, so the hub sends
 		// the closing alert, even when the incident closes before the hub is
 		// back.

@@ -595,6 +595,8 @@ func QueueDirect(tx *sql.Tx, at int64, message checksandalerts.Event, members []
 			e = QueueMMHotline(tx, at, name, dest, message, members, from, from.now())
 		case from.keepsIncidents(name, dest):
 			e = queueWithIncidentSet(tx, at, name, dest, message, members, from, from.now())
+		case from.Role == FallbackSender:
+			e = queueFallbackForExactFinding(tx, at, name, dest, message, members, from.now())
 		default:
 			e = queueEvent(tx, at, name, dest, message)
 		}
@@ -603,6 +605,27 @@ func QueueDirect(tx *sql.Tx, at int64, message checksandalerts.Event, members []
 		}
 	}
 	return RememberIncidentDestinations(tx, at, message, members, destinations)
+}
+
+// queueFallbackForExactFinding queues a joined node's direct alert for a
+// destination whose service keeps no incidents, such as a chat or a
+// mailbox. For a finding with an exact finding the node keeps the record
+// of the direct send, as for a destination that keeps incidents, and
+// sends no alert that closes it: the hub settles the record and sends the
+// closing alert for its key. Other alerts go as they are.
+func queueFallbackForExactFinding(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, message checksandalerts.Event, members []checksandalerts.Event, now time.Time) error {
+	switch {
+	case opensOrChanges(message.Type) && checksandalerts.HasExactFinding(message):
+		if e := recordSentWithoutTheHub(tx, name, members, now); e != nil {
+			return e
+		}
+	case checksandalerts.Closes(message.Type):
+		var recorded bool
+		if e := tx.QueryRow("SELECT EXISTS(SELECT 1 FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=? AND exact_finding!='')", name, message.Incident).Scan(&recorded); e != nil || recorded {
+			return e
+		}
+	}
+	return queueEvent(tx, at, name, dest, message)
 }
 
 // queueEvent queues one alert for the destination name, as the destination
