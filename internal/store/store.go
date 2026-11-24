@@ -70,13 +70,16 @@ const stateTables = `
  CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY CHECK(id=1), history_id TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS intake (seq INTEGER PRIMARY KEY AUTOINCREMENT, node TEXT NOT NULL, id TEXT NOT NULL, received INTEGER NOT NULL, type TEXT NOT NULL, subject TEXT NOT NULL, grp TEXT NOT NULL, destination TEXT NOT NULL, severity TEXT NOT NULL, event BLOB NOT NULL, state INTEGER NOT NULL DEFAULT 0,
   exact_finding INTEGER NOT NULL DEFAULT 0, UNIQUE(node,id));
+ CREATE INDEX IF NOT EXISTS intake_state ON intake(state,received);
  CREATE TABLE IF NOT EXISTS intake_queued_bytes (node TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
  CREATE TABLE IF NOT EXISTS fleet_incident_set (destination TEXT NOT NULL, alert_source TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, node TEXT NOT NULL, opened INTEGER NOT NULL, alert_severity TEXT NOT NULL, state INTEGER NOT NULL, changed INTEGER NOT NULL,
   pending_change TEXT NOT NULL DEFAULT '', grouped_by_exact_finding INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(destination,alert_source,reporter,incident_id));
  CREATE INDEX IF NOT EXISTS fleet_incident_set_not_grouped ON fleet_incident_set(destination,alert_source) WHERE grouped_by_exact_finding=0;
  CREATE INDEX IF NOT EXISTS fleet_incident_set_key_state ON fleet_incident_set(destination,alert_source,incident_key,state,alert_severity);
  CREATE INDEX IF NOT EXISTS fleet_incident_set_state ON fleet_incident_set(destination,alert_source,state,incident_key);
- CREATE INDEX IF NOT EXISTS fleet_incident_set_pending ON fleet_incident_set(destination,alert_source,incident_key,pending_change);
+ CREATE INDEX IF NOT EXISTS fleet_incident_set_pending_changes ON fleet_incident_set(destination,alert_source,incident_key) WHERE pending_change!='';
+ CREATE INDEX IF NOT EXISTS fleet_incident_set_reporter ON fleet_incident_set(reporter);
+ CREATE INDEX IF NOT EXISTS fleet_incident_set_resolved ON fleet_incident_set(state,changed);
  CREATE TABLE IF NOT EXISTS incidents_sent_without_the_hub (destination TEXT NOT NULL, incident_id TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, kind TEXT NOT NULL, alert_severities_sent_for_incident TEXT NOT NULL, at INTEGER NOT NULL,
   exact_finding TEXT NOT NULL DEFAULT '', exact_finding_sequence INTEGER NOT NULL DEFAULT 0, alert_source TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,incident_id));
  CREATE TABLE IF NOT EXISTS fleet_incident_keys (destination TEXT NOT NULL, alert_source TEXT NOT NULL, incident_key TEXT NOT NULL, alert_severities_sent TEXT NOT NULL, last_closing_alert_at INTEGER NOT NULL,
@@ -88,6 +91,8 @@ const stateTables = `
   exact_finding_sequence_named INTEGER NOT NULL DEFAULT -1, PRIMARY KEY(reporter,incident_id));
  CREATE INDEX IF NOT EXISTS fleet_node_incidents_key ON fleet_node_incidents(incident_key,exact_finding);
  CREATE TABLE IF NOT EXISTS fleet_direct_sends_settled (destination TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, settled INTEGER NOT NULL, settled_version TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,reporter,incident_id));
+ CREATE INDEX IF NOT EXISTS fleet_direct_sends_settled_reporter ON fleet_direct_sends_settled(reporter);
+ CREATE INDEX IF NOT EXISTS fleet_direct_sends_settled_age ON fleet_direct_sends_settled(settled);
  CREATE TABLE IF NOT EXISTS incident_alert_destinations (incident_id TEXT NOT NULL, destination TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(incident_id,destination));
 `
 
@@ -744,6 +749,13 @@ func CancelDeliveries(tx *sql.Tx, destinations map[string]checksandalerts.Destin
 	return cancelled, nil
 }
 
+// The statements that prune the hub's tables on each commit with alerts.
+const (
+	pruneResolvedSetRows    = "DELETE FROM fleet_incident_set WHERE state=? AND changed < ?"
+	pruneSettledDirectSends = "DELETE FROM fleet_direct_sends_settled WHERE settled < ?"
+	pruneHandledAlerts      = "DELETE FROM intake WHERE state=? AND received < ?"
+)
+
 func (s *Store) PruneInTransaction(tx *sql.Tx, now time.Time) error {
 	limits := s.Limits.Load()
 	// Retain the newest deliveries within the age and encoded-byte limits.
@@ -778,15 +790,15 @@ func (s *Store) PruneInTransaction(tx *sql.Tx, now time.Time) error {
 	if _, e = tx.Exec("DELETE FROM fleet_incident_keys WHERE alert_severities_sent='' AND announced_alert_severity='' AND next_update_due=0 AND next_reminder_due=0 AND last_closing_alert_at < ?", now.Add(-Retention).UnixNano()); e != nil {
 		return e
 	}
-	if _, e = tx.Exec("DELETE FROM fleet_incident_set WHERE state=? AND changed < ?", fleetIncidentResolved, now.Add(-Retention).UnixNano()); e != nil {
+	if _, e = tx.Exec(pruneResolvedSetRows, fleetIncidentResolved, now.Add(-Retention).UnixNano()); e != nil {
 		return e
 	}
 	// A node stops carrying a settled direct send at its next report.
-	if _, e = tx.Exec("DELETE FROM fleet_direct_sends_settled WHERE settled < ?", now.Add(-Retention).UnixNano()); e != nil {
+	if _, e = tx.Exec(pruneSettledDirectSends, now.Add(-Retention).UnixNano()); e != nil {
 		return e
 	}
 	// Delivered alerts keep only their IDs, so a retry is not accepted twice.
-	if _, e = tx.Exec("DELETE FROM intake WHERE state=? AND received < ?", intakeDone, now.Add(-intakeMemory).UnixNano()); e != nil {
+	if _, e = tx.Exec(pruneHandledAlerts, intakeDone, now.Add(-intakeMemory).UnixNano()); e != nil {
 		return e
 	}
 	if _, e = tx.Exec(`DELETE FROM events WHERE at < ? OR seq IN (

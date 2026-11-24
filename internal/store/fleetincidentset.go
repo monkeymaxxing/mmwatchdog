@@ -419,6 +419,10 @@ func lowestFirst(severities []string) []string {
 	return out
 }
 
+// failuresWaitingInTheIntake reads the failures and raises that wait in
+// the hub's intake, for each alert that closes a key.
+const failuresWaitingInTheIntake = "SELECT node, id, type, subject FROM intake WHERE state IN (?,?) AND type IN ('failed','cannot_check',?,?)"
+
 // waitingFailureKeys names the keys of failures still waiting in the hub's
 // fleet alert grouping, other than the members being sent now. Such a
 // failure holds its key open: it goes to the destinations after the
@@ -431,7 +435,7 @@ func waitingFailureKeys(tx *sql.Tx, hub string, sending []checksandalerts.Event)
 	for _, m := range sending {
 		now[m.Node+"\x00"+m.ID] = true
 	}
-	rows, e := tx.Query("SELECT node, id, type, subject FROM intake WHERE state!=? AND type IN ('failed','cannot_check',?,?)", intakeDone, checksandalerts.FailureIncidentEvents.Raised, checksandalerts.CannotCheckIncidentEvents.Raised)
+	rows, e := tx.Query(failuresWaitingInTheIntake, intakeQueued, intakeHeld, checksandalerts.FailureIncidentEvents.Raised, checksandalerts.CannotCheckIncidentEvents.Raised)
 	if e != nil {
 		return nil, e
 	}
@@ -742,13 +746,21 @@ type IncidentKnownToTheHub struct {
 	Incident    string `json:"incident_id"`
 }
 
+// The statements that read a reporter's rows of the sets and of the
+// settled direct sends, for each report that carries direct sends
+// (fleet_incident_set_reporter, fleet_direct_sends_settled_reporter).
+const (
+	setRowsOfReporter      = "SELECT destination, incident_id FROM fleet_incident_set WHERE reporter=?"
+	settledSendsOfReporter = "SELECT destination, incident_id, settled_version FROM fleet_direct_sends_settled WHERE reporter=?"
+)
+
 // IncidentsKnownToTheHub lists the incidents among carried that the hub's
 // fleet incident sets hold for reporter, so that the node can stop
 // carrying them.
 func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWithoutTheHub) ([]IncidentKnownToTheHub, error) {
 	// Read this reporter's confirmations once. Searching the incident set
 	// for each carried record makes a full report batch take quadratic work.
-	rows, err := s.DB.Query("SELECT destination, incident_id FROM fleet_incident_set WHERE reporter=?", reporter)
+	rows, err := s.DB.Query(setRowsOfReporter, reporter)
 	if err != nil {
 		return nil, err
 	}
@@ -770,7 +782,7 @@ func (s *Store) IncidentsKnownToTheHub(reporter string, carried []IncidentSentWi
 	// itself, whether or not the incident is in the destination's set, one
 	// version of the record at a time.
 	settled := map[IncidentKnownToTheHub]string{}
-	settledRows, err := s.DB.Query("SELECT destination, incident_id, settled_version FROM fleet_direct_sends_settled WHERE reporter=?", reporter)
+	settledRows, err := s.DB.Query(settledSendsOfReporter, reporter)
 	if err != nil {
 		return nil, err
 	}

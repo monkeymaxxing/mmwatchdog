@@ -430,6 +430,12 @@ type pendingNode struct {
 	marked                                                   int64
 }
 
+// pendingChangesOfKey reads the membership rows of one key of a set that
+// have a pending change, for each update and closing of the key.
+const pendingChangesOfKey = `SELECT s.reporter, s.incident_id, s.node, s.pending_change, s.alert_severity, s.changed, s.check_group, s.check_name, s.finding, COALESCE(n.exact_finding,'') FROM fleet_incident_set s
+ LEFT JOIN fleet_node_incidents n ON n.reporter=s.reporter AND n.incident_id=s.incident_id
+ WHERE s.destination=? AND s.alert_source=? AND s.incident_key=? AND s.pending_change!='' ORDER BY s.node`
+
 // queueUpdate queues the key's due pending changes for the destination name
 // as one finding_nodes_changed update, and clears them. Nodes that joined
 // or changed at sos are due at once; every other change is due once a
@@ -439,9 +445,7 @@ type pendingNode struct {
 // When the key closes (closing), every change is due, and an update of
 // recovered nodes alone is left out: the closing alert names them.
 func (set IncidentSet) queueUpdate(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, key string, closing bool, from QueuedBy, now time.Time) error {
-	rows, e := tx.Query(`SELECT s.reporter, s.incident_id, s.node, s.pending_change, s.alert_severity, s.changed, s.check_group, s.check_name, s.finding, COALESCE(n.exact_finding,'') FROM fleet_incident_set s
- LEFT JOIN fleet_node_incidents n ON n.reporter=s.reporter AND n.incident_id=s.incident_id
- WHERE s.destination=? AND s.alert_source=? AND s.incident_key=? AND s.pending_change!='' ORDER BY s.node`, set.with(key)...)
+	rows, e := tx.Query(pendingChangesOfKey, set.with(key)...)
 	if e != nil {
 		return e
 	}
@@ -606,6 +610,12 @@ func boolRank(b bool) int {
 	return 0
 }
 
+// dueKeys reads the keys whose update or reminder, by column, is due, on
+// each delivery step (fleet_incident_keys_update, fleet_incident_keys_reminder).
+func dueKeys(column string) string {
+	return "SELECT destination, alert_source, incident_key FROM fleet_incident_keys WHERE " + column + ">0 AND " + column + "<=?"
+}
+
 // SendDueUpdatesAndReminders is the hub's step for grouped keys on the
 // delivery worker's tick: each key whose update is due sends its pending
 // changes to the destination, and each key whose reminder is due sends one
@@ -629,7 +639,7 @@ func (s *Store) SendDueUpdatesAndReminders(destinations map[string]checksandaler
 			return set.remind(tx, name, dest, key, from, now)
 		}},
 	} {
-		rows, e := tx.Query("SELECT destination, alert_source, incident_key FROM fleet_incident_keys WHERE "+due.column+">0 AND "+due.column+"<=?", now.UnixNano())
+		rows, e := tx.Query(dueKeys(due.column), now.UnixNano())
 		if e != nil {
 			return e
 		}

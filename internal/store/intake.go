@@ -360,8 +360,12 @@ func (s *Store) Accept(node string, event checksandalerts.Event, now time.Time) 
 	return tx.Commit()
 }
 
+// alertsWaitingInTheIntake reads the alerts that wait in the hub's intake,
+// for each alert grouping step.
+const alertsWaitingInTheIntake = "SELECT seq, node, type, subject, grp, destination, severity, state, exact_finding FROM intake WHERE state IN (?,?) ORDER BY seq"
+
 func (s *Store) Intake() ([]IntakeRow, error) {
-	rows, e := s.DB.Query("SELECT seq, node, type, subject, grp, destination, severity, state, exact_finding FROM intake WHERE state!=? ORDER BY seq", intakeDone)
+	rows, e := s.DB.Query(alertsWaitingInTheIntake, intakeQueued, intakeHeld)
 	if e != nil {
 		return nil, e
 	}
