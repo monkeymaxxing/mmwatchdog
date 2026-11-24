@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -145,16 +146,35 @@ func TestFormat20MigratesInPlaceOnEveryRole(t *testing.T) {
 	})
 	t.Run("joined node", func(t *testing.T) {
 		t.Parallel()
+		// 0.1.x recorded a direct send when it queued it. MMHotline took
+		// the warning of i-2, and its raise to sos still waits to be
+		// retried.
+		raise, _ := json.Marshal(checksandalerts.Event{ID: "e-2", Incident: "i-2", Node: "app-1", CheckGroup: "app", Check: "dns", Type: checksandalerts.FailureIncidentEvents.Raised, AlertSeverity: "sos", FleetIncidentKey: "fedcba9876543210fedcba9876543210", At: time.Unix(200, 0)})
 		dir := format20Database(t, `
  INSERT INTO incidents_sent_without_the_hub VALUES('pager','i-1','app','http','','failed','warn,sos',1);
- INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(1,1,'hub',?,'{}')`, sosFailure)
+ INSERT INTO incidents_sent_without_the_hub VALUES('hotline','i-2','app','dns','','failed','warn,sos',2);
+ INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(1,1,'hub',?,'{}');
+ INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(2,2,'hotline','`+string(raise)+`','{}')`, sosFailure)
 		s := openMigrated(t, dir)
 		records, e := s.SentWithoutTheHub()
-		if e != nil || len(records) != 1 || records[0].Incident != "i-1" || len(records[0].AlertSeveritiesSentForIncident) != 2 {
+		if e != nil || len(records) != 2 || records[0].Incident != "i-1" || len(records[0].AlertSeveritiesSentForIncident) != 2 {
 			t.Fatal("the record of a direct send is lost", records, e)
 		}
-		if ds, e := s.Pending(); e != nil || len(ds) != 1 || ds[0].Destination != "hub" {
-			t.Fatal("the alert for the hub is lost", ds, e)
+		// The hub hears only of what MMHotline accepted, so it cannot
+		// settle the sos before MMHotline has it.
+		if records[1].Incident != "i-2" || !slices.Equal(records[1].AlertSeveritiesSentForIncident, []string{"warn"}) {
+			t.Fatal("the record of the waiting raise", records[1])
+		}
+		ds, e := s.Pending()
+		if e != nil || len(ds) != 2 || ds[0].Destination != "hub" || ds[1].Destination != "hotline" {
+			t.Fatal("a queued alert is lost", ds, e)
+		}
+		if _, e = s.Delivered(ds[1], nil); e != nil {
+			t.Fatal(e)
+		}
+		records, e = s.SentWithoutTheHub()
+		if e != nil || len(records) != 2 || records[1].Incident != "i-2" || !slices.Equal(records[1].AlertSeveritiesSentForIncident, []string{"warn", "sos"}) {
+			t.Fatal("the accepted raise is not recorded", records, e)
 		}
 	})
 	t.Run("standalone node", func(t *testing.T) {

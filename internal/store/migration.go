@@ -4,7 +4,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"os"
+	"slices"
 	"strconv"
+	"strings"
 
 	"mmwatchdog/internal/checksandalerts"
 )
@@ -75,10 +77,81 @@ func migrateStateDatabase(path string) error {
 	if e = orderQueuedDeliveries(tx); e != nil {
 		return e
 	}
+	if e = recordQueuedDirectSendsOnAcceptance(tx); e != nil {
+		return e
+	}
 	if _, e = tx.Exec("PRAGMA user_version=21"); e != nil {
 		return e
 	}
 	return tx.Commit()
+}
+
+// recordQueuedDirectSendsOnAcceptance moves a joined node's records of
+// direct sends that still wait in the outbox to their acceptance. Format 20
+// recorded a direct failure or raise to a destination that keeps
+// incidents when it was queued; this format records it once the
+// destination accepts it (recordOnAcceptance). A queued delivery of an
+// incident that has such a record gets the record of its acceptance, and
+// the record keeps only the severities that left the outbox, so that the
+// hub settles a send only once the destination has it. A severity goes out
+// once for each incident, so a severity that waits in the outbox was not
+// accepted yet. A record left with no severity is removed: the delivery's
+// acceptance writes it again.
+func recordQueuedDirectSendsOnAcceptance(tx *sql.Tx) error {
+	rows, e := tx.Query(`SELECT o.seq, o.destination, o.event, r.alert_severities_sent_for_incident FROM outbox o JOIN incidents_sent_without_the_hub r
+ ON r.destination=o.destination AND r.incident_id=json_extract(CAST(o.event AS TEXT),'$.incident_id') ORDER BY o.seq`)
+	if e != nil {
+		return e
+	}
+	type queued struct {
+		seq                    int64
+		destination, incident  string
+		record, severity, sent string
+	}
+	all := []queued{}
+	for rows.Next() {
+		var q queued
+		var b []byte
+		var event checksandalerts.Event
+		if e = rows.Scan(&q.seq, &q.destination, &b, &q.sent); e == nil {
+			e = json.Unmarshal(b, &event)
+		}
+		if e == nil && opensOrChanges(event.Type) {
+			q.incident, q.severity = event.Incident, event.AlertSeverity
+			q.record, e = acceptanceRecord([]checksandalerts.Event{event}, event.MMHotlineAlertSource)
+			all = append(all, q)
+		}
+		if e != nil {
+			_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+			return e
+		}
+	}
+	_ = rows.Close() // This cursor only reads data; scan and iteration errors already determine the result.
+	if e = rows.Err(); e != nil {
+		return e
+	}
+	accepted := map[[2]string][]string{}
+	for _, q := range all {
+		if _, e = tx.Exec("UPDATE outbox SET sent_without_the_hub=? WHERE seq=?", q.record, q.seq); e != nil {
+			return e
+		}
+		id := [2]string{q.destination, q.incident}
+		if _, seen := accepted[id]; !seen {
+			accepted[id] = strings.Split(q.sent, ",")
+		}
+		accepted[id] = slices.DeleteFunc(accepted[id], func(s string) bool { return s == q.severity })
+	}
+	for id, severities := range accepted {
+		if len(severities) == 0 {
+			_, e = tx.Exec("DELETE FROM incidents_sent_without_the_hub WHERE destination=? AND incident_id=?", id[0], id[1])
+		} else {
+			_, e = tx.Exec("UPDATE incidents_sent_without_the_hub SET alert_severities_sent_for_incident=? WHERE destination=? AND incident_id=?", strings.Join(severities, ","), id[0], id[1])
+		}
+		if e != nil {
+			return e
+		}
+	}
+	return nil
 }
 
 // orderQueuedDeliveries gives each delivery in the outbox the columns that

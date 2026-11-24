@@ -661,17 +661,25 @@ type sentWithoutTheHub struct {
 // key then gets its own closing alert. One that leaves the outbox
 // undelivered needs none.
 func recordOnAcceptance(tx *sql.Tx, members []checksandalerts.Event, alertSource string) error {
+	b, e := acceptanceRecord(members, alertSource)
+	if e != nil {
+		return e
+	}
+	_, e = tx.Exec("UPDATE outbox SET sent_without_the_hub=? WHERE seq=last_insert_rowid()", b)
+	return e
+}
+
+// acceptanceRecord is the outbox's sent_without_the_hub of a joined node's
+// direct failure or raise of the incidents of members, sent under
+// alertSource.
+func acceptanceRecord(members []checksandalerts.Event, alertSource string) (string, error) {
 	sent := sentWithoutTheHub{AlertSource: alertSource}
 	for _, m := range members {
 		sent.Members = append(sent.Members, checksandalerts.Event{Incident: m.Incident, CheckGroup: m.CheckGroup, Check: m.Check, Finding: m.Finding, Type: m.Type, AlertSeverity: m.AlertSeverity,
 			ExactFinding: m.ExactFinding, ExactFindingSequence: m.ExactFindingSequence})
 	}
 	b, e := json.Marshal(sent)
-	if e != nil {
-		return e
-	}
-	_, e = tx.Exec("UPDATE outbox SET sent_without_the_hub=? WHERE seq=last_insert_rowid()", string(b))
-	return e
+	return string(b), e
 }
 
 // recordSentWithoutTheHub records, on a joined node, each incident of
