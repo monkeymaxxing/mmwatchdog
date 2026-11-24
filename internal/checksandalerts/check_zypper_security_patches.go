@@ -83,7 +83,7 @@ func (n *ZypperSecurityPatches) Run(ctx context.Context, _ *CheckRun) Observatio
 			described[index] += " (needs a reboot)"
 		}
 	}
-	return securityUpdatesWait(countOf(len(patches), "security patch waits", "security patches wait") + " to be installed: " + shownNames(described))
+	return securityUpdatesWait("security patches", countOf(len(patches), "security patch waits", "security patches wait")+" to be installed: "+shownNames(described))
 }
 
 // noSecurityPatchWaits is the message of the run of

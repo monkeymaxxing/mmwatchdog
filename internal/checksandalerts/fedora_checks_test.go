@@ -117,7 +117,7 @@ func TestDnfSecurityUpdatesCheckOnDnfFive(t *testing.T) {
 	if o.Status != "failed" || o.Message != "2 security updates wait to be installed: pcre2, pcre2-syntax" {
 		t.Fatal(o)
 	}
-	expectPackageSecurity(t, o, new(checksandalerts.DnfSecurityUpdates), "fedora 45", "no security update waits to be installed")
+	expectPackageSecurity(t, o, new(checksandalerts.DnfSecurityUpdates), "fedora 45: security updates wait", "no security update waits to be installed")
 
 	// Every list that is not understood is unknown.
 	for name, written := range map[string]string{

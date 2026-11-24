@@ -72,7 +72,7 @@ func TestDnfSecurityUpdatesCheck(t *testing.T) {
 	if o.Status != "failed" || o.Message != "2 security updates wait to be installed: bind-libs, kernel" {
 		t.Fatal(o)
 	}
-	expectPackageSecurity(t, o, new(checksandalerts.DnfSecurityUpdates), "rocky", "no security update waits to be installed")
+	expectPackageSecurity(t, o, new(checksandalerts.DnfSecurityUpdates), "rocky: security updates wait", "no security update waits to be installed")
 	set("RLSA-2026:2002 Critical/Sec. kernel-5.14.0-503.el9.x86_64\n")
 	if o := observe(); o.Status != "failed" || o.Message != "1 security update waits to be installed: kernel" {
 		t.Fatal(o)

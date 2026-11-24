@@ -72,7 +72,7 @@ func (n *DnfSecurityUpdates) Run(ctx context.Context, _ *CheckRun) Observation {
 		return Result("ok", "no security update waits to be installed")
 	}
 	updates = uniqueSorted(updates)
-	return securityUpdatesWait(countOf(len(updates), "security update waits", "security updates wait") + " to be installed: " + shownNames(updates))
+	return securityUpdatesWait("security updates", countOf(len(updates), "security update waits", "security updates wait")+" to be installed: "+shownNames(updates))
 }
 
 // dnfVersion is what differs between dnf 4 and dnf 5: how the check knows

@@ -74,8 +74,9 @@ fails, so the stamp tells only that the timer ran.
   message names 20 packages at most and counts the rest, such as `, and 4 more`.
 - **All waiting updates are one finding,** `package security`, with one
   incident, one alert, and one recovery, and the check's message as the
-  finding's message. Its exact finding is the node's release, `ID` and
-  `VERSION_ID` of `/etc/os-release`, such as `rocky 9.4`. So every node of
+  finding's message. Its exact finding names the node's release, `ID` and
+  `VERSION_ID` of `/etc/os-release`, and what waits, such as
+  `rocky 10: security updates wait`. So every node of
   a release that waits for updates has the same exact finding, whichever
   updates wait, and a fleet hub sends one alert for all of them. A further
   update that starts to wait changes no exact finding and sends no alert.

@@ -53,13 +53,14 @@ func (n *AptSecurityUpdates) Run(ctx context.Context, _ *CheckRun) Observation {
 		return Result("ok", "no security update waits to be installed")
 	}
 	updates = uniqueSorted(updates)
-	return securityUpdatesWait(countOf(len(updates), "security update waits", "security updates wait") + " to be installed: " + shownNames(updates))
+	return securityUpdatesWait("security updates", countOf(len(updates), "security update waits", "security updates wait")+" to be installed: "+shownNames(updates))
 }
 
 // PackageSecurity is the one finding of each check of security updates,
 // apt_security_updates, dnf_security_updates, and zypper_security_patches:
 // all security updates that wait on a node are one problem, with one
-// remedy, to install them. Its exact finding is the node's release, so
+// remedy, to install them. Its exact finding names the node's release, such
+// as "debian 13: security updates wait", so
 // every node of a release that waits for updates has the same exact
 // finding, whichever updates wait: a fleet gets one alert for it, and a
 // new update adds none.
@@ -67,10 +68,11 @@ const PackageSecurity = "package security"
 
 // securityUpdatesWait is the observation of a check of security updates
 // while updates wait: the message lists them, and the one finding
-// (PackageSecurity) carries the same message.
-func securityUpdatesWait(message string) Observation {
+// (PackageSecurity) carries the same message. Its exact finding names the
+// node's release and what waits, "security updates" or "security patches".
+func securityUpdatesWait(what, message string) Observation {
 	o := Result("failed", message)
-	o.Findings = []Finding{{ID: PackageSecurity, Message: message, ExactFinding: FitExactFinding(releaseOfTheNode())}}
+	o.Findings = []Finding{{ID: PackageSecurity, Message: message, ExactFinding: FitExactFinding(releaseOfTheNode() + ": " + what + " wait")}}
 	return o
 }
 

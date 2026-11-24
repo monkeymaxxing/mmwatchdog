@@ -89,8 +89,9 @@ succeeds for that repository, also when the repository has not changed.
   message names 20 patches at most and counts the rest, such as `, and 4 more`.
 - **All waiting patches are one finding,** `package security`, with one
   incident, one alert, and one recovery, and the check's message as the
-  finding's message. Its exact finding is the node's release, `ID` and
-  `VERSION_ID` of `/etc/os-release`, such as `opensuse-leap 16.1`. So every node of
+  finding's message. Its exact finding names the node's release, `ID` and
+  `VERSION_ID` of `/etc/os-release`, and what waits, such as
+  `opensuse-leap 16.1: security patches wait`. So every node of
   a release that waits for patches has the same exact finding, whichever
   patches wait, and a fleet hub sends one alert for all of them. A further
   patch that starts to wait changes no exact finding and sends no alert.

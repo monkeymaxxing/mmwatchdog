@@ -87,7 +87,7 @@ func TestZypperSecurityPatchesCheck(t *testing.T) {
 	if o.Status != "failed" || o.Message != "2 security patches wait to be installed: openSUSE-Leap-16.1-12 (important): Security update for libXtst, openSUSE-Leap-16.1-30 (critical): Security update for the Linux kernel (needs a reboot)" {
 		t.Fatal(o)
 	}
-	expectPackageSecurity(t, o, new(checksandalerts.ZypperSecurityPatches), "opensuse-leap", "no security patch waits to be installed")
+	expectPackageSecurity(t, o, new(checksandalerts.ZypperSecurityPatches), "opensuse-leap: security patches wait", "no security patch waits to be installed")
 
 	// Exit code 106 means that zypper skipped a repository. Its error text
 	// makes the check unknown, also when the XML lists a patch.

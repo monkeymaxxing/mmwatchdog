@@ -24,7 +24,7 @@ import (
 // The finding of a known exploited flaw, and the release of the nodes.
 const (
 	exploitedFlaw = "CVE-2026-123158 openssh"
-	debian13      = "debian 13"
+	debian13      = "debian 13: security updates wait"
 )
 
 // simulatedNode is a node that runs one check whose module reports

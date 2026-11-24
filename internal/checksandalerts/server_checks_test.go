@@ -2141,9 +2141,9 @@ func TestRebootAfterUpdatesCheck(t *testing.T) {
 // updates while updates wait: package security, with the observation's
 // message, whose exact finding is the node's release, and which is an
 // incident of its own; once gone, its message is gone.
-func expectPackageSecurity(t *testing.T, o checksandalerts.Observation, inputs checksandalerts.CheckInputs, release, gone string) {
+func expectPackageSecurity(t *testing.T, o checksandalerts.Observation, inputs checksandalerts.CheckInputs, exactFinding, gone string) {
 	t.Helper()
-	want := []checksandalerts.Finding{{ID: "package security", Message: o.Message, ExactFinding: release}}
+	want := []checksandalerts.Finding{{ID: "package security", Message: o.Message, ExactFinding: exactFinding}}
 	if o.Status != "failed" || !reflect.DeepEqual(o.Findings, want) || !(&checksandalerts.Check{Inputs: inputs}).Module().OneIncidentForEachFinding || o.FindingIsGoneMessage("package security") != gone {
 		t.Fatalf("%+v, want the one finding %+v", o, want)
 	}
@@ -2177,7 +2177,7 @@ Conf libssl3 (3.0.13-1~deb12u1 Debian-Security:12/stable-security [amd64])
 	}
 	// All waiting updates are one finding, whose exact finding is the
 	// release: a further update changes nothing that the fleet groups by.
-	expectPackageSecurity(t, o, new(checksandalerts.AptSecurityUpdates), "debian 12", "no security update waits to be installed")
+	expectPackageSecurity(t, o, new(checksandalerts.AptSecurityUpdates), "debian 12: security updates wait", "no security update waits to be installed")
 	// apt only simulates, as the unprivileged account, which can change
 	// nothing.
 	if data, _ := os.ReadFile(asked); string(data) != "--simulate\n--quiet\ndist-upgrade\nLC_ALL=C\n" || !reflect.DeepEqual(ranAs(), []string{"mmwatchdog"}) {
