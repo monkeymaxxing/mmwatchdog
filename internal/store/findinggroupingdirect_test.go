@@ -161,6 +161,36 @@ func TestADirectReminderDoesNotMakeAMemberNewlyAffected(t *testing.T) {
 	}
 }
 
+// A node whose opening the hub delivered, and whose first direct send is a
+// reminder during a hub outage, is no newly affected member either: the
+// destination knew the node from the hub, and no update names it again.
+func TestAFirstDirectReminderOfAMemberTheHubAnnouncedAddsNoNode(t *testing.T) {
+	t.Parallel()
+	for _, c := range []struct {
+		destination, severity string
+		dest                  checksandalerts.Destination
+	}{
+		{"chat", "warn", chatTaking("https://chat.example.com", "warn")},
+		{"hotline", "sos", hotline()},
+	} {
+		t.Run(c.destination, func(t *testing.T) {
+			t.Parallel()
+			h := newGroupingHub(t, map[string]checksandalerts.Destination{c.destination: c.dest})
+			h.arrive(tenOFive, h.alert("app-2", "failed", c.severity, versionA, 0, tenOFive))
+			expectKinds(t, h.take(c.destination), "failed "+c.severity)
+			reminded := tenOFive.Add(3 * time.Hour)
+			report := carriedTo(shows("app-2", c.severity, versionA, 0, tenOFive, reminded), c.destination, "")
+			sent := report.SentWithoutTheHub[c.destination]["incident-app-2"]
+			sent.ReminderAcceptedAt = reminded
+			report.SentWithoutTheHub[c.destination]["incident-app-2"] = sent
+			h.report(reminded, map[string]store.ReportedIncidents{"app-2": report})
+			h.tick(reminded.Add(time.Minute))
+			h.tick(time.Date(2026, 11, 24, 18, 0, 0, 0, time.UTC))
+			expectKinds(t, h.take(c.destination))
+		})
+	}
+}
+
 // carriedTo is report with its incident also carried as sent without the
 // hub to destination, under the MMHotline alert source source.
 func carriedTo(report store.ReportedIncidents, destination, source string) store.ReportedIncidents {

@@ -1186,6 +1186,15 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 		if e = rows.Err(); e != nil {
 			return out, e
 		}
+		// The severity of each incident that the set held open before this
+		// report: the destination knew the node already, from the hub or
+		// from an earlier send of the node.
+		openBefore := map[string]string{}
+		for id, x := range held {
+			if x.state == FleetIncidentOpen {
+				openBefore[id] = x.severity
+			}
+		}
 		for _, id := range checksandalerts.Names(held) {
 			x := held[id]
 			// A resolved row stays while the node still carries the incident,
@@ -1308,7 +1317,7 @@ func (set IncidentSet) reconcile(tx *sql.Tx, name string, destinations map[strin
 					state = FleetIncidentOpen
 				}
 				return add(id, c, c.AlertSeveritiesSentForIncident, state, checksandalerts.HasExactFinding(c))
-			}, keeps, setAside[reporter+"\x00"+id], awaitingReports, waiting, changed, setAsideSends, from, now); e != nil {
+			}, keeps, setAside[reporter+"\x00"+id], openBefore[id], awaitingReports, waiting, changed, setAsideSends, from, now); e != nil {
 				return out, e
 			}
 		}
@@ -1475,7 +1484,9 @@ func unixNanoOrZero(t time.Time) int64 {
 // holds only the incidents of findings with an exact finding. For a finding
 // with an exact finding, a direct send is never the last word: an open
 // incident is marked as joined for the key's next update, so the agent
-// sees the node, and the hub's reminders start. When a set-aside entry
+// sees the node, and the hub's reminders start; a direct reminder of a
+// node that the set held open before the report, at openBefore, at least
+// as high as the send, marks nothing. When a set-aside entry
 // covers the incident (reason), the send is added to setAsideSends by its
 // key: the destination gets closed_without_recovery when nothing else of
 // the key is open for it once every report is applied. While
@@ -1484,7 +1495,7 @@ func unixNanoOrZero(t time.Time) int64 {
 // the key's closing waits for it: such a send is not settled yet, and the
 // node keeps carrying it. The record is acknowledged afterwards
 // (IncidentsKnownToTheHub).
-func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason string, awaitingReports bool, waiting map[string]bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
+func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destination, reporter, id string, c checksandalerts.Event, r ReportedIncidents, add func() (string, error), keeps bool, reason, openBefore string, awaitingReports bool, waiting map[string]bool, changed map[string]string, setAsideSends map[string][]setAsideDirectSend, from QueuedBy, now time.Time) error {
 	key := checksandalerts.ReadableFleetIncidentKey(c, checksandalerts.IncidentKind(c.Type), from.hub())
 	settled, e := set.directSendSettled(tx, reporter, id, c)
 	if e != nil || settled || r.Forgotten || reason != "" && (awaitingReports || waiting[key]) {
@@ -1526,11 +1537,17 @@ func (set IncidentSet) settleDirectSend(tx *sql.Tx, dest checksandalerts.Destina
 				changed[key] = "recovered"
 			}
 		}
-		// A version that only a direct reminder made adds nothing that the
-		// destination has not had: the node is no newly affected member.
+		// A direct reminder adds nothing that the destination has not had
+		// when it knew the node already, at the severity of the send: from
+		// the hub, whose alert or update named the node (openBefore), or from
+		// an earlier send that the hub settled. The node is no newly
+		// affected member.
 		reminderOnly := false
 		if e == nil && grouped && state == FleetIncidentOpen {
-			reminderOnly, e = set.onlyItsReminderChanged(tx, reporter, id, c)
+			reminderOnly = !c.ReminderAcceptedAt.IsZero() && openBefore != "" && config.SeverityRank(config.HighestSeverity(c.AlertSeveritiesSentForIncident)) <= config.SeverityRank(openBefore)
+			if !reminderOnly {
+				reminderOnly, e = set.onlyItsReminderChanged(tx, reporter, id, c)
+			}
 		}
 		if e == nil && grouped && state == FleetIncidentOpen && !reminderOnly {
 			e = set.markPending(tx, key, reporter, id, pendingJoined, c.AlertSeverity, from, now)
