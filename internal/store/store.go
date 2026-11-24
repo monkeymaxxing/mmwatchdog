@@ -34,8 +34,54 @@ import (
 // follow the node's storage settings instead; see StorageLimits.
 const Retention = 24 * time.Hour
 
-// stateFormat is the persisted layout version. Change it with the layout.
-const stateFormat = 20
+// stateFormat is the persisted layout version. Change it with the layout,
+// and migrate the previous format in place (migration.go).
+const stateFormat = 21
+
+// stateTables is the layout of state.db in stateFormat.
+//
+// Grouping by exact finding on the hub (findinggrouping.go) keeps:
+// fleet_node_incidents, one row for each open incident of a node that the
+// hub knows; in fleet_incident_set, for every destination, the membership
+// row of each node incident and its pending_change for the next
+// finding_nodes_changed update; and in fleet_incident_keys, what has been
+// announced to the destination for the key, and when the key's next update
+// and reminder are due. The outbox keeps, for its order (Pending), each
+// delivery's key, whether it is urgent (sos) or closes its key, and the key
+// whose announcement it carries. The intake keeps whether an alert has an
+// exact finding, and intake_queued_bytes the bytes that wait, per node.
+const stateTables = `
+ CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK(id=1), data BLOB NOT NULL);
+ CREATE TABLE IF NOT EXISTS checks (key TEXT PRIMARY KEY, data BLOB NOT NULL);
+ CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data BLOB NOT NULL);
+ CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, queued_at INTEGER NOT NULL, destination TEXT NOT NULL, event BLOB NOT NULL, target BLOB NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '',
+  urgent INTEGER NOT NULL DEFAULT 0, incident_key TEXT NOT NULL DEFAULT '', closes INTEGER NOT NULL DEFAULT 0, announced_key TEXT NOT NULL DEFAULT '');
+ CREATE INDEX IF NOT EXISTS outbox_dest ON outbox(destination,seq);
+ CREATE INDEX IF NOT EXISTS outbox_urgent ON outbox(destination,urgent,seq);
+ CREATE INDEX IF NOT EXISTS outbox_key ON outbox(destination,incident_key,seq);
+ CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS destination_health (destination TEXT PRIMARY KEY, data BLOB NOT NULL);
+ CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY CHECK(id=1), history_id TEXT NOT NULL);
+ CREATE TABLE IF NOT EXISTS intake (seq INTEGER PRIMARY KEY AUTOINCREMENT, node TEXT NOT NULL, id TEXT NOT NULL, received INTEGER NOT NULL, type TEXT NOT NULL, subject TEXT NOT NULL, grp TEXT NOT NULL, destination TEXT NOT NULL, severity TEXT NOT NULL, event BLOB NOT NULL, state INTEGER NOT NULL DEFAULT 0,
+  exact_finding INTEGER NOT NULL DEFAULT 0, UNIQUE(node,id));
+ CREATE TABLE IF NOT EXISTS intake_queued_bytes (node TEXT PRIMARY KEY, bytes INTEGER NOT NULL);
+ CREATE TABLE IF NOT EXISTS fleet_incident_set (destination TEXT NOT NULL, alert_source TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, node TEXT NOT NULL, opened INTEGER NOT NULL, alert_severity TEXT NOT NULL, state INTEGER NOT NULL, changed INTEGER NOT NULL,
+  pending_change TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,alert_source,reporter,incident_id));
+ CREATE INDEX IF NOT EXISTS fleet_incident_set_key_state ON fleet_incident_set(destination,alert_source,incident_key,state,alert_severity);
+ CREATE INDEX IF NOT EXISTS fleet_incident_set_state ON fleet_incident_set(destination,alert_source,state,incident_key);
+ CREATE INDEX IF NOT EXISTS fleet_incident_set_pending ON fleet_incident_set(destination,alert_source,incident_key,pending_change);
+ CREATE TABLE IF NOT EXISTS incidents_sent_without_the_hub (destination TEXT NOT NULL, incident_id TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, kind TEXT NOT NULL, alert_severities_sent_for_incident TEXT NOT NULL, at INTEGER NOT NULL,
+  exact_finding TEXT NOT NULL DEFAULT '', exact_finding_sequence INTEGER NOT NULL DEFAULT 0, alert_source TEXT NOT NULL DEFAULT '', PRIMARY KEY(destination,incident_id));
+ CREATE TABLE IF NOT EXISTS fleet_incident_keys (destination TEXT NOT NULL, alert_source TEXT NOT NULL, incident_key TEXT NOT NULL, alert_severities_sent TEXT NOT NULL, last_closing_alert_at INTEGER NOT NULL,
+  announced_alert_severity TEXT NOT NULL DEFAULT '', announced_exact_findings TEXT NOT NULL DEFAULT '[]', next_update_due INTEGER NOT NULL DEFAULT 0, next_reminder_due INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(destination,alert_source,incident_key));
+ CREATE INDEX IF NOT EXISTS fleet_incident_keys_update ON fleet_incident_keys(next_update_due);
+ CREATE INDEX IF NOT EXISTS fleet_incident_keys_reminder ON fleet_incident_keys(next_reminder_due);
+ CREATE TABLE IF NOT EXISTS fleet_node_incidents (reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, node TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL,
+  exact_finding TEXT NOT NULL, exact_finding_sequence INTEGER NOT NULL, alert_severity TEXT NOT NULL, opened INTEGER NOT NULL, reminder_eligible INTEGER NOT NULL, set_aside_entry TEXT NOT NULL DEFAULT '', set_aside_reason TEXT NOT NULL DEFAULT '', PRIMARY KEY(reporter,incident_id));
+ CREATE INDEX IF NOT EXISTS fleet_node_incidents_key ON fleet_node_incidents(incident_key,exact_finding);
+ CREATE TABLE IF NOT EXISTS fleet_direct_sends_settled (destination TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, settled INTEGER NOT NULL, PRIMARY KEY(destination,reporter,incident_id));
+ CREATE TABLE IF NOT EXISTS incident_alert_destinations (incident_id TEXT NOT NULL, destination TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(incident_id,destination));
+`
 
 type Store struct {
 	DB   *sql.DB
@@ -136,22 +182,11 @@ func OpenStore(dir string, limits config.StorageLimits) (*Store, error) {
 	if err := PrepareStateDir(dir); err != nil {
 		return nil, err
 	}
-	db, e := OpenDatabase(filepath.Join(dir, "state.db"), "state", stateFormat, StateDatabaseLimit(limits.StateDatabaseBytes), `
- CREATE TABLE IF NOT EXISTS snapshot (id INTEGER PRIMARY KEY CHECK(id=1), data BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS checks (key TEXT PRIMARY KEY, data BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS events (seq INTEGER PRIMARY KEY AUTOINCREMENT, at INTEGER NOT NULL, data BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS outbox (seq INTEGER PRIMARY KEY, at INTEGER NOT NULL, queued_at INTEGER NOT NULL, destination TEXT NOT NULL, event BLOB NOT NULL, target BLOB NOT NULL, attempts INTEGER NOT NULL DEFAULT 0, next INTEGER NOT NULL DEFAULT 0, error TEXT NOT NULL DEFAULT '');
- CREATE INDEX IF NOT EXISTS outbox_dest ON outbox(destination,seq);
- CREATE TABLE IF NOT EXISTS counters (name TEXT PRIMARY KEY, value INTEGER NOT NULL);
- CREATE TABLE IF NOT EXISTS destination_health (destination TEXT PRIMARY KEY, data BLOB NOT NULL);
- CREATE TABLE IF NOT EXISTS history (id INTEGER PRIMARY KEY CHECK(id=1), history_id TEXT NOT NULL);
- CREATE TABLE IF NOT EXISTS intake (seq INTEGER PRIMARY KEY AUTOINCREMENT, node TEXT NOT NULL, id TEXT NOT NULL, received INTEGER NOT NULL, type TEXT NOT NULL, subject TEXT NOT NULL, grp TEXT NOT NULL, destination TEXT NOT NULL, severity TEXT NOT NULL, event BLOB NOT NULL, state INTEGER NOT NULL DEFAULT 0, UNIQUE(node,id));
- CREATE TABLE IF NOT EXISTS fleet_incident_set (destination TEXT NOT NULL, alert_source TEXT NOT NULL, reporter TEXT NOT NULL, incident_id TEXT NOT NULL, incident_key TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, node TEXT NOT NULL, opened INTEGER NOT NULL, alert_severity TEXT NOT NULL, state INTEGER NOT NULL, changed INTEGER NOT NULL, PRIMARY KEY(destination,alert_source,reporter,incident_id));
- CREATE INDEX IF NOT EXISTS fleet_incident_set_key ON fleet_incident_set(destination,alert_source,incident_key,state);
- CREATE TABLE IF NOT EXISTS incidents_sent_without_the_hub (destination TEXT NOT NULL, incident_id TEXT NOT NULL, check_group TEXT NOT NULL, check_name TEXT NOT NULL, finding TEXT NOT NULL, kind TEXT NOT NULL, alert_severities_sent_for_incident TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(destination,incident_id));
- CREATE TABLE IF NOT EXISTS fleet_incident_keys (destination TEXT NOT NULL, alert_source TEXT NOT NULL, incident_key TEXT NOT NULL, alert_severities_sent TEXT NOT NULL, last_closing_alert_at INTEGER NOT NULL, PRIMARY KEY(destination,alert_source,incident_key));
- CREATE TABLE IF NOT EXISTS incident_alert_destinations (incident_id TEXT NOT NULL, destination TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY(incident_id,destination));
-`)
+	path := filepath.Join(dir, "state.db")
+	if e := migrateStateDatabase(path); e != nil {
+		return nil, e
+	}
+	db, e := OpenDatabase(path, "state", stateFormat, StateDatabaseLimit(limits.StateDatabaseBytes), stateTables)
 	if e != nil {
 		return nil, e
 	}
@@ -549,13 +584,8 @@ func queueEvent(tx *sql.Tx, at int64, name string, dest checksandalerts.Destinat
 	if dest.SendOnlyTheAlertTitle {
 		alert = alert.OnlyTheTitle()
 	}
-	event, e := json.Marshal(alert)
-	if e != nil {
-		return e
-	}
 	target, _ := json.Marshal(destinationForStorage(dest))
-	_, e = tx.Exec("INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(?,?,?,?,?)", at, time.Now().UnixNano(), name, event, target)
-	return e
+	return insertOutbox(tx, at, name, alert, target, "")
 }
 
 // replaceQueuedReminder removes from one queue of the outbox the undelivered

@@ -105,11 +105,7 @@ func QueueMMHotline(tx *sql.Tx, at int64, name string, dest checksandalerts.Dest
 func queueAlerts(tx *sql.Tx, at int64, name string, dest checksandalerts.Destination, alerts []checksandalerts.Event) error {
 	target, _ := json.Marshal(destinationForStorage(dest))
 	for _, a := range alerts {
-		b, e := json.Marshal(a)
-		if e != nil {
-			return e
-		}
-		if _, e = tx.Exec("INSERT INTO outbox(at,queued_at,destination,event,target) VALUES(?,?,?,?,?)", at, time.Now().UnixNano(), name, b, target); e != nil {
+		if e := insertOutbox(tx, at, name, a, target, ""); e != nil {
 			return e
 		}
 	}
