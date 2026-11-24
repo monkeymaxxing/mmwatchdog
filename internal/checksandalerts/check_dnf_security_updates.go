@@ -1,11 +1,14 @@
 package checksandalerts
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,9 +74,40 @@ func (n *DnfSecurityUpdates) Run(ctx context.Context, _ *CheckRun) Observation {
 	if len(updates) == 0 {
 		return Result("ok", "no security update waits to be installed")
 	}
-	updates = uniqueSorted(updates)
-	return Result("failed", countOf(len(updates), "security update waits", "security updates wait")+" to be installed: "+shownNames(updates))
+	// One finding for each advisory: the distribution's advisory is the
+	// unit in which it ships a security fix, and is one problem on every
+	// node that waits for it. The list names an advisory once for each of
+	// its packages.
+	severities, packages := map[string]string{}, map[string][]string{}
+	for _, update := range updates {
+		severities[update.advisory] = cmp.Or(severities[update.advisory], update.severity)
+		packages[update.advisory] = append(packages[update.advisory], rpmPackageName(update.nevra))
+	}
+	advisories := slices.Sorted(maps.Keys(packages))
+	o := Result("failed", countOf(len(advisories), "security advisory waits", "security advisories wait")+" to be installed: "+shownNames(advisories))
+	releaseName := releaseOfTheNode()
+	for _, advisory := range advisories {
+		severity := cmp.Or(severities[advisory], "no severity")
+		o.Findings = append(o.Findings, Finding{
+			ID:           advisory,
+			Message:      "the security advisory " + advisory + " (" + severity + ") waits to be installed: " + strings.Join(uniqueSorted(packages[advisory]), ", "),
+			ExactFinding: FitExactFinding(releaseName + " " + advisory + " " + severity),
+		})
+	}
+	return o
 }
+
+// dnfSecurityAdvisoryIsGone is the message of the run in which the security
+// advisory no longer waits to be installed.
+func dnfSecurityAdvisoryIsGone(advisory string) string {
+	return "the security advisory " + advisory + " no longer waits to be installed"
+}
+
+// dnfAdvisoryPackage is one entry of dnf's list of security updates: an
+// advisory, its severity as dnf names it, such as Important, or "" when
+// dnf names none, and one package that it updates, with its version, as
+// NAME-VERSION-RELEASE.ARCHITECTURE.
+type dnfAdvisoryPackage struct{ advisory, severity, nevra string }
 
 // dnfVersion is what differs between dnf 4 and dnf 5: how the check knows
 // that the package data is fresh, which options give the list of security
@@ -83,7 +117,7 @@ func (n *DnfSecurityUpdates) Run(ctx context.Context, _ *CheckRun) Observation {
 type dnfVersion struct {
 	metadataProblem func(ctx context.Context) *Observation
 	listingOptions  []string
-	updatesIn       func(written string) (updates []string, understood bool)
+	updatesIn       func(written string) (updates []dnfAdvisoryPackage, understood bool)
 	// rebootHint answers reboot_after_updates on the Red Hat family.
 	rebootHint func(ctx context.Context) Observation
 }
@@ -254,25 +288,24 @@ func dnfFiveMetadataProblem(ctx context.Context) *Observation {
 	return oldest
 }
 
-// securityUpdatesInDNFFourList reads the packages from what dnf 4's
-// "dnf updateinfo list --security" wrote: one line for each advisory and
-// package. dnf has already left out every advisory that is no security
-// advisory. dnf writes three columns: the advisory, its kind, such as
-// Important/Sec., and the package. A list with a line of another form is not
-// understood.
-//
-// The list names a package once for each advisory, with the version of
-// that advisory: a kernel that is a year old has 27 lines. The update that
-// waits is one, the newest, so the check counts the package and not its
-// lines, as "dnf check-update --security" does.
-func securityUpdatesInDNFFourList(written string) (updates []string, understood bool) {
-	updates = []string{}
+// securityUpdatesInDNFFourList reads the advisories and their packages
+// from what dnf 4's "dnf updateinfo list --security" wrote: one line for
+// each advisory and package. dnf has already left out every advisory that
+// is no security advisory. dnf writes three columns: the advisory, its
+// severity and kind, such as Important/Sec., and the package. A list with a
+// line of another form is not understood.
+func securityUpdatesInDNFFourList(written string) (updates []dnfAdvisoryPackage, understood bool) {
+	updates = []dnfAdvisoryPackage{}
 	for _, line := range strings.Split(written, "\n") {
 		fields := strings.Fields(line)
 		switch {
 		case len(fields) == 0:
 		case len(fields) == 3:
-			updates = append(updates, rpmPackageName(fields[2]))
+			severity, _, named := strings.Cut(fields[1], "/")
+			if !named {
+				severity = ""
+			}
+			updates = append(updates, dnfAdvisoryPackage{advisory: fields[0], severity: severity, nevra: fields[2]})
 		default:
 			return nil, false
 		}
@@ -280,29 +313,31 @@ func securityUpdatesInDNFFourList(written string) (updates []string, understood 
 	return updates, true
 }
 
-// securityUpdatesInDNFFiveList reads the packages from what dnf 5's
-// "dnf updateinfo list --security --updates --json" wrote: a JSON array with
-// one object for each advisory and package, with the advisory's type and the
-// package with its version in the field nevra. The array is empty when no
-// update waits, while dnf 5's text list is then empty too and otherwise has a
-// header line and a date with a space, which would need a guess at the
-// columns. A list that is not an array, or has an entry without the type
-// security or without a package, is not understood. Like dnf 4's list, it
-// names a package once for each advisory.
-func securityUpdatesInDNFFiveList(written string) (updates []string, understood bool) {
+// securityUpdatesInDNFFiveList reads the advisories and their packages
+// from what dnf 5's "dnf updateinfo list --security --updates --json"
+// wrote: a JSON array with one object for each advisory and package, with
+// the advisory's name, type, and severity, and the package with its version
+// in the field nevra. The array is empty when no update waits, while dnf 5's
+// text list is then empty too and otherwise has a header line and a date
+// with a space, which would need a guess at the columns. A list that is not
+// an array, or has an entry without a name, without the type security, or
+// without a package, is not understood.
+func securityUpdatesInDNFFiveList(written string) (updates []dnfAdvisoryPackage, understood bool) {
 	var advisories []struct {
-		Type  *string `json:"type"`
-		Nevra *string `json:"nevra"`
+		Name     *string `json:"name"`
+		Type     *string `json:"type"`
+		Severity string  `json:"severity"`
+		Nevra    *string `json:"nevra"`
 	}
 	if json.Unmarshal([]byte(written), &advisories) != nil || advisories == nil {
 		return nil, false
 	}
-	updates = []string{}
+	updates = []dnfAdvisoryPackage{}
 	for _, advisory := range advisories {
-		if advisory.Type == nil || *advisory.Type != "security" || advisory.Nevra == nil || *advisory.Nevra == "" {
+		if advisory.Name == nil || *advisory.Name == "" || advisory.Type == nil || *advisory.Type != "security" || advisory.Nevra == nil || *advisory.Nevra == "" {
 			return nil, false
 		}
-		updates = append(updates, rpmPackageName(*advisory.Nevra))
+		updates = append(updates, dnfAdvisoryPackage{advisory: *advisory.Name, severity: advisory.Severity, nevra: *advisory.Nevra})
 	}
 	return updates, true
 }
@@ -326,8 +361,9 @@ func rpmPackageName(withVersion string) string {
 // dnfSecurityUpdatesDescription is what "mmwatchdog describe-module dnf_security_updates" shows, and what
 // validation knows about the module's inputs.
 var dnfSecurityUpdatesDescription = ModuleDescription{
-	Summary: "Fails while a security update waits to be installed on a node of the Red Hat family, such as Rocky Linux, AlmaLinux, and Fedora. The check reads what dnf already knows, and downloads nothing.",
-	UsedAs:  UsedAsCheck,
+	Summary:                   "Fails while a security update waits to be installed on a node of the Red Hat family, such as Rocky Linux, AlmaLinux, and Fedora. Each security advisory that waits is one finding, with an incident of its own. The check reads what dnf already knows, and downloads nothing.",
+	UsedAs:                    UsedAsCheck,
+	OneIncidentForEachFinding: true,
 	Inputs: []ModuleInput{
 		{Name: "fail_when", Type: "string", Required: true, AllowedValues: []any{"a_security_update_waits_to_be_installed"}, Description: "The check fails while a security update waits to be installed; write a_security_update_waits_to_be_installed, the only value."},
 	},

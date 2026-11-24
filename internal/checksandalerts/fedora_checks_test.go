@@ -106,15 +106,20 @@ func TestDnfSecurityUpdatesCheckOnDnfFive(t *testing.T) {
 		t.Fatalf("%q", got)
 	}
 
-	// A package that several advisories name counts once, with the name cut
-	// from its version, release, and architecture.
+	// Each advisory is one finding, with its packages, each cut from its
+	// version, release, and architecture. Its exact finding is the release,
+	// the advisory, and the advisory's severity.
 	say("listing", `[
   {"name":"FEDORA-2026-3dc7e56d1e","type":"security","severity":"Important","nevra":"pcre2-10.49-1.fc45.x86_64","buildtime":1794157739},
   {"name":"FEDORA-2026-3dc7e56d1e","type":"security","severity":"Important","nevra":"pcre2-syntax-10.49-1.fc45.noarch","buildtime":1794157739},
   {"name":"FEDORA-2026-aaaaaaaaaa","type":"security","severity":"Moderate","nevra":"pcre2-10.48-1.fc45.x86_64","buildtime":1794157700}
 ]`)
-	if o := observe(); o.Status != "failed" || o.Message != "2 security updates wait to be installed: pcre2, pcre2-syntax" {
-		t.Fatal(o)
+	wantFindings := []checksandalerts.Finding{
+		{ID: "FEDORA-2026-3dc7e56d1e", Message: "the security advisory FEDORA-2026-3dc7e56d1e (Important) waits to be installed: pcre2, pcre2-syntax", ExactFinding: "fedora 45 FEDORA-2026-3dc7e56d1e Important"},
+		{ID: "FEDORA-2026-aaaaaaaaaa", Message: "the security advisory FEDORA-2026-aaaaaaaaaa (Moderate) waits to be installed: pcre2", ExactFinding: "fedora 45 FEDORA-2026-aaaaaaaaaa Moderate"},
+	}
+	if o := observe(); o.Status != "failed" || o.Message != "2 security advisories wait to be installed: FEDORA-2026-3dc7e56d1e, FEDORA-2026-aaaaaaaaaa" || !reflect.DeepEqual(o.Findings, wantFindings) {
+		t.Fatalf("%+v", o)
 	}
 
 	// Every list that is not understood is unknown.
@@ -123,14 +128,15 @@ func TestDnfSecurityUpdatesCheckOnDnfFive(t *testing.T) {
 		"no output":               "",
 		"null":                    "null",
 		"an object":               `{"type":"security","nevra":"pcre2-10.49-1.fc45.x86_64"}`,
-		"another type":            `[{"type":"bugfix","nevra":"pcre2-10.49-1.fc45.x86_64"}]`,
-		"no type":                 `[{"nevra":"pcre2-10.49-1.fc45.x86_64"}]`,
-		"no package":              `[{"type":"security"}]`,
-		"an empty package":        `[{"type":"security","nevra":""}]`,
-		"a package of a number":   `[{"type":"security","nevra":4}]`,
+		"another type":            `[{"name":"FEDORA-2026-3dc7e56d1e","type":"bugfix","nevra":"pcre2-10.49-1.fc45.x86_64"}]`,
+		"no type":                 `[{"name":"FEDORA-2026-3dc7e56d1e","nevra":"pcre2-10.49-1.fc45.x86_64"}]`,
+		"no package":              `[{"name":"FEDORA-2026-3dc7e56d1e","type":"security"}]`,
+		"no advisory":             `[{"type":"security","nevra":"pcre2-10.49-1.fc45.x86_64"}]`,
+		"an empty package":        `[{"name":"FEDORA-2026-3dc7e56d1e","type":"security","nevra":""}]`,
+		"a package of a number":   `[{"name":"FEDORA-2026-3dc7e56d1e","type":"security","nevra":4}]`,
 		"text after the list":     "[]\nLast metadata expiration check",
-		"a list cut off":          `[{"type":"security","nevra":"pcre2-10.49-1.fc45.x86_6`,
-		"one good entry, one bad": `[{"type":"security","nevra":"pcre2-10.49-1.fc45.x86_64"},{"type":"enhancement","nevra":"vim-9-1.fc45.x86_64"}]`,
+		"a list cut off":          `[{"name":"FEDORA-2026-3dc7e56d1e","type":"security","nevra":"pcre2-10.49-1.fc45.x86_6`,
+		"one good entry, one bad": `[{"name":"FEDORA-2026-3dc7e56d1e","type":"security","nevra":"pcre2-10.49-1.fc45.x86_64"},{"name":"FEDORA-2026-bbbbbbbbbb","type":"enhancement","nevra":"vim-9-1.fc45.x86_64"}]`,
 	} {
 		say("listing", written)
 		if o := observe(); o.Status != "unknown" || !strings.HasPrefix(o.Message, "dnf gave a list of security updates that MMWatchdog does not understand:") {
@@ -251,8 +257,8 @@ func TestRebootAfterUpdatesCheckOnFedora(t *testing.T) {
 		os.WriteFile(answer, []byte(output), 0644)
 		os.WriteFile(answer+".stderr", []byte(errors), 0644)
 	}
-	const notNeeded = `[{"type":"reboot","reboot_required":false,"packages":[],"documentation":"https://access.redhat.com/solutions/27943"}]`
-	const needed = `[{"type":"reboot","reboot_required":true,"packages":["kernel","glibc","glibc"],"documentation":"https://access.redhat.com/solutions/27943"}]`
+	const notNeeded = `[{"name":"FEDORA-2026-3dc7e56d1e","type":"reboot","reboot_required":false,"packages":[],"documentation":"https://access.redhat.com/solutions/27943"}]`
+	const needed = `[{"name":"FEDORA-2026-3dc7e56d1e","type":"reboot","reboot_required":true,"packages":["kernel","glibc","glibc"],"documentation":"https://access.redhat.com/solutions/27943"}]`
 	set("0", notNeeded, "")
 	if o := observe(); o.Status != "ok" || o.Message != "this node needs no reboot" {
 		t.Fatal(o)
@@ -284,10 +290,10 @@ func TestRebootAfterUpdatesCheckOnFedora(t *testing.T) {
 		"exit 1, no answer":         {"1", "", "Error: something else\n"},
 		"dnf 4's text":              {"1", "Core libraries or services have been updated since boot-up:\n  * glibc\n", ""},
 		"an object":                 {"0", `{"type":"reboot","reboot_required":false}`, ""},
-		"two entries":               {"0", `[{"type":"reboot","reboot_required":false},{"type":"reboot","reboot_required":false}]`, ""},
-		"another type":              {"0", `[{"type":"services","reboot_required":false}]`, ""},
-		"no reboot_required":        {"0", `[{"type":"reboot","packages":[]}]`, ""},
-		"reboot_required of a text": {"1", `[{"type":"reboot","reboot_required":"yes"}]`, ""},
+		"two entries":               {"0", `[{"name":"FEDORA-2026-3dc7e56d1e","type":"reboot","reboot_required":false},{"type":"reboot","reboot_required":false}]`, ""},
+		"another type":              {"0", `[{"name":"FEDORA-2026-3dc7e56d1e","type":"services","reboot_required":false}]`, ""},
+		"no reboot_required":        {"0", `[{"name":"FEDORA-2026-3dc7e56d1e","type":"reboot","packages":[]}]`, ""},
+		"reboot_required of a text": {"1", `[{"name":"FEDORA-2026-3dc7e56d1e","type":"reboot","reboot_required":"yes"}]`, ""},
 	} {
 		set(tc.code, tc.output, tc.errors)
 		if o := observe(); o.Status != "unknown" || !strings.HasPrefix(o.Message, "dnf needs-restarting ended with exit code "+tc.code+" and an answer that MMWatchdog does not understand:") {

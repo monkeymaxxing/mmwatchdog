@@ -62,16 +62,27 @@ func TestDnfSecurityUpdatesCheck(t *testing.T) {
 	if data, _ := os.ReadFile(asked); string(data) != "--quiet\n--cacheonly\nupdateinfo\nlist\n--security\n--updates\nLC_ALL=C\n" {
 		t.Fatalf("%q", data)
 	}
-	// A package that several advisories name counts once, with the name
-	// cut from its epoch, version, release, and architecture.
+	// Each advisory is one finding, with an incident of its own, and names
+	// its packages, each cut from its epoch, version, release, and
+	// architecture. Its exact finding is the release, the advisory, and the
+	// advisory's severity.
 	set("RLSA-2026:1001 Important/Sec. bind-libs-32:9.16.23-18.el9_4.1.x86_64\n" +
 		"RLSA-2026:1002 Moderate/Sec. bind-libs-32:9.16.23-19.el9_4.1.x86_64\n" +
-		"RLSA-2026:2002 Critical/Sec. kernel-5.14.0-503.el9.x86_64\n")
-	if o := observe(); o.Status != "failed" || o.Message != "2 security updates wait to be installed: bind-libs, kernel" {
-		t.Fatal(o)
+		"RLSA-2026:2002 Critical/Sec. kernel-5.14.0-503.el9.x86_64\n" +
+		"RLSA-2026:2002 Critical/Sec. kernel-core-5.14.0-503.el9.x86_64\n")
+	o := observe()
+	wantFindings := []checksandalerts.Finding{
+		{ID: "RLSA-2026:1001", Message: "the security advisory RLSA-2026:1001 (Important) waits to be installed: bind-libs", ExactFinding: "rocky RLSA-2026:1001 Important"},
+		{ID: "RLSA-2026:1002", Message: "the security advisory RLSA-2026:1002 (Moderate) waits to be installed: bind-libs", ExactFinding: "rocky RLSA-2026:1002 Moderate"},
+		{ID: "RLSA-2026:2002", Message: "the security advisory RLSA-2026:2002 (Critical) waits to be installed: kernel, kernel-core", ExactFinding: "rocky RLSA-2026:2002 Critical"},
+	}
+	if o.Status != "failed" || o.Message != "3 security advisories wait to be installed: RLSA-2026:1001, RLSA-2026:1002, RLSA-2026:2002" || !reflect.DeepEqual(o.Findings, wantFindings) ||
+		!(&checksandalerts.Check{Inputs: new(checksandalerts.DnfSecurityUpdates)}).Module().OneIncidentForEachFinding ||
+		o.FindingIsGoneMessage("RLSA-2026:1001") != "the security advisory RLSA-2026:1001 no longer waits to be installed" {
+		t.Fatalf("%+v", o)
 	}
 	set("RLSA-2026:2002 Critical/Sec. kernel-5.14.0-503.el9.x86_64\n")
-	if o := observe(); o.Status != "failed" || o.Message != "1 security update waits to be installed: kernel" {
+	if o := observe(); o.Status != "failed" || o.Message != "1 security advisory waits to be installed: RLSA-2026:2002" {
 		t.Fatal(o)
 	}
 	// A list in another form is not understood.

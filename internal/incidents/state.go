@@ -961,6 +961,17 @@ func retirementReason(c *config.Config, st *CheckState, replaced bool) string {
 	return why + "; MMWatchdog does not know whether the problem is fixed"
 }
 
+// findingsChangeReason is the message of the alert that closes the
+// incidents of a check whose module changed between one incident for the
+// check and one incident for each finding. eachFinding reports the
+// module's new choice.
+func findingsChangeReason(eachFinding bool) string {
+	if eachFinding {
+		return "the check's module now reports each finding as an incident of its own, and the findings open as new incidents; MMWatchdog does not know whether the problem is fixed"
+	}
+	return "the check's module no longer reports each finding as an incident of its own, and the check opens a new incident; MMWatchdog does not know whether the problem is fixed"
+}
+
 // sameNames compares two optional lists of names; a list that is not stated
 // differs from an empty one.
 func sameNames(a, b *[]string) bool {
@@ -998,7 +1009,13 @@ func (s *Snapshot) Reconcile(c *config.Config, defs map[string]config.Definition
 func (s *Snapshot) ReconcileOne(c *config.Config, key string, d *config.Definition, now time.Time) []checksandalerts.Event {
 	events := []checksandalerts.Event{}
 	if st := s.Checks[key]; st != nil {
-		if d != nil && st.Fingerprint == d.Identity() {
+		// A check whose module changed between one incident and one
+		// incident for each finding, such as apt_security_updates in
+		// MMWatchdog 0.2.0, is a new check, although its configuration reads
+		// the same: its state has another form. Its old incidents retire
+		// once, and the new state keeps the module's choice.
+		findingsChanged := d != nil && st.OneIncidentForEachFinding != d.Check.Module().OneIncidentForEachFinding
+		if d != nil && st.Fingerprint == d.Identity() && !findingsChanged {
 			source, recordsOnly := c.CheckSource(d.CheckGroup, d.Name), d.CheckWithSeverity().RecordsOnly()
 			if st.Source != source || st.Timing != d.Timing || st.RecordsOnly != recordsOnly {
 				st.Touch()
@@ -1025,6 +1042,9 @@ func (s *Snapshot) ReconcileOne(c *config.Config, key string, d *config.Definiti
 			return events
 		}
 		reason := retirementReason(c, st, d != nil)
+		if findingsChanged {
+			reason = findingsChangeReason(d.Check.Module().OneIncidentForEachFinding)
+		}
 		events = append(events, st.retire(&st.FailureIncident, reason, now)...)
 		events = append(events, st.retire(&st.CannotCheckIncident, reason, now)...)
 		// A changed or removed every_systemd_unit check closes the

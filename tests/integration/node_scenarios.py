@@ -141,6 +141,11 @@ elif sys.argv[1] == 'hosts':
     print('\n'.join(sorted(set(re.findall(r'https?://([^/\s$]+)', text)))))
 elif sys.argv[1] == 'waiting':
     print('\n'.join(waiting()))
+elif sys.argv[1] == 'waiting-advisories':
+    # The security advisories with an update that dnf would install, read as root with dnf's own
+    # listing: the check reports one finding for each.
+    listed = command('dnf', '--quiet', '--cacheonly', 'updateinfo', 'list', '--security', '--updates').stdout
+    print('\n'.join(sorted({line.split()[0] for line in listed.splitlines() if line.strip() and not (FIVE and line.startswith('Name '))})))
 elif sys.argv[1] == 'downgrade-a-package':
     # From the packages with a security advisory whose update is installed, take
     # one of which the repositories hold an older version, downgrade it to the
@@ -814,7 +819,7 @@ KillMode=control-group
             if waiting:
                 noun = '1 security update waits' if len(waiting) == 1 else str(len(waiting)) + ' security updates wait'
                 updates = becomes('software/no_security_update_waits', 'failed', noun + ' to be installed: ' + waiting[0])
-                assert all(package in updates['message'] for package in waiting[:20]), (updates, waiting)
+                assert all(source in updates['message'] for source in waiting[:20]), (updates, waiting)
             else:
                 becomes('software/no_security_update_waits', 'ok', 'no security update waits to be installed')
 
@@ -827,7 +832,12 @@ KillMode=control-group
             stamp = '/var/lib/apt/periodic/update-success-stamp'
             vm.console("test -e /etc/apt/apt.conf.d/15update-stamp || printf '%s\\n' 'APT::Update::Post-Invoke-Success {\"touch " + stamp + "\";};' 'APT::Periodic::Update-Package-Lists \"1\";' > /etc/apt/apt.conf.d/15update-stamp")
             vm.console('rm -f ' + stamp + '; export DEBIAN_FRONTEND=noninteractive; apt-get -o DPkg::Lock::Timeout=600 update -qq; test -f ' + stamp, timeout=600)
-            waiting = sorted(set(vm.console("apt-get --simulate dist-upgrade | grep '^Inst ' | grep -i security | cut -d ' ' -f 2", check=False).stdout.split()))
+            # The source packages of the packages that an upgrade takes from a security archive,
+            # read with dpkg-query: the check reports one finding for each. A package that the
+            # upgrade installs anew counts by its own name.
+            waiting = sorted(set(vm.console("apt-get --simulate dist-upgrade | grep '^Inst ' | grep -i security | cut -d ' ' -f 2 | cut -d : -f 1 | while read p; do"
+                                            " s=$(dpkg-query --show --showformat='${db:Status-Status} ${source:Package}' \"$p\" 2>/dev/null);"
+                                            " case \"$s\" in 'installed '*) echo \"${s#installed }\";; *) echo \"$p\";; esac; done", check=False).stdout.split()))
             vm.console('rm -f /run/reboot-required /run/reboot-required.pkgs; mv ' + stamp + ' ' + stamp + '.of-the-test')
             reload()
             now_is('no_security_update_waits', 'unknown', 'apt has no usable successful-refresh stamp at ' + stamp + ', so MMWatchdog cannot know which updates wait: have apt write this stamp after each successful refresh; the module page apt_security_updates, section "Set up", shows how (mmwatchdog describe-module apt_security_updates)')
@@ -1003,6 +1013,7 @@ else:
                 noun = '1 security patch waits' if len(waiting) == 1 else str(len(waiting)) + ' security patches wait'
                 observed = now_is('no_security_update_waits', 'failed', noun + ' to be installed: ')
                 assert all(patch in observed['message'] or ' (needs a reboot)' in observed['message'] for patch in waiting[:20]), (observed, waiting)
+                assert sorted(finding['id'] for finding in observed['findings']) == sorted(line.split(' (')[0] for line in waiting), (observed, waiting)
                 return observed
 
             # openSUSE Leap's cloud image refreshes nothing by itself. Set up the daily refresh as
@@ -1120,13 +1131,14 @@ else:
                     assert observed['message'].endswith(', is 9 days old' + refresh_hint), observed
 
             def finds_the_waiting_updates(expected=None):
-                """The packages with a security update, read as root with dnf's own listing, independently of the check."""
-                waiting = helper('waiting').splitlines() if expected is None else expected
+                """The security advisories that wait, read as root with dnf's own listing, independently of the check: one finding for each."""
+                waiting = helper('waiting-advisories').splitlines() if expected is None else expected
                 if not waiting:
                     return now_is('no_security_update_waits', 'ok', 'no security update waits to be installed')
-                noun = '1 security update waits' if len(waiting) == 1 else str(len(waiting)) + ' security updates wait'
+                noun = '1 security advisory waits' if len(waiting) == 1 else str(len(waiting)) + ' security advisories wait'
                 observed = now_is('no_security_update_waits', 'failed', noun + ' to be installed: ')
-                assert all(package in observed['message'] for package in waiting[:20]), (observed, waiting)
+                assert all(advisory in observed['message'] for advisory in waiting[:20]), (observed, waiting)
+                assert sorted(finding['id'] for finding in observed['findings']) == sorted(waiting), (observed, waiting)
                 return observed
 
             if fedora:
@@ -1186,7 +1198,7 @@ else:
                 if package:
                     assert package in helper('waiting').splitlines(), package
                     observed = finds_the_waiting_updates()
-                    assert package in observed['message'], (package, observed)
+                    assert any(package in finding['message'] for finding in observed['findings']), (package, observed)
 
                 # Package data that nobody refreshed for nine days (dnf 5: twenty, because
                 # one of Fedora's repositories keeps its package data 14 days). The stamp

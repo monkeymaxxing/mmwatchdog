@@ -1,12 +1,15 @@
 package checksandalerts
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -52,8 +55,46 @@ func (n *AptSecurityUpdates) Run(ctx context.Context, _ *CheckRun) Observation {
 	if len(updates) == 0 {
 		return Result("ok", "no security update waits to be installed")
 	}
-	updates = uniqueSorted(updates)
-	return Result("failed", countOf(len(updates), "security update waits", "security updates wait")+" to be installed: "+shownNames(updates))
+	sources, problem := sourcePackagesOfAPT(ctx)
+	if problem != nil {
+		return *problem
+	}
+	// One finding for each source package: a security update of one
+	// source package updates all its binary packages, and is one problem on
+	// every node that has it.
+	bySource := map[string][]aptSecurityUpdate{}
+	for _, update := range updates {
+		source := cmp.Or(sources[update.binary], update.binary)
+		bySource[source] = append(bySource[source], update)
+	}
+	names := slices.Sorted(maps.Keys(bySource))
+	o := Result("failed", countOf(len(names), "security update waits", "security updates wait")+" to be installed: "+shownNames(names))
+	releaseName := releaseOfTheNode()
+	for _, source := range names {
+		installed, candidate, binaries := "", "", []string{}
+		for _, update := range bySource[source] {
+			if update.installed != "" {
+				installed = lowerVersion(installed, update.installed)
+			}
+			if candidate == "" || primitives.CompareDebianVersions(update.candidate, candidate) > 0 {
+				candidate = update.candidate
+			}
+			binaries = append(binaries, update.binary)
+		}
+		installed = cmp.Or(installed, "not installed")
+		o.Findings = append(o.Findings, Finding{
+			ID:           source,
+			Message:      "a security update of " + source + " waits to be installed: " + installed + " to " + candidate + " (" + strings.Join(uniqueSorted(binaries), ", ") + ")",
+			ExactFinding: FitExactFinding(releaseName + " " + source + " " + installed + " to " + candidate),
+		})
+	}
+	return o
+}
+
+// aptSecurityUpdateIsGone is the message of the run in which no security
+// update of the source package waits any more.
+func aptSecurityUpdateIsGone(source string) string {
+	return "no security update of " + source + " waits to be installed any more"
 }
 
 // unknownPackageManager is the observation of a node whose distribution is
@@ -125,14 +166,20 @@ func packageListsProblem(manager, refresh string, listsExist bool, successStamp 
 const aptRefresh = `have apt write this stamp after each successful refresh; the module page apt_security_updates, section "Set up", shows how (mmwatchdog describe-module apt_security_updates)`
 
 // aptInstallPattern finds, in what "apt-get --simulate" writes, a package
-// that an upgrade would install, and where its new version comes from: a
-// line such as "Inst libssl3 [3.0.11-1] (3.0.13-1 Debian-Security:12/stable-security [amd64])".
-var aptInstallPattern = regexp.MustCompile(`^Inst (\S+) (?:\[[^\]]*\] )?\(([^)]*)\)`)
+// that an upgrade would install, its installed version, when it is
+// installed, and its new version with where it comes from: a line such as
+// "Inst libssl3 [3.0.11-1] (3.0.13-1 Debian-Security:12/stable-security [amd64])".
+var aptInstallPattern = regexp.MustCompile(`^Inst (\S+) (?:\[([^\]]*)\] )?\(([^)]*)\)`)
+
+// aptSecurityUpdate is one binary package that an upgrade would install
+// from a security archive: its installed version, "" for a package that
+// is not installed yet, and the version that the upgrade installs.
+type aptSecurityUpdate struct{ binary, installed, candidate string }
 
 // securityUpdatesOfAPT asks apt which packages an upgrade would install
 // from a security archive. apt only simulates the upgrade, as the
 // unprivileged account mmwatchdog, which can change nothing.
-func securityUpdatesOfAPT(ctx context.Context) ([]string, *Observation) {
+func securityUpdatesOfAPT(ctx context.Context) ([]aptSecurityUpdate, *Observation) {
 	// A failed refresh can touch lists/partial or update-stamp. Only a
 	// successful-refresh stamp proves freshness, and package data must exist.
 	lists := hasNonemptyPackageLists("/var/lib/apt/lists/*_Packages", "/var/lib/apt/lists/*_Packages.*")
@@ -150,14 +197,35 @@ func securityUpdatesOfAPT(ctx context.Context) ([]string, *Observation) {
 // security archive from what "apt-get --simulate dist-upgrade" wrote.
 // Debian names its archive Debian-Security, and Ubuntu's archives end with
 // -security.
-func securityUpdatesInAPTSimulation(written string) []string {
-	updates := []string{}
+func securityUpdatesInAPTSimulation(written string) []aptSecurityUpdate {
+	updates := []aptSecurityUpdate{}
 	for _, line := range strings.Split(written, "\n") {
-		if found := aptInstallPattern.FindStringSubmatch(line); found != nil && strings.Contains(strings.ToLower(found[2]), "security") {
-			updates = append(updates, found[1])
+		found := aptInstallPattern.FindStringSubmatch(line)
+		if found == nil || !strings.Contains(strings.ToLower(found[3]), "security") {
+			continue
 		}
+		// apt writes a package of another architecture with it, such as
+		// libc6:i386; dpkg names the source package of libc6.
+		binary, _, _ := strings.Cut(found[1], ":")
+		updates = append(updates, aptSecurityUpdate{binary: binary, installed: found[2], candidate: strings.Fields(found[3])[0]})
 	}
 	return updates
+}
+
+// sourcePackagesOfAPT returns the source package of each installed binary
+// package, as dpkg-query names them, run as the unprivileged account.
+func sourcePackagesOfAPT(ctx context.Context) (map[string]string, *Observation) {
+	ran, err := primitives.RunCommand(ctx, primitives.Command{Arguments: []string{"dpkg-query", "--show", "--showformat=${db:Status-Status}\t${Package}\t${source:Package}\n"}, RunAs: &primitives.ExecOptions{RunAsUserAccount: primitives.UnprivilegedAccount, RunFromDirectory: "/", Env: map[string]string{"LC_ALL": "C"}}, StandardOutputLimit: primitives.OwnStandardOutputLimit})
+	if problem := packageManagerProblem("dpkg-query", ran, err); problem != nil {
+		return nil, problem
+	}
+	sources := map[string]string{}
+	for _, line := range strings.Split(ran.StandardOutput, "\n") {
+		if fields := strings.Split(line, "\t"); len(fields) == 3 && fields[0] == "installed" && fields[2] != "" {
+			sources[fields[1]] = fields[2]
+		}
+	}
+	return sources, nil
 }
 
 // packageManagerProblem is the observation of a package manager that could
@@ -182,8 +250,9 @@ func packageManagerProblem(program string, ran primitives.CommandResult, err err
 // aptSecurityUpdatesDescription is what "mmwatchdog describe-module apt_security_updates" shows, and what
 // validation knows about the module's inputs.
 var aptSecurityUpdatesDescription = ModuleDescription{
-	Summary: "Fails while a security update waits to be installed on the node. The check reads what the node's own package manager already knows, and downloads nothing.",
-	UsedAs:  UsedAsCheck,
+	Summary:                   "Fails while a security update waits to be installed on the node. Each source package with a waiting security update is one finding, with an incident of its own. The check reads what the node's own package manager already knows, and downloads nothing.",
+	UsedAs:                    UsedAsCheck,
+	OneIncidentForEachFinding: true,
 	Inputs: []ModuleInput{
 		{Name: "fail_when", Type: "string", Required: true, AllowedValues: []any{"a_security_update_waits_to_be_installed"}, Description: "The check fails while a security update waits to be installed; write a_security_update_waits_to_be_installed, the only value."},
 	},
