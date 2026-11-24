@@ -414,3 +414,27 @@ func TestAnOlderReportNeverSetsAsideAnSos(t *testing.T) {
 		t.Fatal("the sos incident left the sets:", n)
 	}
 }
+
+// A set-aside entry that closes a key ends the pending changes of every row
+// of the key, also of a node that recovered after resolved-sos: the key
+// that opens again names it in no update.
+func TestASetAsideClosingEndsThePendingChangesOfTheKey(t *testing.T) {
+	t.Parallel()
+	h := newGroupingHub(t, map[string]checksandalerts.Destination{"hotline": hotline()})
+	h.arrive(tenOFive, h.alert("app-1", "failed", "sos", versionA, 0, tenOFive), h.alert("app-2", "failed", "warn", versionA, 0, tenOFive))
+	h.take("hotline")
+	h.arrive(tenOFive.Add(time.Minute), h.alert("app-1", "recovered", "sos", versionA, 0, tenOFive.Add(time.Minute)))
+	expectKinds(t, h.take("hotline"), "recovered resolved-sos")
+	h.setAside(tenOFive.Add(2*time.Minute), entryFor(versionA, reasonNoPAM))
+	expectKinds(t, h.take("hotline"), "closed_without_recovery resolved-warn")
+	later := tenOFive.Add(time.Hour)
+	h.arrive(later, h.alert("app-3", "failed", "warn", versionB, 0, later))
+	expectKinds(t, h.take("hotline"), "failed warn")
+	h.arrive(later.Add(5*time.Minute), h.alert("app-4", "failed", "warn", versionB, 0, later.Add(5*time.Minute)))
+	h.tick(time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC))
+	got := h.take("hotline")
+	expectKinds(t, got, "finding_nodes_changed warn")
+	if strings.Contains(got[0].MMHotlineAlert.Message, "app-1") {
+		t.Fatalf("the update names app-1: %q", got[0].MMHotlineAlert.Message)
+	}
+}

@@ -274,9 +274,13 @@ func (set IncidentSet) startKeyOver(tx *sql.Tx, key string, now time.Time) error
  ON CONFLICT(destination,alert_source,incident_key) DO UPDATE SET alert_severities_sent='', last_closing_alert_at=excluded.last_closing_alert_at, announced_alert_severity='', announced_exact_findings='[]', next_update_due=0, next_reminder_due=0`, set.with(key, now.UnixNano())...); e != nil {
 		return e
 	}
-	// The closed rows' pending changes belong to the key that closes; an
-	// update of the key that opens again names none of them.
-	_, e := tx.Exec("UPDATE fleet_incident_set SET state=?, changed=?, pending_change='' WHERE "+inSet+" AND incident_key=? AND state=?", append([]any{fleetIncidentResolved, now.UnixNano()}, set.with(key, fleetIncidentClosed)...)...)
+	if _, e := tx.Exec("UPDATE fleet_incident_set SET state=?, changed=? WHERE "+inSet+" AND incident_key=? AND state=?", append([]any{fleetIncidentResolved, now.UnixNano()}, set.with(key, fleetIncidentClosed)...)...); e != nil {
+		return e
+	}
+	// The pending changes of every row of the key, also of one resolved by
+	// an earlier resolved-sos, belong to the key that closes; an update of
+	// the key that opens again names none of them.
+	_, e := tx.Exec("UPDATE fleet_incident_set SET pending_change='' WHERE "+inSet+" AND incident_key=? AND pending_change!=''", set.with(key)...)
 	return e
 }
 
