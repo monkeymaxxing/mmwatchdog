@@ -492,10 +492,15 @@ func queueWithIncidentSet(tx *sql.Tx, at int64, name string, dest checksandalert
 			for _, m := range kept {
 				severities = append(severities, m.AlertSeverity)
 			}
-			if e = set.recordSent(tx, checksandalerts.ReadableFleetIncidentKey(kept[0], checksandalerts.IncidentKind(kept[0].Type), from.hub()), severities...); e != nil {
+			key := checksandalerts.ReadableFleetIncidentKey(kept[0], checksandalerts.IncidentKind(kept[0].Type), from.hub())
+			if e = set.recordSent(tx, key, severities...); e != nil {
 				return e
 			}
-			if e = queueEvent(tx, at, name, dest, onlyStillOpen(message, kept, members, from.hub())); e != nil {
+			// The service matches the closing alert by the key that the
+			// hub derives, never by one that a node's alert carried.
+			opening := onlyStillOpen(message, kept, members, from.hub())
+			opening.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(key), from.Node, from.FleetIdentity)
+			if e = queueEvent(tx, at, name, dest, opening); e != nil {
 				return e
 			}
 		}
@@ -586,6 +591,7 @@ func (c keyClosing) closingAlert(closedNow []checksandalerts.Event, cause checks
 			own.AlertSeveritiesSentForIncident, own.AlertSeverity = c.sent, config.HighestSeverity(c.sent)
 			own.WriteTitleWithAlertSeverity()
 		}
+		own.FleetIncidentKey = checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(c.key), from.Node, from.FleetIdentity)
 		return own
 	}
 	e := c.closed.about

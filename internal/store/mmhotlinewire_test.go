@@ -309,6 +309,35 @@ func TestAGroupedOpeningGoesUnderTheHubsOwnKey(t *testing.T) {
 	}
 }
 
+// A destination whose service keeps incidents gets the opening and the
+// closing alert of a key under the key that the hub derives, whatever key
+// the node's alerts carried, for a grouped key and for any other.
+func TestAServiceThatKeepsIncidentsGetsTheHubsOwnKey(t *testing.T) {
+	t.Parallel()
+	pager := checksandalerts.Destination{Inputs: &checksandalerts.ModuleCall{Name: "own_pager", Module: &checksandalerts.InstalledModule{Name: "own_pager", Description: &checksandalerts.ModuleDescription{ServiceKeepsIncidents: true}}}, RemindEvery: "never", AlertSeverities: testhelpers.AllSeverities}
+	bogus := checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey("another key"), "app-1", groupingFleet)
+	for _, grouped := range []bool{true, false} {
+		h := newGroupingHub(t, map[string]checksandalerts.Destination{"pager": pager})
+		failure := h.alert("app-1", "failed", "warn", versionA, 0, tenOFive)
+		if !grouped {
+			failure = failureOf(h, "app-1", "app-1 cannot resolve db.internal", tenOFive)
+		}
+		failure.FleetIncidentKey = bogus
+		h.arrive(failure.At, failure)
+		h.arrive(failure.At.Add(2 * time.Minute))
+		opening := h.take("pager")
+		recovery := failure
+		recovery.ID, recovery.Type, recovery.At, recovery.AlertSeveritiesSentForIncident = failure.ID+"-recovered", "recovered", tenOFive.Add(time.Hour), []string{"warn"}
+		h.arrive(recovery.At, recovery)
+		h.arrive(recovery.At.Add(2 * time.Minute))
+		closing := h.take("pager")
+		want := checksandalerts.ScopeFleetIncidentKey(checksandalerts.FleetIncidentKey(checksandalerts.ReadableFleetIncidentKey(failure, "failed", "")), h.s.Node, groupingFleet)
+		if len(opening) != 1 || len(closing) != 1 || opening[0].FleetIncidentKey != want || closing[0].FleetIncidentKey != want {
+			t.Fatalf("%s: the opening %+v and the closing %+v", failure.Check, opening, closing)
+		}
+	}
+}
+
 // An alert queued under the node alert source, when the destination no
 // longer has that source, is cancelled with the destination's other
 // changes, never sent under the destination's own source, where its
