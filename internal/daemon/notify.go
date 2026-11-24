@@ -119,12 +119,20 @@ type queueHead struct {
 // service has set it, can put the outbox's time off by any amount. The
 // limit holds for every destination, also for a receiver that asked for a
 // longer wait with Retry-After: such a receiver answers again, and an
-// alert must not wait an hour on a time that may be off. The caller holds
-// d.mu.
+// alert must not wait an hour on a time that may be off. A wait after a
+// failed attempt holds for the destination as a whole: a new head, such as
+// an sos alert that went ahead of the one that failed (Store.Pending), is
+// due no sooner, so a failing or rate-limited destination gets no retry
+// storm across many keys, and the sos goes first when the next attempt is
+// allowed. The caller holds d.mu.
 func (d *Daemon) attemptDue(delivery store.Delivery, now time.Time) bool {
 	head, seen := d.nextAttempts[delivery.Destination]
 	if !seen || head.seq != delivery.Seq || head.eventID != delivery.Event.ID {
-		head = queueHead{seq: delivery.Seq, eventID: delivery.Event.ID, at: now.Add(min(max(delivery.Next.Sub(now), 0), store.DelayAfterFailedAttempts(delivery.Attempts)))}
+		at := now.Add(min(max(delivery.Next.Sub(now), 0), store.DelayAfterFailedAttempts(delivery.Attempts)))
+		if seen && head.at.After(at) {
+			at = head.at
+		}
+		head = queueHead{seq: delivery.Seq, eventID: delivery.Event.ID, at: at}
 		d.nextAttempts[delivery.Destination] = head
 	}
 	return !now.Before(head.at)
