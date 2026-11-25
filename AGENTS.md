@@ -1,5 +1,12 @@
 # MMWatchdog development
 
+## Product goal
+
+Small, boring, single-binary server monitoring in Go: quiet by default,
+alerting only when a person must act, with plain readable config that coding
+agents write and humans understand, and minimal ongoing upkeep. Reject
+operational theater and noisy checks.
+
 **Read the [documentation map](docs/changing-mmwatchdog/documentation-map.md) before you change
 behavior, a name that users read, or a document.** The documentation map says
 which document owns each kind of fact, how module pages are built, and what
