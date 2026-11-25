@@ -28,6 +28,7 @@ func entryFor(exactFinding, reason string) config.SetAsideFinding {
 // setAside puts entries in force at at, as a start or a reload does.
 func (h *groupingHub) setAside(at time.Time, entries ...config.SetAsideFinding) {
 	h.t.Helper()
+	h.advance(at)
 	if e := h.s.SettleSetAsideFindings(entries, h.destinations, at); e != nil {
 		h.t.Fatal(e)
 	}

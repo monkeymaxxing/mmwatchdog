@@ -65,6 +65,7 @@ func TestAJoinedNodeLeavesTheClosingAlertOfAGroupedFindingToTheHub(t *testing.T)
 	if e != nil {
 		t.Fatal(e)
 	}
+	node.RetentionNow = func() time.Time { return tenOFive }
 	defer node.Close()
 	h := &groupingHub{t: t, s: node}
 	destinations := map[string]checksandalerts.Destination{"chat": chatTaking("https://chat.example.com", "warn")}
@@ -629,6 +630,7 @@ func TestAChangedExactFindingBesideADirectReminderMarksTheNode(t *testing.T) {
 	if e != nil {
 		t.Fatal(e)
 	}
+	node.RetentionNow = func() time.Time { return tenOFive }
 	defer node.Close()
 	n := &groupingHub{t: t, s: node}
 	direct := func(alert checksandalerts.Event) {

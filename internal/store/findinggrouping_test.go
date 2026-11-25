@@ -53,12 +53,13 @@ type groupingHub struct {
 	s            *store.Store
 	destinations map[string]checksandalerts.Destination
 	grouping     fleet.AlertGroupingState
+	now          time.Time
 	events       int
 }
 
 func newGroupingHub(t *testing.T, destinations map[string]checksandalerts.Destination) *groupingHub {
 	t.Helper()
-	h := &groupingHub{t: t, dir: filepath.Join(t.TempDir(), "state"), destinations: destinations, grouping: fleet.AlertGroupingState{Sent: map[string]time.Time{}, Quiet: map[string]time.Time{}, Window: fleet.AlertGroupingWindow}}
+	h := &groupingHub{t: t, dir: filepath.Join(t.TempDir(), "state"), destinations: destinations, grouping: fleet.AlertGroupingState{Sent: map[string]time.Time{}, Quiet: map[string]time.Time{}, Window: fleet.AlertGroupingWindow}, now: tenOFive}
 	h.open()
 	return h
 }
@@ -71,8 +72,15 @@ func (h *groupingHub) open() {
 	}
 	s.FleetIdentity = groupingFleet
 	s.NewlyAffectedNodesEvery.Store(int64(everySixHours))
+	s.RetentionNow = func() time.Time { return h.now }
 	h.s = s
 	h.t.Cleanup(func() { s.Close() })
+}
+
+func (h *groupingHub) advance(at time.Time) {
+	if at.After(h.now) {
+		h.now = at
+	}
 }
 
 // alert is node's alert of kind about the flaw, at severity, with
@@ -93,6 +101,7 @@ func (h *groupingHub) alert(node, kind, severity, exactFinding string, sequence 
 // at at.
 func (h *groupingHub) arrive(at time.Time, alerts ...checksandalerts.Event) {
 	h.t.Helper()
+	h.advance(at)
 	for _, a := range alerts {
 		if e := h.s.Accept(a.Node, a, at); e != nil {
 			h.t.Fatal(e)
@@ -114,6 +123,7 @@ func (h *groupingHub) arrive(at time.Time, alerts ...checksandalerts.Event) {
 // report applies node reports to the hub's sets at at.
 func (h *groupingHub) report(at time.Time, reports map[string]store.ReportedIncidents) {
 	h.t.Helper()
+	h.advance(at)
 	if e := h.s.ReconcileIncidentSets(reports, h.destinations, false, at); e != nil {
 		h.t.Fatal(e)
 	}
@@ -129,6 +139,7 @@ func shows(node, severity, exactFinding string, sequence int64, opened, sent tim
 
 func (h *groupingHub) tick(at time.Time) {
 	h.t.Helper()
+	h.advance(at)
 	if e := h.s.SendDueUpdatesAndReminders(h.destinations, at); e != nil {
 		h.t.Fatal(e)
 	}

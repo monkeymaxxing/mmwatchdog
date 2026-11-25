@@ -576,14 +576,14 @@ func TestDaysAndHours(t *testing.T) {
 	t.Parallel()
 	for d, want := range map[time.Duration]string{
 		5*24*time.Hour + 3*time.Hour + 20*time.Minute: "5 days 3 hours",
-		7 * 24 * time.Hour:            "7 days",
-		24*time.Hour + 30*time.Minute: "1 day",
-		25 * time.Hour:                "1 day 1 hour",
-		90 * time.Minute:              "1 hour 30 minutes",
-		61 * time.Second:              "1 minute 1 second",
-		45 * time.Second:              "45 seconds",
-		400 * time.Millisecond:        "0 seconds",
-		-time.Hour:                    "0 seconds",
+		7 * 24 * time.Hour:                            "7 days",
+		24*time.Hour + 30*time.Minute:                 "1 day",
+		25 * time.Hour:                                "1 day 1 hour",
+		90 * time.Minute:                              "1 hour 30 minutes",
+		61 * time.Second:                              "1 minute 1 second",
+		45 * time.Second:                              "45 seconds",
+		400 * time.Millisecond:                        "0 seconds",
+		-time.Hour:                                    "0 seconds",
 	} {
 		if got := store.DaysAndHours(d); got != want {
 			t.Errorf("%v: got %q, want %q", d, got, want)

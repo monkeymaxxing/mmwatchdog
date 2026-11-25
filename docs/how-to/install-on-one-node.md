@@ -47,7 +47,7 @@ you.
    `x86_64` or `aarch64`.
 
    ```sh
-   version=0.3.0
+   version=0.4.0
    platform=linux-amd64      # linux-arm64 for ARM64 nodes
    release=https://github.com/monkeymaxxing/mmwatchdog/releases/download/v$version
 
@@ -80,7 +80,7 @@ you.
    ```
 
    ```text
-   mmwatchdog-0.3.0-linux-amd64.tar.gz: OK
+   mmwatchdog-0.4.0-linux-amd64.tar.gz: OK
    ```
 
    **Check:** your archive's line ends with `OK`. If not, download it
@@ -273,7 +273,7 @@ you.
     ```
 
     ```text
-    mmwatchdog 0.3.0 (ad75e5909a0af9b03215d2b2ac4c5bdfa9a56777, linux/amd64, modified=false)
+    mmwatchdog 0.4.0 (ad75e5909a0af9b03215d2b2ac4c5bdfa9a56777, linux/amd64, modified=false)
     ```
 
     ```text

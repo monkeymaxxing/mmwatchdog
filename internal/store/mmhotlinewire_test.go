@@ -207,8 +207,9 @@ func newJoinedNode(t *testing.T) *groupingHub {
 	if e != nil {
 		t.Fatal(e)
 	}
+	s.RetentionNow = func() time.Time { return tenOFive }
 	t.Cleanup(func() { s.Close() })
-	return &groupingHub{t: t, s: s}
+	return &groupingHub{t: t, s: s, now: tenOFive}
 }
 
 // The first line of every warn and sos to MMHotline names the problem in
