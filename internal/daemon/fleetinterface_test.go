@@ -443,3 +443,98 @@ func TestEveryFleetAlertUsesTheHubCertificateIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestFleetAPIReportsAttentionAndLiveSilenceAlertSeverity(t *testing.T) {
+	t.Parallel()
+	hub, code := startHub(t)
+	node := joinedNode(t, code, "app-1")
+	node.mu.Lock()
+	node.config.AlertSeverityWhenThisNodeGoesSilent = "warn"
+	node.config.RaiseToSosAfterThisNodeIsSilentFor = "10m"
+	// Open a warn failure incident on the joined node so report.summary.attention carries alert_severity.
+	now := time.Now().UTC()
+	st := node.snapshot.Checks["app/shell"]
+	st.AlertSeveritySettings.AlertSeverity = "warn"
+	st.FailureIncident = incidents.Track{Incident: incidents.ID(), Opened: now.Add(-time.Minute), AlertSeverity: "warn"}
+	st.Last = checksandalerts.Observation{Status: "failed", At: now, Message: "exit 1"}
+	node.mu.Unlock()
+	node.report(context.Background())
+
+	getFleet := func(path string) []byte {
+		t.Helper()
+		resp := httptest.NewRecorder()
+		hub.routes().ServeHTTP(resp, httptest.NewRequest("GET", path, nil))
+		if resp.Code != http.StatusOK {
+			t.Fatalf("GET %s: %d %s", path, resp.Code, resp.Body.String())
+		}
+		return resp.Body.Bytes()
+	}
+
+	// While reporting, silence_alert_severity is omitted and attention carries alert_severity.
+	rawFleet := getFleet("/fleet")
+	var view fleet.Fleet
+	if err := json.Unmarshal(rawFleet, &view); err != nil {
+		t.Fatal(err)
+	}
+	var app1 fleet.FleetNode
+	for _, n := range view.Nodes {
+		if n.Name == "app-1" {
+			app1 = n
+		}
+	}
+	if app1.State != "reporting" || app1.SilenceAlertSeverity != "" {
+		t.Fatalf("reporting app-1: %+v", app1)
+	}
+	if app1.NodeStatusReport == nil || len(app1.NodeStatusReport.Summary.Attention) != 1 || app1.NodeStatusReport.Summary.Attention[0].AlertSeverity != "warn" {
+		t.Fatalf("reporting app-1 attention: %+v", app1.NodeStatusReport)
+	}
+	if strings.Contains(string(rawFleet), "silence_alert_severity") {
+		t.Fatalf("reporting fleet JSON should omit silence_alert_severity: %s", rawFleet)
+	}
+
+	// Mark app-1 silent on the hub (both in fleet.Hub and in the hub's silence check).
+	opened := time.Now().UTC().Add(3 * reportInterval)
+	hub.hub.Mu.Lock()
+	hub.hub.Nodes["app-1"].Deadline = time.Now().UTC().Add(-time.Second)
+	hub.hub.Mu.Unlock()
+	hub.mu.Lock()
+	hub.snapshot.Checks[fleet.FleetKey("app-1")].Deadline = opened
+	hub.mu.Unlock()
+	tick(hub, opened)
+
+	checkSilentSeverity := func(want string) {
+		t.Helper()
+		var f fleet.Fleet
+		if err := json.Unmarshal(getFleet("/fleet"), &f); err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, n := range f.Nodes {
+			if n.Name == "app-1" {
+				found = true
+				if n.State != "silent" || n.SilenceAlertSeverity != want {
+					t.Fatalf("GET /fleet app-1: state=%q silence_alert_severity=%q, want silent / %q", n.State, n.SilenceAlertSeverity, want)
+				}
+			}
+		}
+		if !found {
+			t.Fatal("app-1 missing from GET /fleet")
+		}
+		var detail fleet.FleetNode
+		if err := json.Unmarshal(getFleet("/fleet?node=app-1"), &detail); err != nil {
+			t.Fatal(err)
+		}
+		if detail.State != "silent" || detail.SilenceAlertSeverity != want {
+			t.Fatalf("GET /fleet?node=app-1: state=%q silence_alert_severity=%q, want silent / %q", detail.State, detail.SilenceAlertSeverity, want)
+		}
+	}
+
+	// Initially silent at warn.
+	checkSilentSeverity("warn")
+
+	// After raise_to_sos_after_this_node_is_silent_for, the hub's silence check escalates to sos;
+	// both GET /fleet and GET /fleet?node=app-1 reflect "sos".
+	lastReport := fleetCheck(hub, "app-1").Receipt
+	tick(hub, lastReport.Add(10*time.Minute))
+	checkSilentSeverity("sos")
+}

@@ -251,6 +251,170 @@ func TestSummarizeVerdict(t *testing.T) {
 	}
 }
 
+func TestSummarizeAlertSeverity(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	opened := now.Add(-time.Hour)
+	for _, tc := range []struct {
+		name         string
+		status       incidents.CheckStatus
+		wantSeverity string
+		wantFinding  string
+	}{
+		{
+			name: "sos check failure incident",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "sos"},
+					FailureIncident:       incidents.Track{Incident: "i1", Opened: opened, AlertSeverity: "sos"},
+					Last:                  checksandalerts.Observation{Status: "failed", Message: "down"},
+				},
+				State: "failed",
+			},
+			wantSeverity: "sos",
+		},
+		{
+			name: "warn check failure incident",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"},
+					FailureIncident:       incidents.Track{Incident: "i2", Opened: opened, AlertSeverity: "warn"},
+					Last:                  checksandalerts.Observation{Status: "failed", Message: "high"},
+				},
+				State: "failed",
+			},
+			wantSeverity: "warn",
+		},
+		{
+			name: "info check failure incident",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "info"},
+					FailureIncident:       incidents.Track{Incident: "i3", Opened: opened, AlertSeverity: "info"},
+					Last:                  checksandalerts.Observation{Status: "failed", Message: "note"},
+				},
+				State: "failed",
+			},
+			wantSeverity: "info",
+		},
+		{
+			name: "escalated failure incident uses incident severity over config",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn", RaiseToSosAfterFailingFor: "10m"},
+					FailureIncident:       incidents.Track{Incident: "i4", Opened: opened, AlertSeverity: "sos"},
+					Last:                  checksandalerts.Observation{Status: "failed", Message: "still down"},
+				},
+				State: "failed",
+			},
+			wantSeverity: "sos",
+		},
+		{
+			name: "failure incident without severity falls back to check settings",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"},
+					FailureIncident:       incidents.Track{Incident: "i5", Opened: opened},
+					Last:                  checksandalerts.Observation{Status: "failed", Message: "down"},
+				},
+				State: "failed",
+			},
+			wantSeverity: "warn",
+		},
+		{
+			name: "unknown check with open cannot-check incident uses cannot-check severity",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"},
+					CannotCheckIncident:   incidents.Track{Incident: "c1", Opened: opened, AlertSeverity: "sos"},
+					UnknownSince:          opened,
+					Last:                  checksandalerts.Observation{Status: "unknown", Message: "timed out"},
+				},
+				State: "unknown",
+			},
+			wantSeverity: "sos",
+		},
+		{
+			name: "unknown check without cannot-check incident falls back to check settings",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "info"},
+					UnknownSince:          opened,
+					Last:                  checksandalerts.Observation{Status: "unknown", Message: "has not run yet"},
+				},
+				State: "unknown",
+			},
+			wantSeverity: "info",
+		},
+		{
+			name: "records-only unknown check leaves severity empty",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					RecordsOnly:  true,
+					UnknownSince: opened,
+					Last:         checksandalerts.Observation{Status: "unknown", Message: "has not run yet"},
+				},
+				State: "unknown",
+			},
+			wantSeverity: "",
+		},
+		{
+			name: "finding uses finding incident severity",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"},
+					Last:                  checksandalerts.Observation{Status: "failed", Message: "1 failed"},
+				},
+				State: "failed",
+				FindingStatuses: map[string]incidents.CheckStatus{
+					"backup.service": {
+						CheckState: incidents.CheckState{
+							AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "warn"},
+							FailureIncident:       incidents.Track{Incident: "f1", Opened: opened, AlertSeverity: "sos"},
+							Last:                  checksandalerts.Observation{Status: "failed", Message: "failed"},
+						},
+						State: "failed",
+					},
+				},
+			},
+			wantSeverity: "sos",
+			wantFinding:  "backup.service",
+		},
+		{
+			name: "finding falls back to unit then check settings",
+			status: incidents.CheckStatus{
+				CheckState: incidents.CheckState{
+					AlertSeveritySettings: checksandalerts.AlertSeveritySettings{AlertSeverity: "info"},
+					Last:                  checksandalerts.Observation{Status: "failed", Message: "1 failed"},
+				},
+				State: "failed",
+				FindingStatuses: map[string]incidents.CheckStatus{
+					"worker.service": {
+						CheckState: incidents.CheckState{
+							FailureIncident: incidents.Track{Incident: "f2", Opened: opened},
+							Last:            checksandalerts.Observation{Status: "failed", Message: "failed"},
+						},
+						State: "failed",
+					},
+				},
+			},
+			wantSeverity: "info",
+			wantFinding:  "worker.service",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := incidents.Summarize(map[string]incidents.CheckStatus{"app/check": tc.status}, "")
+			if len(got.Attention) != 1 {
+				t.Fatalf("got %+v, want 1 attention entry", got.Attention)
+			}
+			a := got.Attention[0]
+			if a.AlertSeverity != tc.wantSeverity || a.Finding != tc.wantFinding {
+				t.Fatalf("got severity=%q finding=%q, want %q %q", a.AlertSeverity, a.Finding, tc.wantSeverity, tc.wantFinding)
+			}
+		})
+	}
+}
+
 func TestRetirementClosesAnnouncedIncidents(t *testing.T) {
 	t.Parallel()
 	for _, mode := range []string{"active", "recovered during maintenance", "replaced during maintenance", "never announced"} {

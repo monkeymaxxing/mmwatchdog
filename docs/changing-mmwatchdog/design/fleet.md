@@ -582,9 +582,12 @@ which command runs, so MMHotline's account cannot choose a command through
 the socket. The command reaches the node
 monitoring process through `/run/mmwatchdog/mmwatchdog.sock`, which belongs
 to root with mode `0600`, so a root process without capabilities connects
-as the socket's owner. The JSON names, for each node, its `state`, its `exit_code`, its node
+as the socket's owner. The JSON names, for each node, its `state`, its `exit_code`,
+its `silence_alert_severity` while `silent` (reflecting the hub's live silence
+incident when escalated, otherwise the node's
+`alert_severity_when_this_node_goes_silent`), its node
 groups, when its last report arrived, and in `report.summary.attention` each
-check that needs attention, with its state, since when, and its message. A
+check that needs attention, with its state, its `alert_severity`, since when, and its message. A
 healthy check is not listed, so the answer stays small for a large fleet.
 The node state, exit code, node groups, last-report time, and
 `report.summary.attention` check details follow the

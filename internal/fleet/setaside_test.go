@@ -39,7 +39,7 @@ func report(at time.Time, state, severity, exactFinding string) *fleet.NodeStatu
 		r.Checks["packages/flaws"] = fleet.ReportedCheck{State: "unknown"}
 	case severity != "":
 		t := &incidents.Track{Incident: incidents.ID(), Opened: at, AlertSeverity: severity, CurrentExactFinding: exactFinding, Evidence: &checksandalerts.Evidence{FailingSince: at.Add(-time.Hour)}}
-		r.Summary = incidents.StatusSummary{ExitCode: 1, Attention: []incidents.Attention{{Check: "packages/flaws", Finding: flaw, State: "failed", Since: at, Message: exactFinding}}}
+		r.Summary = incidents.StatusSummary{ExitCode: 1, Attention: []incidents.Attention{{Check: "packages/flaws", Finding: flaw, State: "failed", AlertSeverity: severity, Since: at, Message: exactFinding}}}
 		r.Checks["packages/flaws"] = fleet.ReportedCheck{State: "failed", Findings: map[string]fleet.ReportedCheck{flaw: {State: "failed", Message: exactFinding, FailureIncident: t}}}
 	default:
 		r.Checks["packages/flaws"] = fleet.ReportedCheck{State: "ok"}
@@ -116,6 +116,19 @@ func TestTheFleetViewCountsSetAsideFindingsApart(t *testing.T) {
 	again, _ := f.hub.Node("app-1", at.Add(time.Second))
 	if len(again.SetAsideFindings) != 1 {
 		t.Fatal("the view changed the saved report")
+	}
+	// A node with both a set-aside finding and another attention entry keeps
+	// the remaining entry's AlertSeverity after set-aside filtering.
+	mixed := report(at, "failed", "warn", versionA)
+	mixed.Summary.Attention = append(mixed.Summary.Attention, incidents.Attention{Check: "web/http", State: "failed", AlertSeverity: "sos", Since: at, Message: "503"})
+	mixed.Checks["web/http"] = fleet.ReportedCheck{State: "failed", FailureIncident: &incidents.Track{Incident: incidents.ID(), Opened: at, AlertSeverity: "sos"}}
+	f.node("app-4", at, mixed)
+	mixedView, err := f.hub.Node("app-4", at.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mixedView.NodeStatusReport.Summary.Attention) != 1 || mixedView.NodeStatusReport.Summary.Attention[0].AlertSeverity != "sos" || mixedView.NodeStatusReport.Summary.Attention[0].Check != "web/http" {
+		t.Fatalf("set-aside filtering lost alert_severity: %+v", mixedView.NodeStatusReport.Summary.Attention)
 	}
 	// Without the entry, the fleet is as the nodes report it.
 	none := config.SetAsideFindings{}

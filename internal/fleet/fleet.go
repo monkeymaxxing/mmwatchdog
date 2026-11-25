@@ -207,6 +207,11 @@ func (r *NodeStatusReport) Validate() error {
 	if r.Summary.ExitCode != 0 && r.Summary.ExitCode != 1 && r.Summary.ExitCode != 3 {
 		return fmt.Errorf("report exit code must be 0, 1 or 3")
 	}
+	for _, a := range r.Summary.Attention {
+		if a.AlertSeverity != "" && config.SeverityRank(a.AlertSeverity) < 0 {
+			return fmt.Errorf("report attention carries an invalid alert severity")
+		}
+	}
 	if problem := r.FleetSettings().Problem(); problem != "" {
 		return fmt.Errorf("report %s", problem)
 	}
@@ -1156,12 +1161,16 @@ func (h *Hub) Members() map[string]FleetMember {
 // FleetNode is one node in the fleet view. Report is its latest saved
 // report; the fleet list leaves out its checks.
 type FleetNode struct {
-	StorageError  string `json:"storage_error,omitempty"`
-	Name          string `json:"name"`
-	State         string `json:"state"`
-	ExitCode      int    `json:"exit_code"`
-	Hub           bool   `json:"has_fleet_hub_role,omitempty"`
-	OutageAlerter bool   `json:"is_hub_outage_alerter_node,omitempty"`
+	StorageError string `json:"storage_error,omitempty"`
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	ExitCode     int    `json:"exit_code"`
+	// SilenceAlertSeverity is the alert severity of a silent node's silence
+	// alert, from the hub's open silence incident or the node's
+	// alert_severity_when_this_node_goes_silent. Omitted when the node is not silent.
+	SilenceAlertSeverity string `json:"silence_alert_severity,omitempty"`
+	Hub                  bool   `json:"has_fleet_hub_role,omitempty"`
+	OutageAlerter        bool   `json:"is_hub_outage_alerter_node,omitempty"`
 	// PreferOutageAlerter is the node's prefer_this_node_as_hub_outage_alerter setting.
 	PreferOutageAlerter bool `json:"prefer_this_node_as_hub_outage_alerter,omitempty"`
 	// NodeGroups are the node groups that the node is in, as its
@@ -1221,6 +1230,7 @@ func (h *Hub) View(name string, m *member, now time.Time) FleetNode {
 	switch {
 	case s.State == "silent":
 		s.ExitCode = 1
+		s.SilenceAlertSeverity = m.fleetSettings().AlertSeverityWhenThisNodeGoesSilent
 	case s.State == "reporting":
 		//nolint:nilaway // View callers hold the hub mutex and pass existing allocated members; only their saved report may be nil.
 		if report := s.NodeStatusReport; report == nil {

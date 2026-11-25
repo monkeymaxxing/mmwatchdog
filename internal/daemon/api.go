@@ -71,12 +71,13 @@ func (d *Daemon) routes() http.Handler {
 		}
 		name := r.URL.Query().Get("node")
 		if name == "" {
-			fleet, e := d.hub.FleetOfNodeGroup(d.now(), r.URL.Query().Get("node_group"))
+			view, e := d.hub.FleetOfNodeGroup(d.now(), r.URL.Query().Get("node_group"))
 			if e != nil {
 				apiError(w, e, 404)
 				return
 			}
-			writeJSON(w, fleet)
+			d.applyLiveSilenceAlertSeverities(view.Nodes)
+			writeJSON(w, view)
 			return
 		}
 		since, until, e := eventTimeRange(r)
@@ -89,6 +90,7 @@ func (d *Daemon) routes() http.Handler {
 			apiError(w, e, 404)
 			return
 		}
+		d.applyLiveSilenceAlertSeverity(&node)
 		problems := d.hub.Problems()
 		if e != nil {
 			problems = append(problems, "fleet event history: "+e.Error())
@@ -262,6 +264,46 @@ func (d *Daemon) routes() http.Handler {
 		writeJSON(w, map[string]bool{"recovery_attempts_reset": true})
 	})
 	return mux
+}
+
+// applyLiveSilenceAlertSeverities sets SilenceAlertSeverity on each silent node
+// from the hub's live silence check when an incident is open, so an escalation
+// (such as warn to sos) is reflected in the fleet view.
+func (d *Daemon) applyLiveSilenceAlertSeverities(nodes []fleet.FleetNode) {
+	if !slices.ContainsFunc(nodes, func(n fleet.FleetNode) bool { return n.State == "silent" }) {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	for i := range nodes {
+		if nodes[i].State == "silent" {
+			if sev := d.liveSilenceAlertSeverity(nodes[i].Name); sev != "" {
+				nodes[i].SilenceAlertSeverity = sev
+			}
+		}
+	}
+}
+
+// applyLiveSilenceAlertSeverity updates SilenceAlertSeverity on one silent node
+// from the hub's live silence check.
+func (d *Daemon) applyLiveSilenceAlertSeverity(node *fleet.FleetNode) {
+	if node.State != "silent" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if sev := d.liveSilenceAlertSeverity(node.Name); sev != "" {
+		node.SilenceAlertSeverity = sev
+	}
+}
+
+// liveSilenceAlertSeverity returns the open silence incident's alert severity
+// for name, or "" when no silence incident is open. The caller holds d.mu.
+func (d *Daemon) liveSilenceAlertSeverity(name string) string {
+	if st := d.snapshot.Checks[fleet.FleetKey(name)]; st != nil && st.FailureIncident.Incident != "" {
+		return st.FailureIncident.AlertSeverity
+	}
+	return ""
 }
 
 // status derives the inspection view that status and fleet reports share:

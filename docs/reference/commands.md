@@ -189,7 +189,7 @@ command could not ask the service.
 
 | Field | What the field holds |
 |---|---|
-| `summary` | `exit_code`, the exit code above, and `attention`: one entry for each check with an open failure incident or unknown health, with `check`, `finding` (for one finding of a check), `state`, `since`, and `message`. Healthy checks, `confirming_failure`, and the two waiting states are not listed. A storage problem has no entry. |
+| `summary` | `exit_code`, the exit code above, and `attention`: one entry for each check with an open failure incident or unknown health, with `check`, `finding` (for one finding of a check), `state`, `alert_severity` (left out for a check that only records), `since`, and `message`. Healthy checks, `confirming_failure`, and the two waiting states are not listed. A storage problem has no entry. |
 | `checks` | One object for each check, by `CHECK_GROUP/CHECK`. See the next table. |
 | `systemd_unit_restart_attempts`, `recovery_command_attempts` | By unit, and by check group: `attempts_used`, `max_attempts` (a number, or `unlimited`), `last_attempt_at`, `last_attempt_finished_at`, and `last_result`. |
 | `maintenance` | The open maintenance windows, by check group, or `every_check_group` for the whole node: `until`, `reason`, `user`, and `without_maintenance_on_and_off_alerts`. |
@@ -878,7 +878,9 @@ A time flag without a node name is refused with
 `measurement_history_of_nodes`, `set_aside_finding_count` and
 `nodes_with_set_aside_findings` (the numbers of the line `Set aside:`),
 and `nodes`. Each node has `name`,
-`state`, `exit_code`, `has_fleet_hub_role`, `is_hub_outage_alerter_node`,
+`state`, `exit_code`, `silence_alert_severity` (on a silent node only:
+the current alert severity of the hub's silence alert, including a raise
+to `sos`), `has_fleet_hub_role`, `is_hub_outage_alerter_node`,
 `prefer_this_node_as_hub_outage_alerter`, `this_node_is_in_node_groups`,
 `joined_at`, `joined_from_address`, `last_report_received_at`,
 `clock_offset_ns`, `replaced_silent_node_of_same_name_at`, `conflict`
@@ -949,9 +951,10 @@ The program reads these fields of each entry in `nodes`:
 | `name` | The node's name. |
 | `state` | `reporting`, `waiting_for_first_report`, or `silent`. |
 | `exit_code` | 0 healthy, 1 a failure, 3 unknown health. |
+| `silence_alert_severity` | On a `silent` node only: the current alert severity of the node's silence alert (`info`, `warn`, or `sos`, including a raise to `sos`). Omitted when the node is not silent. |
 | `this_node_is_in_node_groups` | The node's node groups. |
 | `last_report_received_at` | When the hub received the node's last report. |
-| `report.summary.attention` | Each check that needs attention: `check`, `finding` for one finding of a check, `state`, `since` (left out for a check that has not run yet), and `message`. A healthy check is not listed, so the answer stays small in a large fleet. |
+| `report.summary.attention` | Each check that needs attention: `check`, `finding` for one finding of a check, `state`, `alert_severity` (left out for a check that only records, or from a joined node one minor release older), `since` (left out for a check that has not run yet), and `message`. A healthy check is not listed, so the answer stays small in a large fleet. |
 
 `hub_outage_alerter_nodes` at the top level names the nodes that send an
 alert themselves when they cannot reach the hub.

@@ -1175,10 +1175,11 @@ type Attention struct {
 	// Finding is the failed unit, for an entry about one unit of a
 	// every_systemd_unit check: each unit with an open incident has an
 	// entry of its own.
-	Finding string    `json:"finding,omitempty"`
-	State   string    `json:"state"`
-	Since   time.Time `json:"since,omitzero"`
-	Message string    `json:"message"`
+	Finding       string    `json:"finding,omitempty"`
+	State         string    `json:"state"`
+	AlertSeverity string    `json:"alert_severity,omitempty"`
+	Since         time.Time `json:"since,omitzero"`
+	Message       string    `json:"message"`
 }
 
 // StatusSummary is the verdict that status, fleet reports, and the TUI share:
@@ -1198,7 +1199,14 @@ func Summarize(checks map[string]CheckStatus, storageError string) StatusSummary
 		for _, name := range checksandalerts.Names(st.FindingStatuses) {
 			if unit := st.FindingStatuses[name]; unit.FailureIncident.Incident != "" {
 				summary.ExitCode = HealthExitCode(summary.ExitCode, 1)
-				summary.Attention = append(summary.Attention, Attention{Check: key, Finding: name, State: unit.State, Since: unit.FailureIncident.Opened, Message: unit.Explanation()})
+				severity := unit.FailureIncident.AlertSeverity
+				if severity == "" {
+					severity = unit.AlertSeveritySettings.AlertSeverity
+				}
+				if severity == "" {
+					severity = st.AlertSeveritySettings.AlertSeverity
+				}
+				summary.Attention = append(summary.Attention, Attention{Check: key, Finding: name, State: unit.State, AlertSeverity: severity, Since: unit.FailureIncident.Opened, Message: unit.Explanation()})
 			}
 		}
 		unknown := st.State != "waiting_for_first_report" && st.State != "waiting_for_first_heartbeat" && st.ObservationUnknown()
@@ -1206,17 +1214,27 @@ func Summarize(checks map[string]CheckStatus, storageError string) StatusSummary
 			continue
 		}
 		since := st.FailureIncident.Opened
+		severity := ""
 		if st.FailureIncident.Incident != "" {
 			summary.ExitCode = HealthExitCode(summary.ExitCode, 1)
+			severity = st.FailureIncident.AlertSeverity
+			if severity == "" {
+				severity = st.AlertSeveritySettings.AlertSeverity
+			}
 		} else if st.CannotCheckIncident.Incident != "" {
 			since = st.CannotCheckIncident.Opened
+			severity = st.CannotCheckIncident.AlertSeverity
+			if severity == "" {
+				severity = st.AlertSeveritySettings.AlertSeverity
+			}
 		} else {
 			since = st.UnknownSince
+			severity = st.AlertSeveritySettings.AlertSeverity
 		}
 		if unknown {
 			summary.ExitCode = HealthExitCode(summary.ExitCode, 3)
 		}
-		summary.Attention = append(summary.Attention, Attention{Check: key, State: st.State, Since: since, Message: st.Explanation()})
+		summary.Attention = append(summary.Attention, Attention{Check: key, State: st.State, AlertSeverity: severity, Since: since, Message: st.Explanation()})
 	}
 	if storageError != "" {
 		summary.ExitCode = HealthExitCode(summary.ExitCode, 3)
